@@ -39,9 +39,12 @@ pub enum UnOpKind{
 }
 
 pub enum BinOpKind{
-    Add,
-    Sub,
-    Mul,
+    Add_wrapping,
+    Add_checked,
+    Sub_wrapping,
+    Sub_checked,
+    Sub_wrapping,
+    Mul_checked,
     Div, // Trucating division
     Rem, // Use for truncating casts
     Exp,
