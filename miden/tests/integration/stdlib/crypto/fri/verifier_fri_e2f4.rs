@@ -5,7 +5,7 @@ use miden::{math::fft, utils::math::log2, Digest as MidenDigest};
 use processor::Hasher;
 use vm_core::{
     chiplets::hasher::Hasher as MidenHasher,
-    crypto::merkle::{MerklePath, MerklePathSet, NodeIndex},
+    crypto::merkle::{MerklePath, MerklePathSet},
     utils::{IntoBytes, RandomCoin},
     Felt, FieldElement, QuadExtension, StarkField, ZERO,
 };
@@ -333,11 +333,7 @@ fn iterate_query_fold_4_quad_ext(
         // Assumes the num_partitions == 1
         let position_index = folded_pos;
 
-        let tree_depth = log2(target_domain_size) + 1;
-
-        let query_nodes = m_path_sets[depth]
-            .get_node(NodeIndex::new(tree_depth as u8, position_index as u64))
-            .unwrap();
+        let query_nodes = m_path_sets[depth].get_leaf(position_index as u64).unwrap();
         let query_values = &key_val_map
             .iter()
             .filter(|(k, _)| *k == query_nodes.into_bytes())
@@ -456,9 +452,9 @@ impl UnBatch<QuadExt, MidenHasher> for MidenFriVerifierChannel<QuadExt, MidenHas
                 })
                 .collect();
 
-            let new_set = MerklePathSet::new((log2(current_domain_size / N) + 1) as u8);
+            let new_set = MerklePathSet::new((log2(current_domain_size / N)) as u8);
 
-            let iter_pos = folded_positions.iter_mut().map(|a| *a as u64);
+            let iter_pos = folded_positions.iter().map(|a| *a as u64);
             let nodes_tmp = nodes.clone();
             let iter_nodes = nodes_tmp.iter();
             let iter_paths = paths.into_iter();

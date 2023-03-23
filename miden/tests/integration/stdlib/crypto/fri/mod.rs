@@ -15,7 +15,7 @@ pub use verifier_fri_e2f4::*;
 mod remainder;
 
 #[test]
-#[ignore = "the unbound integrated test struct needs to be refactored to use merkle store"]
+//#[ignore = "the unbound integrated test struct needs to be refactored to use merkle store"]
 fn fri_fold4_ext2_remainder32() {
     let source = "
         use.std::crypto::fri::frie2f4
