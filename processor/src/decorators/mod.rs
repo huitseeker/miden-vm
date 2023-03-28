@@ -1,8 +1,15 @@
 use super::{
     AdviceInjector, AdviceProvider, AdviceSource, Decorator, ExecutionError, Felt, Process,
-    StarkField,
+    StarkField, Word,
 };
-use vm_core::{utils::collections::Vec, FieldElement, QuadExtension, WORD_SIZE, ZERO};
+use vm_core::{
+    crypto::{
+        hash::{Rpo256, RpoDigest},
+        merkle::EmptySubtreeRoots,
+    },
+    utils::collections::Vec,
+    FieldElement, QuadExtension, WORD_SIZE, ZERO,
+};
 use winter_prover::math::fft;
 
 // TYPE ALIASES
@@ -47,6 +54,7 @@ where
             }
             AdviceInjector::Ext2Inv => self.inject_ext2_inv_result(),
             AdviceInjector::Ext2INTT => self.inject_ext2_intt_result(),
+            AdviceInjector::SmtGet => self.inject_smtget(),
         }
     }
 
@@ -276,6 +284,138 @@ where
             self.advice_provider.push_stack(AdviceSource::Value(i))?;
         }
 
+        Ok(())
+    }
+
+    /// Pushes the `(depth, index, value)` triplet of a Sparse Merkle tree with the provided
+    /// `root`, and with a leaf indexed by `key`.
+    ///
+    /// The operand stack is expected to be arranged as follows:
+    /// - key, 4 elements.
+    /// - root of the Sparse Merkle tree, 4 elements.
+    ///
+    /// After a successful operation, the advice stack will look as follows:
+    /// - depth.
+    /// - index.
+    /// - leaf value, 4 elements.
+    /// - node value, 4 elements.
+    ///
+    /// The `node value` will be the hash in domain for the depth, defined as: `H_d(key, value)`.
+    /// For more information, check [vm_core::crypto::hash::Rpo256::merge_in_domain].
+    ///
+    /// If the key/value pair isn't inserted to the tree, the `node value` will be set to
+    /// `[0, 0, 0, 0]`.
+    ///
+    /// # Errors
+    /// Will return an error if:
+    /// - The provided Merkle root doesn't exist on the advice provider
+    /// - The provided key doesn't map to a word value on the advice map
+    fn inject_smtget(&mut self) -> Result<(), ExecutionError> {
+        let empty = EmptySubtreeRoots::empty_hashes(64);
+
+        // fetch the arguments from the operand stack
+        let key = [self.stack.get(3), self.stack.get(2), self.stack.get(1), self.stack.get(0)];
+        let root = [self.stack.get(7), self.stack.get(6), self.stack.get(5), self.stack.get(4)];
+
+        // fetch the value of the key
+        let value = self
+            .advice_provider
+            .push_stack(AdviceSource::Map { key })
+            .and_then(|_| self.advice_provider.pop_stack_word())?;
+
+        // A short-circuited routine to fetch the node value, depth and index that fits the current
+        // state.
+        //
+        // The node value won't necessarily be the hash of the key/value pair as other leaf/node
+        // might be occupying its position; this will be used for non-membership proofs.
+        fn get_node_value_and_index<A>(
+            key: Word,
+            value: Word,
+            root: Word,
+            advice_provider: &A,
+            empty: &[RpoDigest],
+        ) -> Result<(Word, u8, u64), ExecutionError>
+        where
+            A: AdviceProvider,
+        {
+            let base_index = key[3].as_int();
+
+            // attempt first tier
+            let depth = Felt::new(16);
+            let index = Felt::new(base_index >> 48);
+            let hash = Rpo256::merge_in_domain(&[key.into(), value.into()], depth);
+            let node_16: RpoDigest = advice_provider.get_tree_node(root, &depth, &index)?.into();
+            if node_16 == empty[16] {
+                return Ok(([ZERO; WORD_SIZE], 16, base_index >> 48));
+            } else if node_16 == hash {
+                return Ok((node_16.into(), 16, base_index >> 48));
+            }
+
+            // attempt second tier
+            let depth = Felt::new(32);
+            let index = Felt::new(base_index >> 32);
+            let hash = Rpo256::merge_in_domain(&[key.into(), value.into()], depth);
+            let node_32: RpoDigest = match advice_provider.get_tree_node(root, &depth, &index) {
+                Ok(n) => n.into(),
+                Err(ExecutionError::MerkleStoreLookupFailed(_)) => {
+                    return Ok((node_16.into(), 16, base_index >> 48));
+                }
+                Err(e) => return Err(e),
+            };
+            if node_32 == empty[32] {
+                return Ok(([ZERO; WORD_SIZE], 32, base_index >> 32));
+            } else if node_32 == hash {
+                return Ok((node_32.into(), 32, base_index >> 32));
+            }
+
+            // attempt third tier
+            let depth = Felt::new(48);
+            let index = Felt::new(base_index >> 16);
+            let hash = Rpo256::merge_in_domain(&[key.into(), value.into()], depth);
+            let node_48: RpoDigest = match advice_provider.get_tree_node(root, &depth, &index) {
+                Ok(n) => n.into(),
+                Err(ExecutionError::MerkleStoreLookupFailed(_)) => {
+                    return Ok((node_32.into(), 32, base_index >> 32));
+                }
+                Err(e) => return Err(e),
+            };
+            if node_48 == empty[48] {
+                return Ok(([ZERO; WORD_SIZE], 48, base_index >> 16));
+            } else if node_48 == hash {
+                return Ok((node_48.into(), 48, base_index >> 16));
+            }
+
+            // attempt last tier
+            let depth = Felt::new(64);
+            let index = Felt::new(base_index);
+            let node_64: RpoDigest = match advice_provider.get_tree_node(root, &depth, &index) {
+                Ok(n) => n.into(),
+                Err(ExecutionError::MerkleStoreLookupFailed(_)) => {
+                    return Ok((node_48.into(), 48, base_index >> 16));
+                }
+                Err(e) => return Err(e),
+            };
+            if node_64 == empty[64] {
+                Ok(([ZERO; WORD_SIZE], 64, base_index))
+            } else {
+                Ok((node_64.into(), 64, base_index))
+            }
+        }
+
+        let (node, depth, index) =
+            get_node_value_and_index(key, value, root, &self.advice_provider, empty)?;
+
+        // push the computed items onto the advice stack
+        self.advice_provider.push_stack(AdviceSource::Value(node[3]))?;
+        self.advice_provider.push_stack(AdviceSource::Value(node[2]))?;
+        self.advice_provider.push_stack(AdviceSource::Value(node[1]))?;
+        self.advice_provider.push_stack(AdviceSource::Value(node[0]))?;
+        self.advice_provider.push_stack(AdviceSource::Value(value[3]))?;
+        self.advice_provider.push_stack(AdviceSource::Value(value[2]))?;
+        self.advice_provider.push_stack(AdviceSource::Value(value[1]))?;
+        self.advice_provider.push_stack(AdviceSource::Value(value[0]))?;
+        self.advice_provider.push_stack(AdviceSource::Value(Felt::new(depth as u64)))?;
+        self.advice_provider.push_stack(AdviceSource::Value(Felt::new(index)))?;
         Ok(())
     }
 }

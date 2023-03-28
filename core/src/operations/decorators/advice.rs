@@ -51,6 +51,26 @@ pub enum AdviceInjector {
     /// routine interpolates ( using inverse NTT ) the evaluations into a polynomial in
     /// coefficient form and pushes the result into the advice stack.
     Ext2INTT,
+
+    /// Pushes the `(depth, index, value)` triplet of a Sparse Merkle tree with the provided
+    /// `root`, and with a leaf indexed by `key`.
+    ///
+    /// The operand stack is expected to be arranged as follows:
+    /// - key, 4 elements.
+    /// - root of the Sparse Merkle tree, 4 elements.
+    ///
+    /// After a successful operation, the advice stack will look as follows:
+    /// - depth.
+    /// - index.
+    /// - leaf value, 4 elements.
+    /// - node value, 4 elements.
+    ///
+    /// The `node value` will be the hash in domain for the depth, defined as: `H_d(key, value)`.
+    /// For more information, check [vm_core::crypto::hash::Rpo256::merge_in_domain].
+    ///
+    /// If the key/value pair isn't inserted to the tree, the `node value` will be set to
+    /// `[0, 0, 0, 0]`.
+    SmtGet,
 }
 
 impl fmt::Display for AdviceInjector {
@@ -63,6 +83,7 @@ impl fmt::Display for AdviceInjector {
             Self::Memory(start_addr, num_words) => write!(f, "mem({start_addr}, {num_words})"),
             Self::Ext2Inv => write!(f, "ext2_inv"),
             Self::Ext2INTT => write!(f, "ext2_intt"),
+            Self::SmtGet => write!(f, "smt_get"),
         }
     }
 }

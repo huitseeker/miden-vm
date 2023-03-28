@@ -1,0 +1,50 @@
+#! Fetches the keyed value of a Sparse Merkle tree with the provided root.
+#! cycles: 89
+#! input:  [K, R, ...]
+#! output: [d, i, V, K, R, ...]
+export.get
+    # invoke the advice injector and fetch depth+index pair
+    # (18 cycles)
+    # [d, i, R, d, K, i, d, ...]
+    adv.smtget swapw adv_push.2 dup movdn.6 dup.1 movdn.11 dup movdn.12
+
+    # verify the opening to the root
+    # (9 cycles)
+    # [N, R, d, K, i, d, ...]
+    mtree_get
+
+    # prepare the depth to be used as domain for permutation
+    # (7 cycles)
+    # [0, 0, d, 0, N, R, K, i, d, ...]
+    push.0 movup.9 push.0.0
+
+    # prepare the key for permutation
+    # (4 cycles)
+    # [K, 0, 0, d, 0, N, R, K, i, d, ...]
+    dupw.3
+
+    # prepare the value for permutation
+    # (13 cycles)
+    # [V, K, 0, 0, d, 0, V, N, R, K, i, d, ...]
+    padw adv_loadw dupw swapw.3 movdnw.2
+
+    # perform the permutation
+    # (1 cycle)
+    # [_, P, _, V, N, R, K, i, d, ...]
+    hperm
+
+    # drop the result, except for the digest output
+    # (9 cycles)
+    # [P, V, N, R, K, i, d, ...]
+    dropw swapw dropw
+
+    # assert the hash in domain is the opening for the root
+    # (13 cycles)
+    # [V, R, K, i, d, ...]
+    swapw swapw.2 assert_eqw
+
+    # arrange the output
+    # (15 cycles)
+    # [d, i, V, K, R, ...]
+    swapw movupw.2 movupw.2 movup.12 movup.13
+end
