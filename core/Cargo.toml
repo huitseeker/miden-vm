@@ -20,11 +20,11 @@ default = ["std"]
 std = ["math/std", "winter-utils/std"]
 
 [dependencies]
-math = { package = "winter-math", version = "0.6", default-features = false }
-crypto = { package = "miden-crypto", version = "0.2", default-features = false }
-winter-crypto = { package = "winter-crypto", version = "0.6", default-features = false }
-winter-utils = { package = "winter-utils", version = "0.6", default-features = false }
+math = { git = "https://github.com/frisitano/winterfell.git", branch = "no-std-fix", package = "winter-math", version = "0.6", default-features = false }
+crypto = { git = "https://github.com/0xPolygonMiden/crypto.git", branch = "no-std-fix-git", package = "miden-crypto", version = "0.2", default-features = false }
+winter-crypto = { git = "https://github.com/frisitano/winterfell.git", branch = "no-std-fix", package = "winter-crypto", version = "0.6", default-features = false }
+winter-utils = { git = "https://github.com/frisitano/winterfell.git", branch = "no-std-fix", package = "winter-utils", version = "0.6", default-features = false }
 
 [dev-dependencies]
 proptest = "1.1"
-rand_utils = { version = "0.6", package = "winter-rand-utils" }
+rand_utils = { git = "https://github.com/frisitano/winterfell.git", branch = "no-std-fix", version = "0.6", package = "winter-rand-utils" }
