@@ -59,15 +59,14 @@ pub(super) fn hash(span: &mut SpanBuilder) -> Result<Option<CodeBlock>, Assembly
 /// elements of the stack.
 ///
 /// To perform the operation, we do the following:
-/// 1. Prepare the stack with 12 elements for HPERM by pushing 4 more elements for the capacity,
-///    then reordering so the stack looks like [A, B, C, ...] where C is the capacity. All capacity
-///    elements are set to ZERO, in accordance with the RPO padding rule for when the input length
-///    is a multiple of the rate.
-/// 2. Reorder the top 2 words to restore the order of the elements to be hashed to [B, A, C, ...].
-/// 3. Append the HPERM operation, which performs a permutation of Rescue Prime Optimized on the
-///    top 12 elements and leaves an output of [F, E, D, ...] on the stack. E is our 2-to-1 hash
-///    result.
-/// 4. Drop F and D to return our result [E, ...].
+/// 1. Prepare the stack with 12 elements for HPERM by pushing 4 more elements for the capacity, so
+///    the stack looks like [C, B, A, ...] where A is the capacity. All capacity elements are set
+///    to ZERO, in accordance with the RPO padding rule for when the input length is a multiple of
+///    the rate.
+/// 2. Append the HPERM operation, which performs a permutation of Rescue Prime Optimized on the
+///    top 12 elements and leaves an output of [C', B', A', ...] on the stack. B' is our 2-to-1
+///    hash result.
+/// 3. Drop C' and A' to return our result [B', ...].
 ///
 /// This operation takes 16 VM cycles.
 pub(super) fn hmerge(span: &mut SpanBuilder) -> Result<Option<CodeBlock>, AssemblyError> {
