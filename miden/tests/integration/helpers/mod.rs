@@ -5,6 +5,7 @@ use proptest::prelude::*;
 use stdlib::StdLibrary;
 pub use vm_core::{
     crypto::merkle::MerkleStore, stack::STACK_TOP_SIZE, Felt, FieldElement, Program, StackOutputs,
+    StarkField,
 };
 
 pub mod crypto;
@@ -90,10 +91,8 @@ impl Test {
     /// Builds a final stack from the provided stack-ordered array and asserts that executing the
     /// test will result in the expected final stack state.
     pub fn expect_stack(&self, final_stack: &[u64]) {
-        let expected = convert_to_stack(final_stack);
         let result = self.get_last_stack_state();
-
-        assert_eq!(expected, result);
+        assert_eq!(stack_to_size(final_stack), stack_to_int(&result));
     }
 
     /// Executes the test and validates that the process memory has the elements of `expected_mem`
@@ -130,10 +129,8 @@ impl Test {
         &self,
         final_stack: &[u64],
     ) -> Result<(), proptest::test_runner::TestCaseError> {
-        let expected = convert_to_stack(final_stack);
         let result = self.get_last_stack_state();
-
-        prop_assert_eq!(expected, result);
+        prop_assert_eq!(stack_to_size(final_stack), stack_to_int(&result));
 
         Ok(())
     }
@@ -205,13 +202,14 @@ impl Test {
 // HELPER FUNCTIONS
 // ================================================================================================
 
-/// Takes an array of u64 values and builds a stack, preserving their order and converting them to
-/// field elements.
-pub fn convert_to_stack(values: &[u64]) -> [Felt; STACK_TOP_SIZE] {
-    let mut result = [Felt::ZERO; STACK_TOP_SIZE];
-    for (&value, result) in values.iter().zip(result.iter_mut()) {
-        *result = Felt::new(value);
-    }
+/// Converts an array of Felts into u64
+pub fn stack_to_int(values: &[Felt]) -> Vec<u64> {
+    values.iter().map(|e| (*e).as_int()).collect()
+}
+
+pub fn stack_to_size(values: &[u64]) -> Vec<u64> {
+    let mut result: Vec<u64> = values.iter().cloned().collect();
+    result.resize(STACK_TOP_SIZE, 0);
     result
 }
 
