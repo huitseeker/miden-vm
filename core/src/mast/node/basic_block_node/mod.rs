@@ -10,6 +10,8 @@ use crate::{
     mast::{DecoratorId, MastForest, MastForestError},
 };
 
+pub mod csr;
+
 mod op_batch;
 pub use op_batch::OpBatch;
 use op_batch::OpBatchAccumulator;

@@ -7,7 +7,7 @@ use core::{
     fmt, mem,
     ops::{Index, IndexMut},
 };
-mod node;
+pub mod node;
 pub use node::{
     BasicBlockNode, CallNode, DynNode, ExternalNode, JoinNode, LoopNode, MastNode, MastNodeExt,
     OP_BATCH_SIZE, OP_GROUP_SIZE, OpBatch, OperationOrDecorator, SplitNode,

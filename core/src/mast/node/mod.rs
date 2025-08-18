@@ -1,4 +1,4 @@
-mod basic_block_node;
+pub mod basic_block_node;
 use alloc::{boxed::Box, vec::Vec};
 use core::fmt;
 
