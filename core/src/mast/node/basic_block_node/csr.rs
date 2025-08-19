@@ -1,44 +1,45 @@
 use alloc::vec::Vec;
 use std::ops::Index;
 
+use num_traits::Euclid;
 use thiserror::Error;
 
-/// Simplified CSR format sparse matrix, which assumes the non-zero elements are slanted left, that
-/// is rows contain an initial prefix in an all-dense representation, followed by an all-zero
-/// suffix.
+/// Compressed Sparse Row (CSR) format sparse matrix with the constraint that each row
+/// has an initial dense prefix followed by a zero suffix. This optimization assumes
+/// non-zero elements are stored contiguously at the start of each row.
 ///
-/// We follow the names used by scipy.
-/// Detailed explanation here: <https://stackoverflow.com/questions/52299420/scipy-csr-matrix-understand-indptr>
+/// Uses scipy-style naming convention:
+/// - `data`: Non-zero values in row-major order
+/// - `indptr`: Row pointers indicating where each row starts in `data`
+/// - `cols`: Number of columns in the matrix
 ///
-/// We aim to use this with: cols == GROUP_SIZE and rows == BATCH_SIZE
+/// This format is optimized for matrices where non-zero elements appear
+/// contiguously in the first columns of each row.
+// To represent an OpBatch, should be used with # cols = GROUP_SIZE, # rows = BATCH_SIZE
 #[derive(Debug)]
 pub struct SparseMatrix<F: Default> {
-    /// all non-zero values in the matrix
+    /// Non-zero values in row-major order
     pub data: Vec<F>,
-    /// row information: indptr contains indexes into `self.data`` such that
-    /// row i 's non-zero values are in `self.data[self.indptr[i]..self.indptr[i+1]]`
-    //  should be serialized as a [u8; BATCH_SIZE + 1] since the maximal index is 72
+    /// Row pointers: `indptr[i]` is the starting index of row `i` in `data`,
+    /// and `indptr[i+1]` is the ending index (exclusive). Row `i`'s data spans
+    /// `data[indptr[i]..indptr[i+1]]`.
+    // should be serialized as [u8; BATCH_SIZE + 1] since the max value is 72
     pub indptr: Vec<usize>,
-    /// number of columns
-    // should be serialized as a u8
+    /// Number of columns in the matrix
     pub cols: usize,
     #[doc(hidden)]
-    /// A copy of F::default for the Index trait
+    /// A copy of F::default (for the Index trait)
     _default: F,
 }
 
 #[derive(Error, Debug)]
 pub enum SparseMatrixError {
-    #[error("column index out of bounds (max {1}): {0}")]
-    ColOutOfBounds(usize, usize),
-    #[error("cannot comply with column index {1}: would break dense prefix for row {0}")]
-    IndexedInsertionError(usize, usize),
     #[error("Cannot insert at row {0}, row is full.")]
     FullRow(usize),
 }
 
 impl<F: Default> SparseMatrix<F> {
-    /// 0x0 empty matrix
+    /// Creates a new empty 0x0 matrix
     pub fn empty() -> Self {
         Self {
             data: vec![],
@@ -57,33 +58,38 @@ impl<F: Default> SparseMatrix<F> {
         }
     }
 
-    /// Add a new empty row to the matrix
+    /// Adds a new empty row to the matrix
     fn add_row(&mut self) {
         let current_len = self.data.len();
         self.indptr.push(current_len);
     }
 
-    /// number of non-zero entries
+    /// Returns the number of non-zero entries
     pub fn len(&self) -> usize {
         *self.indptr.last().unwrap()
     }
 
-    /// empty matrix
+    /// Returns `true` if the matrix is empty
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
+    /// Returns the number of rows in the matrix
     pub fn num_rows(&self) -> usize {
         self.indptr.len() - 1
     }
 
+    /// Returns the number of columns in the matrix
     pub fn num_cols(&self) -> usize {
         self.cols
     }
 }
 
 impl<F: Default + Copy> SparseMatrix<F> {
-    /// Get the element at (row, col), returning F::default() if not found
+    /// Returns the element at `(row, col)`, or `F::default()` if the element is zero
+    ///
+    /// For a given row, elements with `col < row_dense_len` are stored in `data`,
+    /// while elements with `col >= row_dense_len` implicitly return the default value.
     pub fn get(&self, row: usize, col: usize) -> F {
         let row_start = self.indptr[row];
         let row_end = self.indptr[row + 1];
@@ -98,59 +104,12 @@ impl<F: Default + Copy> SparseMatrix<F> {
     }
 }
 impl<F: Default + PartialEq + Copy> SparseMatrix<F> {
-    /// Set the element at (row, col)
-    /// The insertion must respect the invariant that each row has a dense prefix,
-    /// otherwise the operation returns an Error.
-    /// If successful, returns the old value or None if was zero.
-    pub fn set(
-        &mut self,
-        row: usize,
-        col: usize,
-        value: F,
-    ) -> Result<Option<F>, SparseMatrixError> {
-        if col > self.num_cols() {
-            return Err(SparseMatrixError::ColOutOfBounds(col, self.num_cols()));
-        }
-
-        // Ensure we have enough rows
-        while self.num_rows() <= row {
-            self.add_row();
-        }
-
-        let row_start = self.indptr[row];
-        let row_end = self.indptr[row + 1];
-        let row_dense_len = row_end - row_start;
-
-        if col == row_dense_len {
-            // insertion in the zero suffix
-            // Add new element if not zero
-            if value != F::default() {
-                self.insert_element_at(row, row_end, value);
-                Ok(None)
-            } else {
-                Ok(None)
-            }
-        } else if col > row_dense_len {
-            // Insertion strictly past the dense boundary
-            Err(SparseMatrixError::IndexedInsertionError(row, col))
-        } else {
-            // insertion in the dense prefix
-            let abs_pos = row_start + col;
-            let old_value = self.data[abs_pos];
-            // If setting to zero, remove the element
-            if value == F::default() {
-                self.remove_element_at(row, abs_pos);
-                Ok(Some(old_value))
-            } else {
-                self.data[abs_pos] = value;
-                Ok(Some(old_value))
-            }
-        }
-    }
-
-    /// Insert an element at the dense end of a row
-    /// Returns an Error if the row is full. If the insertion succeeds, returns the column index
-    /// of the newly inserted element.
+    /// Inserts a value at the dense end of a specified row
+    ///
+    /// Returns the column index where the element was inserted, or `SparseMatrixError::FullRow`
+    /// if the row has no more space for non-zero elements.
+    ///
+    /// Zero values are not stored in the matrix but still consume a column position.
     pub fn insert(&mut self, row: usize, value: F) -> Result<usize, SparseMatrixError> {
         // Ensure we have enough rows
         while self.num_rows() <= row {
@@ -171,7 +130,7 @@ impl<F: Default + PartialEq + Copy> SparseMatrix<F> {
         Ok(row_dense_len)
     }
 
-    /// Insert a new element at the specified absolute position
+    // Inserts a non-zero element at the specified absolute position in the data vector
     fn insert_element_at(&mut self, row: usize, abs_pos: usize, value: F) {
         // check we insert in the correct row, or extend it
         debug_assert!(self.indptr[row] <= abs_pos);
@@ -186,23 +145,8 @@ impl<F: Default + PartialEq + Copy> SparseMatrix<F> {
         }
     }
 
-    /// Remove an element at the specified absolute position
-    fn remove_element_at(&mut self, row: usize, abs_pos: usize) {
-        // check we remove in the correct row, or shrink it
-        debug_assert!(self.indptr[row] <= abs_pos);
-        debug_assert!(self.indptr[row + 1] > abs_pos);
-
-        // Remove from data and indices
-        self.data.remove(abs_pos);
-
-        // Update indptr for all subsequent rows
-        for i in (row + 1)..self.indptr.len() {
-            self.indptr[i] -= 1;
-        }
-    }
-
-    /// returns an iterator over non-zero values
-    pub fn nnz_iter(&self) -> NonZeroIter<'_, F> {
+    /// Returns an iterator over non-zero elements as `(row, col, value)` tuples
+    pub fn iter_nonzero(&self) -> NonZeroIter<'_, F> {
         NonZeroIter {
             matrix: self,
             row: 0,
@@ -211,14 +155,9 @@ impl<F: Default + PartialEq + Copy> SparseMatrix<F> {
         }
     }
 
-    /// Iterator over all matrix elements (including zeros) in row-major order
+    /// Returns an iterator over all matrix elements (including zeros) in row-major order
     pub fn iter_dense(&self) -> DenseIter<'_, F> {
         DenseIter::new(self)
-    }
-
-    /// Iterator over non-zero elements with (row, col, value)
-    pub fn iter_nonzero(&self) -> NonZeroIter<'_, F> {
-        self.nnz_iter()
     }
 }
 
@@ -285,7 +224,7 @@ impl<'a, F: Copy + Default> Iterator for DenseIter<'a, F> {
     }
 }
 
-/// Iterator for sparse matrix (non-zero elements with row/column indices, i.e. C)) format)
+/// Iterator for sparse matrix (non-zero elements with row/column indices, i.e. COO format)
 #[derive(Debug)]
 pub struct NonZeroIter<'a, F: Copy + Default + PartialEq> {
     matrix: &'a SparseMatrix<F>,
@@ -317,7 +256,7 @@ impl<'a, F: Copy + Default + PartialEq> Iterator for NonZeroIter<'a, F> {
     }
 }
 
-impl<F: Copy + Default + PartialEq> std::ops::Index<usize> for SparseMatrix<F> {
+impl<F: Copy + Default + PartialEq> Index<usize> for SparseMatrix<F> {
     type Output = F;
 
     fn index(&self, index: usize) -> &Self::Output {
@@ -328,9 +267,7 @@ impl<F: Copy + Default + PartialEq> std::ops::Index<usize> for SparseMatrix<F> {
         if rows == 0 || cols == 0 {
             return &self._default;
         }
-
-        let row = index / cols;
-        let col = index % cols;
+        let (row, col) = index.div_rem_euclid(&cols);
 
         // Handle case where index is out of bounds
         if row >= rows {
