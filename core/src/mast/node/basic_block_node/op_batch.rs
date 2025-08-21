@@ -175,8 +175,7 @@ impl OpBatchAccumulator {
         self.group_idx = self.next_group_idx;
         self.next_group_idx = self.group_idx + 1;
 
-        let target_rows = self.ops.num_rows().next_power_of_two();
-        while self.ops.num_rows() < target_rows {
+        while self.ops.num_rows() < BATCH_SIZE {
             self.ops.add_row();
         }
 
