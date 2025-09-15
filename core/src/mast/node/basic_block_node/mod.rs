@@ -135,7 +135,8 @@ impl BasicBlockNode {
     pub fn new_unsafe(operations: Vec<Operation>, decorators: DecoratorList, digest: Word) -> Self {
         assert!(!operations.is_empty());
         let op_batches = batch_ops(operations);
-        Self { op_batches, digest, decorators }
+        let adjusted_decorators = Self::adjust_decorators(decorators, &op_batches);
+        Self { op_batches, digest, decorators: adjusted_decorators }
     }
 
     /// Returns a new [`BasicBlockNode`] instantiated with the specified operations and decorators.
@@ -551,16 +552,17 @@ pub(crate) fn validate_decorators(operations_len: usize, decorators: &DecoratorL
 // a [`DecoratorList`] is a sequence of (op_idx, decorator_id) tuples such that the op_idx
 // can extend up to and including the length of the operations list it is meant to index into.
 // This is historical behavior meant to allow executing a decorator at the end of a basic block.
+/// Tracks the cumulative padding offsets for decorator position adjustment
 #[doc(hidden)]
-struct DecoratorPaddingOffsets(Vec<usize>);
+pub struct DecoratorPaddingOffsets(Vec<usize>);
 
 impl DecoratorPaddingOffsets {
     // Takes a sequence of op_batches including padding and returns a vector of the same length as
     // the input sequence of operation, where each element counts the number of padding noops
     // encountered since the start of the sequence.
     #[must_use]
-    #[doc(hidden)]
-    fn new(op_batches: &[OpBatch]) -> Self {
+    /// Create a new DecoratorPaddingOffsets from operation batches
+    pub fn new(op_batches: &[OpBatch]) -> Self {
         // we build a sequence of per-op padding flags (0 if *not* a padding op, 1 if so)
         let paddings = op_batches.iter().flat_map(|batch| {
             (0..batch.num_groups()).flat_map(|group_idx| {
