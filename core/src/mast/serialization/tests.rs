@@ -408,3 +408,249 @@ fn mast_forest_serialize_deserialize_advice_map() {
     let parsed = MastForest::read_from_bytes(&forest.to_bytes()).unwrap();
     assert_eq!(forest.advice_map, parsed.advice_map);
 }
+
+// ================================================================================
+// Decorator Offset Serialization Tests
+// ================================================================================
+
+/// Test that demonstrates decorator offset calculation issues during operation padding.
+///
+/// This test reveals a bug where decorator offsets are not properly adjusted when operations
+/// are padded during the batch_ops process. The decorator that was originally at index 3
+/// ends up at the wrong position after serialization/deserialization.
+#[test]
+fn decorator_offset_mismatch_after_padding() {
+    // Operations that will trigger padding (GROUP_SIZE = 9, so 17 operations = 2 batches)
+    let operations = vec![
+        Operation::Add,
+        Operation::Push(ONE),
+        Operation::Mul,
+        Operation::Push(Felt::new(42)),    // Decorator at index 3
+        Operation::Drop,
+        Operation::Swap,
+        Operation::Eq,
+        Operation::Not,
+        Operation::And,
+        Operation::Push(Felt::new(100)),
+        Operation::Swap,
+        Operation::Eq,
+        Operation::Not,
+        Operation::And,
+        Operation::Push(Felt::new(200)),
+        Operation::Swap,
+        Operation::Eq,
+    ];
+
+    let mut original_forest = MastForest::new();
+
+    // Add decorator at operation index 3 (before padding)
+    let decorators = vec![(3, Decorator::Trace(123))];
+    let node_id = original_forest.add_block_with_raw_decorators(operations, decorators).unwrap();
+    original_forest.make_root(node_id);
+
+    // Serialize and deserialize
+    let serialized_bytes = original_forest.to_bytes();
+    let mut reader = crate::utils::SliceReader::new(&serialized_bytes);
+    let deserialized_forest = MastForest::read_from(&mut reader).unwrap();
+
+    let deserialized_node_id = deserialized_forest.procedure_roots()[0];
+    let original_block = &original_forest[node_id];
+    let deserialized_block = &deserialized_forest[deserialized_node_id];
+
+    // Both blocks should be basic blocks for this test
+    let original_block = match original_block {
+        crate::mast::MastNode::Block(block) => block,
+        _ => panic!("Expected basic block node"),
+    };
+    let deserialized_block = match deserialized_block {
+        crate::mast::MastNode::Block(block) => block,
+        _ => panic!("Expected basic block node"),
+    };
+
+    // The decorator index should be preserved after round-trip serialization
+    // This assertion will fail due to the decorator offset bug
+    assert_eq!(
+        original_block.decorators(),
+        deserialized_block.decorators(),
+        "Decorator indices should match after round-trip serialization"
+    );
+}
+
+/// Test that demonstrates invalid decorator ID references after deserialization.
+///
+/// This test reveals a bug where deserialization creates invalid decorator ID references
+/// that point to decorators that don't exist in the deserialized forest.
+#[test]
+fn invalid_decorator_id_references_after_deserialization() {
+    // Create operations that will be padded during batch processing
+    let operations = vec![
+        Operation::Push(ONE),
+        Operation::Add,
+        Operation::Mul,
+        Operation::Drop,
+        Operation::Push(Felt::new(42)),
+        Operation::Swap,
+        Operation::Eq,
+        Operation::Not,
+        Operation::And,    // Index 8 (last in first batch)
+        Operation::Push(Felt::new(100)),  // Index 9 (first in second batch)
+    ];
+
+    let mut original_forest = MastForest::new();
+
+    // Add decorators at positions that will be affected by padding
+    let decorators = vec![
+        (0, Decorator::Trace(0)),
+        (1, Decorator::Trace(1)),
+        (9, Decorator::Trace(2)),  // This decorator will be affected by padding
+    ];
+    let node_id = original_forest.add_block_with_raw_decorators(operations, decorators).unwrap();
+    original_forest.make_root(node_id);
+
+    // Check decorator count before serialization
+    let original_decorator_count = original_forest.decorators().len();
+    assert_eq!(original_decorator_count, 3, "Should have 3 decorators before serialization");
+
+    // Serialize and deserialize
+    let serialized_bytes = original_forest.to_bytes();
+    let mut reader = crate::utils::SliceReader::new(&serialized_bytes);
+    let deserialized_forest = MastForest::read_from(&mut reader).unwrap();
+
+    // Check decorator count after deserialization
+    let deserialized_decorator_count = deserialized_forest.decorators().len();
+    assert_eq!(
+        deserialized_decorator_count, original_decorator_count,
+        "Decorator count should match after deserialization"
+    );
+
+    let deserialized_node_id = deserialized_forest.procedure_roots()[0];
+    let deserialized_block = match &deserialized_forest[deserialized_node_id] {
+        crate::mast::MastNode::Block(block) => block,
+        _ => panic!("Expected basic block node"),
+    };
+
+    // All decorator IDs should be valid references within the deserialized forest
+    for (_, decorator_id) in deserialized_block.decorators().iter() {
+        let decorator_index = decorator_id.as_usize();
+        assert!(
+            decorator_index < deserialized_decorator_count,
+            "Invalid decorator ID {}: only {} decorators exist in forest",
+            decorator_index,
+            deserialized_decorator_count
+        );
+    }
+
+    // The decorator lists should be identical after round-trip serialization
+    let original_block = match &original_forest[node_id] {
+        crate::mast::MastNode::Block(block) => block,
+        _ => panic!("Expected basic block node"),
+    };
+
+    assert_eq!(
+        original_block.decorators(),
+        deserialized_block.decorators(),
+        "Decorator lists should be identical after round-trip serialization"
+    );
+}
+
+/// Test that demonstrates decorator padding offset calculation bug.
+///
+/// This test reveals a specific bug where decorator offset calculation during operation
+/// padding is incorrect. Expected adjustment is 3, but actual adjustment is 2.
+#[test]
+fn decorator_padding_offset_calculation_bug() {
+    // Operations that will cause padding in the middle
+    let operations = vec![
+        Operation::Add,
+        Operation::Mul,
+        Operation::Push(crate::ONE),    // This will cause padding
+        Operation::Push(crate::Felt::new(2)),
+        Operation::Drop,
+    ];
+
+    let mut mast_forest = MastForest::new();
+    let decorators = vec![
+        (0, Decorator::Trace(0)),      // Should remain at position 0
+        (2, Decorator::Trace(1)),      // Should be adjusted to position 3 due to padding
+        (4, Decorator::Trace(2)),      // Should be adjusted to position 5 due to padding
+    ];
+
+    let block = crate::mast::BasicBlockNode::new_with_raw_decorators(
+        operations,
+        decorators,
+        &mut mast_forest,
+    ).unwrap();
+
+    // Check that decorators are properly adjusted
+    let adjusted_decorators: Vec<_> = block.decorators().iter().collect();
+
+    // Before padding: positions [0, 2, 4]
+    // After padding with one NOOP after Push: positions should be [0, 3, 5]
+    assert_eq!(adjusted_decorators.len(), 3);
+    assert_eq!(adjusted_decorators[0].0, 0);  // No adjustment needed
+    assert_eq!(adjusted_decorators[1].0, 3);  // Adjusted by 1 due to padding
+    assert_eq!(adjusted_decorators[2].0, 5);  // Adjusted by 1 due to padding
+}
+
+/// Test that demonstrates invalid MAST decorator ID after serialization/deserialization.
+///
+/// This test reveals a bug where deserialization creates invalid decorator ID references
+/// that point to decorators that don't exist in the deserialized forest.
+#[test]
+fn invalid_mast_decorator_id_after_deserialization() {
+    // Test case from roundtrip_test.rs that was failing
+    let operations = vec![
+        Operation::Add,
+        Operation::Push(crate::ONE),
+        Operation::Mul,
+        Operation::Push(crate::Felt::new(42)),
+        Operation::Drop,
+        Operation::MovDn2,
+        Operation::Pad,
+        Operation::Swap,
+        Operation::Dup1,
+    ];
+
+    let mut mast_forest = MastForest::new();
+    let decorators = vec![
+        (0, Decorator::Trace(0)),      // Before first operation (should be adjusted for padding)
+        (1, Decorator::Trace(1)),      // After Push(ONE)
+        (4, Decorator::Trace(2)),      // After Drop (affected by padding)
+        (9, Decorator::Trace(3)),      // After last operation
+    ];
+
+    // Create the original BasicBlockNode
+    let original_block = crate::mast::BasicBlockNode::new_with_raw_decorators(
+        operations.clone(),
+        decorators.clone(),
+        &mut mast_forest,
+    ).unwrap();
+
+    // Create a new MastForest with the original node
+    let mut serialized_forest = MastForest::new();
+    let original_node_id = serialized_forest.add_block(operations.clone(), Some(
+        decorators.iter().map(|(idx, dec)| (*idx, mast_forest.add_decorator(dec.clone()).unwrap())).collect()
+    )).unwrap();
+
+    serialized_forest.make_root(original_node_id);
+
+    // Serialize the MastForest
+    let serialized_bytes = serialized_forest.to_bytes();
+
+    // Deserialize
+    let mut reader = crate::utils::SliceReader::new(&serialized_bytes);
+    let deserialized_forest = MastForest::read_from(&mut reader).unwrap();
+    let deserialized_node_id = deserialized_forest.procedure_roots()[0];
+    let deserialized_block = match &deserialized_forest[deserialized_node_id] {
+        crate::mast::MastNode::Block(block) => block.clone(),
+        _ => panic!("Expected basic block node"),
+    };
+
+    // The decorator lists should be identical after round-trip serialization
+    // This assertion will fail due to the decorator ID mapping bug
+    assert_eq!(
+        original_block.decorators(),
+        deserialized_block.decorators(),
+        "Decorator lists should be identical after round-trip serialization"
+    );
+}
