@@ -108,7 +108,6 @@ impl Serializable for MastForest {
         // Set up "before enter" and "after exit" decorators by `MastNodeId`
         let mut before_enter_decorators: Vec<(usize, Vec<DecoratorId>)> = Vec::new();
         let mut after_exit_decorators: Vec<(usize, Vec<DecoratorId>)> = Vec::new();
-
         let mut basic_block_decorators: Vec<(usize, Vec<DecoratedOpLink>)> = Vec::new();
 
         // magic & version
@@ -269,7 +268,11 @@ impl Deserializable for MastForest {
 
             match &mut mast_forest[node_id] {
                 MastNode::Block(basic_block) => {
-                    basic_block.set_decorators(decorator_list);
+                    basic_block.set_decorators(decorator_list.clone());
+                    // Also populate the block_decorators field in the forest, but only if there are decorators
+                    if !decorator_list.is_empty() {
+                        mast_forest.block_decorators.insert(node_id, decorator_list);
+                    }
                 },
                 other => {
                     return Err(DeserializationError::InvalidValue(format!(
