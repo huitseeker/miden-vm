@@ -64,6 +64,10 @@ pub struct MastForest {
     /// All the decorators included in the MAST forest.
     decorators: Vec<Decorator>,
 
+    /// Operation-indexed decorators for basic blocks, hoisted from BasicBlockNode
+    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "BTreeMap::is_empty"))]
+    block_decorators: BTreeMap<MastNodeId, Vec<(usize, DecoratorId)>>,
+
     /// Advice map to be loaded into the VM prior to executing procedures from this MAST forest.
     advice_map: AdviceMap,
 
@@ -114,14 +118,45 @@ impl MastForest {
         Ok(new_node_id)
     }
 
-    /// Adds a basic block node to the forest, and returns the [`MastNodeId`] associated with it.
+    /// Creates a basic block node and adds it to the forest with proper decorator handling.
+    /// This method intercepts decorators before block creation, creates the block, then uses
+    /// the decorator information along with operation offsets from the created block to populate
+    /// the block_decorators field.
     pub fn add_block(
         &mut self,
         operations: Vec<Operation>,
         decorators: DecoratorList,
     ) -> Result<MastNodeId, MastForestError> {
-        let block = BasicBlockNode::new(operations, decorators)?;
-        self.add_node(block)
+        let block = BasicBlockNode::new(operations, decorators.clone())?;
+        let adjusted_decorators = BasicBlockNode::adjust_decorators(decorators, block.op_batches());
+        let new_node_id = self.add_node(block)?;
+        if !adjusted_decorators.is_empty() {
+            self.block_decorators.insert(new_node_id, adjusted_decorators);
+        }
+        Ok(new_node_id)
+    }
+
+    /// Creates a basic block node from raw decorators and adds it to the forest with proper
+    /// decorator handling. This method intercepts decorators before block creation, creates the
+    /// block, then uses the decorator information along with operation offsets from the created
+    /// block to populate the block_decorators field.
+    #[cfg(test)]
+    pub fn add_block_with_raw_decorators(
+        &mut self,
+        operations: Vec<Operation>,
+        raw_decorators: Vec<(usize, Decorator)>,
+    ) -> Result<MastNodeId, MastForestError> {
+        let mut decorator_list = Vec::new();
+        for (idx, decorator) in &raw_decorators {
+            decorator_list.push((*idx, self.add_decorator(decorator.clone())?));
+        }
+
+        let block = BasicBlockNode::new(operations, decorator_list.clone())?;
+        let adjusted_decorators =
+            BasicBlockNode::adjust_decorators(decorator_list, block.op_batches());
+        let new_node_id = self.add_node(block)?;
+        self.block_decorators.insert(new_node_id, adjusted_decorators);
+        Ok(new_node_id)
     }
 
     /// Adds a join node to the forest, and returns the [`MastNodeId`] associated with it.
@@ -230,6 +265,17 @@ impl MastForest {
             node.remove_decorators();
         }
         self.decorators.truncate(0);
+        self.block_decorators.clear();
+    }
+
+    /// Returns a reference to the block decorators mapping.
+    pub fn block_decorators(&self) -> &BTreeMap<MastNodeId, Vec<(usize, DecoratorId)>> {
+        &self.block_decorators
+    }
+
+    /// Returns a mutable reference to the block decorators mapping.
+    pub fn block_decorators_mut(&mut self) -> &mut BTreeMap<MastNodeId, Vec<(usize, DecoratorId)>> {
+        &mut self.block_decorators
     }
 
     /// Merges all `forests` into a new [`MastForest`].
@@ -285,20 +331,6 @@ impl MastForest {
         forests: impl IntoIterator<Item = &'forest MastForest>,
     ) -> Result<(MastForest, MastForestRootMap), MastForestError> {
         MastForestMerger::merge(forests)
-    }
-
-    /// Adds a basic block node to the forest, and returns the [`MastNodeId`] associated with it.
-    ///
-    /// It is assumed that the decorators have not already been added to the MAST forest. If they
-    /// were, they will be added again (and result in a different set of [`DecoratorId`]s).
-    #[cfg(test)]
-    pub fn add_block_with_raw_decorators(
-        &mut self,
-        operations: Vec<Operation>,
-        decorators: Vec<(usize, Decorator)>,
-    ) -> Result<MastNodeId, MastForestError> {
-        let block = BasicBlockNode::new_with_raw_decorators(operations, decorators, self)?;
-        self.add_node(block)
     }
 }
 
@@ -830,4 +862,8 @@ pub enum MastForestError {
     ChildFingerprintMissing(MastNodeId),
     #[error("advice map key {0} already exists when merging forests")]
     AdviceMapKeyCollisionOnMerge(Word),
+    #[error(
+        "BasicBlockNode has no access to decorator information, has it been inserted with its operation-indexed decorators in a MastForest?"
+    )]
+    UnlinkedBlock,
 }

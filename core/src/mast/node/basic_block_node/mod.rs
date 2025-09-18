@@ -132,7 +132,7 @@ impl BasicBlockNode {
     //
     // IOW this makes its `decorators` padding-aware, or equivalently "adds" the padding to these
     // decorators
-    fn adjust_decorators(decorators: DecoratorList, op_batches: &[OpBatch]) -> DecoratorList {
+    pub fn adjust_decorators(decorators: DecoratorList, op_batches: &[OpBatch]) -> DecoratorList {
         let padding_offsets = DecoratorPaddingOffsets::new(op_batches);
         decorators
             .into_iter()

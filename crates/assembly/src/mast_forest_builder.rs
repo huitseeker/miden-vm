@@ -432,10 +432,39 @@ impl MastForestBuilder {
         operations: Vec<Operation>,
         decorators: DecoratorList,
     ) -> Result<MastNodeId, Report> {
-        let block = BasicBlockNode::new(operations, decorators)
+        // Create the basic block node first to compute its fingerprint
+        let block = BasicBlockNode::new(operations.clone(), decorators.clone())
             .into_diagnostic()
             .wrap_err("assembler failed to add new basic block node")?;
-        self.ensure_node(block)
+
+        // Compute the fingerprint for this block
+        let block_node: MastNode = block.clone().into();
+        let block_fingerprint = self.fingerprint_for_node(&block_node);
+
+        // Check if a node with this fingerprint already exists
+        if let Some(&node_id) = self.node_id_by_fingerprint.get(&block_fingerprint) {
+            // Node already exists in the forest; return previously assigned id
+            Ok(node_id)
+        } else {
+            // Node doesn't exist yet, add it using the generic add_node method
+            let new_node_id = self
+                .mast_forest
+                .add_node(MastNode::Block(block.clone()))
+                .into_diagnostic()
+                .wrap_err("assembler failed to add new basic block node")?;
+
+            // Manually populate the block_decorators field to ensure proper serialization
+            if !decorators.is_empty() {
+                let adjusted_decorators = BasicBlockNode::adjust_decorators(decorators.clone(), &block.op_batches());
+                self.mast_forest.block_decorators_mut().insert(new_node_id, adjusted_decorators);
+            }
+
+            // Update the fingerprint maps for the new node
+            self.node_id_by_fingerprint.insert(block_fingerprint, new_node_id);
+            self.hash_by_node_id.insert(new_node_id, block_fingerprint);
+
+            Ok(new_node_id)
+        }
     }
 
     /// Adds a join node to the forest, and returns the [`MastNodeId`] associated with it.
@@ -805,5 +834,132 @@ mod tests {
 
         // Verify we found exactly 5 trace values
         assert_eq!(found_traces.len(), 5, "Should have found exactly 5 trace values");
+    }
+
+    /// Tests that ensure_block correctly handles both existing and new BasicBlock nodes.
+    ///
+    /// This test verifies the invariant:
+    /// - If the BasicBlock has already been added to the MastForest, it should be unchanged
+    /// - If the node has not yet been added to the MastForest, the BasicBlockNode should get added
+    ///   to the MastForest AND its decorators populated in `block_decorators`
+    #[test]
+    fn test_ensure_block_decorator_invariant() {
+        let mut builder = MastForestBuilder::new(&[]).unwrap();
+
+        // Create operations and decorators for a basic block
+        let operations = vec![
+            Operation::Push(Felt::new(1)),
+            Operation::Add,
+        ];
+
+        // Create decorators
+        let decorator1 = builder.ensure_decorator(Decorator::Trace(1)).unwrap();
+        let decorator2 = builder.ensure_decorator(Decorator::Trace(2)).unwrap();
+        let decorators = vec![
+            (0, decorator1), // Decorator for Push(1)
+            (1, decorator2), // Decorator for Add
+        ];
+
+        // First call to ensure_block - should create a new node and populate block_decorators
+        let block_id1 = builder.ensure_block(operations.clone(), decorators.clone()).unwrap();
+
+        // Verify the block was added to the forest
+        assert!(builder.mast_forest.get_node_by_id(block_id1).is_some());
+
+        // Verify that block_decorators was populated for the new block
+        assert!(builder.mast_forest.block_decorators().contains_key(&block_id1));
+
+        // Verify the decorators in block_decorators
+        let block_decorators = &builder.mast_forest.block_decorators()[&block_id1];
+        assert_eq!(block_decorators.len(), 2);
+
+        // Verify decorator at operation index 0 points to Trace(1)
+        let dec1_id = block_decorators.iter().find(|(op_idx, _)| *op_idx == 0).unwrap().1;
+        let dec1 = builder.mast_forest.get_decorator_by_id(dec1_id).unwrap();
+        assert_eq!(dec1, &Decorator::Trace(1));
+
+        // Verify decorator at operation index 1 points to Trace(2)
+        let dec2_id = block_decorators.iter().find(|(op_idx, _)| *op_idx == 1).unwrap().1;
+        let dec2 = builder.mast_forest.get_decorator_by_id(dec2_id).unwrap();
+        assert_eq!(dec2, &Decorator::Trace(2));
+
+        // Second call to ensure_block with the same operations and decorators
+        // Should return the same node ID (due to fingerprinting)
+        let block_id2 = builder.ensure_block(operations.clone(), decorators.clone()).unwrap();
+
+        // Verify it returns the same ID
+        assert_eq!(block_id1, block_id2);
+
+        // Verify block_decorators is unchanged (no duplicate entry)
+        assert_eq!(builder.mast_forest.block_decorators().len(), 1);
+        assert!(builder.mast_forest.block_decorators().contains_key(&block_id1));
+
+        // Third call to ensure_block with different operations - should create a new node
+        let different_operations = vec![Operation::Push(Felt::new(42))];
+        let different_decorator = builder.ensure_decorator(Decorator::Trace(99)).unwrap();
+        let different_decorators = vec![(0, different_decorator)];
+
+        let block_id3 = builder.ensure_block(different_operations, different_decorators).unwrap();
+
+        // Verify it's a different ID
+        assert_ne!(block_id1, block_id3);
+
+        // Verify we now have entries for both blocks in block_decorators
+        assert_eq!(builder.mast_forest.block_decorators().len(), 2);
+        assert!(builder.mast_forest.block_decorators().contains_key(&block_id3));
+
+        // Verify the new block's decorator
+        let new_block_decorators = &builder.mast_forest.block_decorators()[&block_id3];
+        assert_eq!(new_block_decorators.len(), 1);
+        let new_dec_id = new_block_decorators.iter().find(|(op_idx, _)| *op_idx == 0).unwrap().1;
+        let new_dec = builder.mast_forest.get_decorator_by_id(new_dec_id).unwrap();
+        assert_eq!(new_dec, &Decorator::Trace(99));
+    }
+
+    /// Tests that ensure_block works correctly with no decorators
+    #[test]
+    fn test_ensure_block_no_decorators() {
+        let mut builder = MastForestBuilder::new(&[]).unwrap();
+
+        // Create operations without any decorators
+        let operations = vec![Operation::Push(Felt::new(1)), Operation::Add];
+        let decorators = vec![];
+
+        // Call ensure_block - should create a new node with no decorators in block_decorators
+        let block_id = builder.ensure_block(operations, decorators).unwrap();
+
+        // Verify the block was added to the forest
+        assert!(builder.mast_forest.get_node_by_id(block_id).is_some());
+
+        // Verify that block_decorators does NOT contain an entry for blocks with no decorators
+        assert!(!builder.mast_forest.block_decorators().contains_key(&block_id));
+    }
+
+    /// Tests that ensure_block maintains fingerprint consistency
+    #[test]
+    fn test_ensure_block_fingerprint_consistency() {
+        let mut builder1 = MastForestBuilder::new(&[]).unwrap();
+        let mut builder2 = MastForestBuilder::new(&[]).unwrap();
+
+        // Create identical operations and decorators for both builders
+        let operations = vec![Operation::Push(Felt::new(1)), Operation::Mul];
+        let decorator = builder1.ensure_decorator(Decorator::Trace(42)).unwrap();
+        // Add the same decorator to the second builder to ensure we get the same DecoratorId
+        let same_decorator = builder2.ensure_decorator(Decorator::Trace(42)).unwrap();
+        let decorators = vec![(0, decorator)];
+        let same_decorators = vec![(0, same_decorator)];
+
+        // Add blocks to both builders
+        let block_id1 = builder1.ensure_block(operations.clone(), decorators).unwrap();
+        let block_id2 = builder2.ensure_block(operations, same_decorators).unwrap();
+
+        // The blocks should be identical, but might have different IDs since they're in different
+        // forests
+        let block1 = builder1.mast_forest[block_id1].get_basic_block().unwrap().clone();
+        let block2 = builder2.mast_forest[block_id2].get_basic_block().unwrap().clone();
+
+        // The blocks should be functionally identical
+        assert_eq!(block1.op_batches(), block2.op_batches());
+        assert_eq!(block1.digest(), block2.digest());
     }
 }
