@@ -243,9 +243,24 @@ impl MastForest {
 
         let old_nodes = mem::take(&mut self.nodes);
         let old_root_ids = mem::take(&mut self.roots);
-        let (retained_nodes, id_remappings) = remove_nodes(old_nodes, nodes_to_remove);
+        let (retained_nodes, id_remappings, original_node_ids) =
+            remove_nodes(old_nodes, nodes_to_remove);
 
-        self.remap_and_add_nodes(retained_nodes, &id_remappings);
+        // Clean up block_decorators for removed nodes
+        self.block_decorators.retain(|&node_id, _| !nodes_to_remove.contains(&node_id));
+
+        // Remap block_decorators keys for nodes that were remapped
+        let mut remapped_block_decorators = BTreeMap::new();
+        for (old_node_id, decorators) in self.block_decorators.clone() {
+            if let Some(&new_node_id) = id_remappings.get(&old_node_id) {
+                remapped_block_decorators.insert(new_node_id, decorators);
+            } else {
+                remapped_block_decorators.insert(old_node_id, decorators);
+            }
+        }
+        self.block_decorators = remapped_block_decorators;
+
+        self.remap_and_add_nodes(retained_nodes, &id_remappings, &original_node_ids);
         self.remap_and_add_roots(old_root_ids, &id_remappings);
         id_remappings
     }
@@ -346,12 +361,13 @@ impl MastForest {
         &mut self,
         nodes_to_add: Vec<MastNode>,
         id_remappings: &BTreeMap<MastNodeId, MastNodeId>,
+        original_node_ids: &[MastNodeId],
     ) {
         assert!(self.nodes.is_empty());
 
         // Add each node to the new MAST forest, making sure to rewrite any outdated internal
         // `MastNodeId`s
-        for live_node in nodes_to_add {
+        for (i, live_node) in nodes_to_add.into_iter().enumerate() {
             match &live_node {
                 MastNode::Join(join_node) => {
                     let first_child =
@@ -394,7 +410,20 @@ impl MastForest {
                     }
                 },
                 MastNode::Block(_) | MastNode::Dyn(_) | MastNode::External(_) => {
-                    self.add_node(live_node).unwrap();
+                    let new_node_id = self.add_node(live_node).unwrap();
+
+                    // Handle block decorators remapping for merged blocks
+                    let node_index = i; // This should be the index in the nodes_to_add vector
+                    if node_index < original_node_ids.len() {
+                        let original_node_id = original_node_ids[node_index];
+                        // Check if this original node has decorators that need to be remapped
+                        if let Some(decorators) = self.block_decorators.get(&original_node_id) {
+                            // Only insert if there are actually decorators
+                            if !decorators.is_empty() {
+                                self.block_decorators.insert(new_node_id, decorators.clone());
+                            }
+                        }
+                    }
                 },
             }
         }
@@ -423,12 +452,13 @@ impl MastForest {
 fn remove_nodes(
     mast_nodes: Vec<MastNode>,
     nodes_to_remove: &BTreeSet<MastNodeId>,
-) -> (Vec<MastNode>, BTreeMap<MastNodeId, MastNodeId>) {
+) -> (Vec<MastNode>, BTreeMap<MastNodeId, MastNodeId>, Vec<MastNodeId>) {
     // Note: this allows us to safely use `usize as u32`, guaranteeing that it won't wrap around.
     assert!(mast_nodes.len() < u32::MAX as usize);
 
     let mut retained_nodes = Vec::with_capacity(mast_nodes.len());
     let mut id_remappings = BTreeMap::new();
+    let mut original_node_ids = Vec::with_capacity(mast_nodes.len());
 
     for (old_node_index, old_node) in mast_nodes.into_iter().enumerate() {
         let old_node_id: MastNodeId = MastNodeId(old_node_index as u32);
@@ -436,12 +466,13 @@ fn remove_nodes(
         if !nodes_to_remove.contains(&old_node_id) {
             let new_node_id: MastNodeId = MastNodeId(retained_nodes.len() as u32);
             id_remappings.insert(old_node_id, new_node_id);
+            original_node_ids.push(old_node_id);
 
             retained_nodes.push(old_node);
         }
     }
 
-    (retained_nodes, id_remappings)
+    (retained_nodes, id_remappings, original_node_ids)
 }
 
 // ------------------------------------------------------------------------------------------------
