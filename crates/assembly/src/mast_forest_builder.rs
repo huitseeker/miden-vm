@@ -419,6 +419,7 @@ impl MastForestBuilder {
                 .add_node(node)
                 .into_diagnostic()
                 .wrap_err("assembler failed to add new node")?;
+
             self.node_id_by_fingerprint.insert(node_fingerprint, new_node_id);
             self.hash_by_node_id.insert(new_node_id, node_fingerprint);
 
@@ -455,8 +456,11 @@ impl MastForestBuilder {
 
             // Manually populate the block_decorators field to ensure proper serialization
             if !decorators.is_empty() {
-                let adjusted_decorators = BasicBlockNode::adjust_decorators(decorators.clone(), &block.op_batches());
-                self.mast_forest.block_decorators_mut().insert(new_node_id, adjusted_decorators);
+                let adjusted_decorators =
+                    BasicBlockNode::adjust_decorators(decorators.clone(), block.op_batches());
+                self.mast_forest
+                    .block_decorators_mut()
+                    .insert(new_node_id, adjusted_decorators.clone());
             }
 
             // Update the fingerprint maps for the new node
@@ -847,10 +851,7 @@ mod tests {
         let mut builder = MastForestBuilder::new(&[]).unwrap();
 
         // Create operations and decorators for a basic block
-        let operations = vec![
-            Operation::Push(Felt::new(1)),
-            Operation::Add,
-        ];
+        let operations = vec![Operation::Push(Felt::new(1)), Operation::Add];
 
         // Create decorators
         let decorator1 = builder.ensure_decorator(Decorator::Trace(1)).unwrap();

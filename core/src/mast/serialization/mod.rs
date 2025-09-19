@@ -139,10 +139,11 @@ impl Serializable for MastForest {
                 let ops_offset = if let MastNode::Block(basic_block) = mast_node {
                     let ops_offset = basic_block_data_builder.encode_basic_block(basic_block);
 
-                    basic_block_decorators.push((
-                        mast_node_id,
-                        basic_block.indexed_decorator_iter().collect::<Vec<_>>(),
-                    ));
+                    // Get decorators from the block and add them to the basic_block_decorators list
+                    let node_id = MastNodeId(mast_node_id as u32);
+                    if let Some(decs) = self.block_decorators.get(&node_id) {
+                        basic_block_decorators.push((mast_node_id, decs.clone()));
+                    }
 
                     ops_offset
                 } else {
@@ -167,7 +168,6 @@ impl Serializable for MastForest {
         error_codes.write_into(target);
 
         // write all decorator data below
-
         let mut decorator_data_builder = DecoratorDataBuilder::new();
         for decorator in &self.decorators {
             decorator_data_builder.add_decorator(decorator)

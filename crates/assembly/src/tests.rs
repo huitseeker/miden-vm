@@ -12,6 +12,7 @@ use miden_core::{
     utils::{Deserializable, Serializable},
 };
 use miden_mast_package::{MastArtifact, MastForest, Package, PackageExport, PackageManifest};
+use pretty_assertions::{assert_eq, assert_ne};
 use proptest::{
     prelude::*,
     test_runner::{Config, TestRunner},
