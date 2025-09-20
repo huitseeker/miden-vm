@@ -16,8 +16,8 @@ begin
         debug(stack.4)
         asmOp(locaddr.0, 2)
         push(18446744069414584317)
-        debug(stack.4)
         fmpadd
+        debug(stack.4)
         debug(stack.4)
         asmOp(nop, 1)
         noop
@@ -29,6 +29,5 @@ begin
         drop
         push(18446744069414584317)
         fmpupdate
-        noop
     end
 end

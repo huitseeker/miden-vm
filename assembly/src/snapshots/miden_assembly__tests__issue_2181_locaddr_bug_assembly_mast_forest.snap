@@ -11,29 +11,18 @@ MastForest {
                         ops: [
                             Noop,
                         ],
-                        indptr: [
-                            0,
-                            1,
-                            0,
-                            0,
-                            0,
-                            0,
-                            0,
-                            0,
-                            0,
-                        ],
-                        padding: [
-                            false,
-                            false,
-                            false,
-                            false,
-                            false,
-                            false,
-                            false,
-                            false,
-                        ],
                         groups: [
                             0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                        ],
+                        op_counts: [
+                            1,
                             0,
                             0,
                             0,
@@ -99,28 +88,6 @@ MastForest {
                                 18446744069414584317,
                             ),
                             FmpUpdate,
-                            Noop,
-                        ],
-                        indptr: [
-                            0,
-                            9,
-                            9,
-                            9,
-                            9,
-                            9,
-                            15,
-                            15,
-                            16,
-                        ],
-                        padding: [
-                            false,
-                            false,
-                            false,
-                            false,
-                            false,
-                            false,
-                            false,
-                            true,
                         ],
                         groups: [
                             3778152553175003,
@@ -132,7 +99,17 @@ MastForest {
                             18446744069414584317,
                             0,
                         ],
-                        num_groups: 8,
+                        op_counts: [
+                            9,
+                            0,
+                            0,
+                            0,
+                            0,
+                            6,
+                            0,
+                            0,
+                        ],
+                        num_groups: 7,
                     },
                 ],
                 digest: Word(
@@ -175,7 +152,7 @@ MastForest {
                         ),
                     ),
                     (
-                        7,
+                        8,
                         DecoratorId(
                             1,
                         ),
@@ -222,7 +199,7 @@ MastForest {
                 location: Some(
                     Location {
                         uri: Uri(
-                            "test3906",
+                            "test3926",
                         ),
                         start: ByteIndex(
                             20,
@@ -248,7 +225,7 @@ MastForest {
                 location: Some(
                     Location {
                         uri: Uri(
-                            "test3906",
+                            "test3926",
                         ),
                         start: ByteIndex(
                             38,
@@ -269,7 +246,7 @@ MastForest {
                 location: Some(
                     Location {
                         uri: Uri(
-                            "test3906",
+                            "test3926",
                         ),
                         start: ByteIndex(
                             63,
@@ -290,7 +267,7 @@ MastForest {
                 location: Some(
                     Location {
                         uri: Uri(
-                            "test3906",
+                            "test3926",
                         ),
                         start: ByteIndex(
                             73,
@@ -311,7 +288,7 @@ MastForest {
                 location: Some(
                     Location {
                         uri: Uri(
-                            "test3906",
+                            "test3926",
                         ),
                         start: ByteIndex(
                             91,
@@ -332,7 +309,7 @@ MastForest {
                 location: Some(
                     Location {
                         uri: Uri(
-                            "test3906",
+                            "test3926",
                         ),
                         start: ByteIndex(
                             101,
@@ -353,7 +330,7 @@ MastForest {
                 location: Some(
                     Location {
                         uri: Uri(
-                            "test3906",
+                            "test3926",
                         ),
                         start: ByteIndex(
                             119,
@@ -374,7 +351,7 @@ MastForest {
                 location: Some(
                     Location {
                         uri: Uri(
-                            "test3906",
+                            "test3926",
                         ),
                         start: ByteIndex(
                             129,
@@ -395,7 +372,7 @@ MastForest {
                 location: Some(
                     Location {
                         uri: Uri(
-                            "test3906",
+                            "test3926",
                         ),
                         start: ByteIndex(
                             147,
@@ -416,7 +393,7 @@ MastForest {
                 location: Some(
                     Location {
                         uri: Uri(
-                            "test3906",
+                            "test3926",
                         ),
                         start: ByteIndex(
                             166,
@@ -437,7 +414,7 @@ MastForest {
                 location: Some(
                     Location {
                         uri: Uri(
-                            "test3906",
+                            "test3926",
                         ),
                         start: ByteIndex(
                             184,
@@ -458,7 +435,7 @@ MastForest {
                 location: Some(
                     Location {
                         uri: Uri(
-                            "test3906",
+                            "test3926",
                         ),
                         start: ByteIndex(
                             205,
