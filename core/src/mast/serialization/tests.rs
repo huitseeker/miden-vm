@@ -488,3 +488,81 @@ fn mast_forest_basic_block_serialization_no_decorator_duplication() {
     assert_eq!(all_decorators[1].1, op_deco, "Second decorator should be op-indexed");
     assert_eq!(all_decorators[2].1, after_exit_deco, "Third decorator should be after_exit");
 }
+
+/// Test for block_decorators with the same complexity as the assembly test
+#[test]
+fn block_decorators_complex_roundtrip() {
+    let mut forest = MastForest::new();
+
+    // Create decorators
+    let raw_deco0 = Decorator::Trace(0);
+    let raw_deco1 = Decorator::Trace(1);
+    let raw_deco2 = Decorator::Trace(2);
+    let raw_deco4 = Decorator::Trace(4);
+    let raw_deco5 = Decorator::Trace(5);
+    let raw_deco8 = Decorator::Trace(8);
+    let raw_deco9 = Decorator::Trace(9);
+    let raw_deco11 = Decorator::Trace(11);
+
+    // Block 0 with decorators - 4 operations
+    let operations0 =
+        vec![Operation::Pad, Operation::Incr, Operation::Push(Felt::new(2)), Operation::Add];
+    let raw_decorators0 =
+        vec![(0, raw_deco0.clone()), (2, raw_deco1.clone()), (3, raw_deco2.clone())];
+    forest.add_block_with_raw_decorators(operations0, raw_decorators0).unwrap();
+
+    // Block 1 with decorators - 4 operations
+    let operations1 = vec![
+        Operation::Push(Felt::new(1)),
+        Operation::Push(Felt::new(2)),
+        Operation::Mul,
+        Operation::Drop,
+    ];
+    let raw_decorators1 = vec![
+        (0, raw_deco5.clone()),
+        (3, raw_deco0.clone()),
+        (3, raw_deco1.clone()),
+        (3, raw_deco2.clone()),
+        (3, raw_deco4.clone()),
+    ];
+    forest.add_block_with_raw_decorators(operations1, raw_decorators1).unwrap();
+
+    // Block 2 with decorators
+    let operations2 = vec![Operation::U32sub, Operation::Mul];
+    let raw_decorators2 =
+        vec![(0, raw_deco8.clone()), (0, raw_deco9.clone()), (1, raw_deco11.clone())];
+    forest.add_block_with_raw_decorators(operations2, raw_decorators2).unwrap();
+
+    // Block 3 with decorators (same as block 1 for complexity) - 4 operations
+    let operations3 = vec![
+        Operation::Push(Felt::new(3)),
+        Operation::Push(Felt::new(4)),
+        Operation::Mul,
+        Operation::Drop,
+    ];
+    let raw_decorators3 = vec![
+        (0, raw_deco5.clone()),
+        (3, raw_deco0.clone()),
+        (3, raw_deco1.clone()),
+        (3, raw_deco2.clone()),
+        (3, raw_deco4.clone()),
+    ];
+    forest.add_block_with_raw_decorators(operations3, raw_decorators3).unwrap();
+
+    // Check original block_decorators state
+    let original_block_decorators = forest.block_decorators().clone();
+
+    // Serialize and deserialize
+    let bytes = forest.to_bytes();
+    let deserialized_forest = MastForest::read_from_bytes(&bytes).unwrap();
+
+    // Assert equality of block_decorators
+    assert_eq!(
+        original_block_decorators,
+        *deserialized_forest.block_decorators(),
+        "block_decorators mismatch"
+    );
+
+    // Assert full forest equality
+    assert_eq!(forest, deserialized_forest, "full forest mismatch");
+}
