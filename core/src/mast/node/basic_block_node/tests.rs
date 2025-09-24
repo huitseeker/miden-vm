@@ -430,7 +430,7 @@ proptest! {
         let block = BasicBlockNode::new(ops.clone(), decs.clone()).unwrap();
 
         // Collect the decorators using raw_decorator_iter()
-        let collected_decorators: Vec<(usize, DecoratorId)> = block.raw_decorator_iter().collect();
+        let collected_decorators: Vec<(usize, DecoratorId)> = block.raw_decorator_iter().unwrap().collect();
 
         // The collected decorators should match the original decorators
         prop_assert_eq!(collected_decorators, decs);
@@ -497,7 +497,7 @@ fn test_indexed_decorator_iter_excludes_before_enter_after_exit() {
     block.append_after_exit(&[after_exit_id]);
 
     // Test indexed_decorator_iter - should only include op-indexed decorators
-    let indexed_decorators: Vec<_> = block.indexed_decorator_iter().collect();
+    let indexed_decorators: Vec<_> = block.indexed_decorator_iter().unwrap().collect();
 
     // Should have only 2 decorators (the ones tied to specific operation indices)
     assert_eq!(indexed_decorators.len(), 2);
@@ -563,7 +563,7 @@ fn test_decorator_positions() {
     assert_eq!(found_positions, expected_positions);
 
     // Test that indexed_decorator_iter only returns op-indexed decorators
-    let indexed_decorators: Vec<_> = block.indexed_decorator_iter().collect();
+    let indexed_decorators: Vec<_> = block.indexed_decorator_iter().unwrap().collect();
     assert_eq!(indexed_decorators.len(), 2);
 
     let indexed_positions: Vec<_> = indexed_decorators.iter().map(|&(pos, _id)| pos).collect();

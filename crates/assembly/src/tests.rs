@@ -8,7 +8,7 @@ use std::{
 use miden_assembly_syntax::diagnostics::WrapErr;
 use miden_core::{
     EventId, Operation, Program, Word, assert_matches,
-    mast::{MastNodeExt, MastNodeId},
+    mast::{BasicBlockNode, MastNodeExt, MastNodeId},
     utils::{Deserializable, Serializable},
 };
 use miden_mast_package::{MastArtifact, MastForest, Package, PackageExport, PackageManifest};
@@ -3707,11 +3707,11 @@ fn duplicate_nodes() {
 
     let mut expected_mast_forest = MastForest::new();
 
-    let mul_basic_block_id =
-        expected_mast_forest.add_block(vec![Operation::Mul], Vec::new()).unwrap();
+    let mul_basic_block = BasicBlockNode::new(vec![Operation::Mul], Vec::new()).unwrap();
+    let mul_basic_block_id = expected_mast_forest.add_node(mul_basic_block).unwrap();
 
-    let add_basic_block_id =
-        expected_mast_forest.add_block(vec![Operation::Add], Vec::new()).unwrap();
+    let add_basic_block = BasicBlockNode::new(vec![Operation::Add], Vec::new()).unwrap();
+    let add_basic_block_id = expected_mast_forest.add_node(add_basic_block).unwrap();
 
     // inner split: `if.true add else mul end`
     let inner_split_id =
