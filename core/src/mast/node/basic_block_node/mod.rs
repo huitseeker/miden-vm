@@ -1,10 +1,20 @@
-use alloc::{boxed::Box, vec::Vec};
+use alloc::{boxed::Box, sync::Arc, vec::Vec};
+#[cfg(not(feature = "std"))]
+use core::cell::OnceCell;
 use core::{fmt, iter::Peekable, ops::Index, slice::Iter};
+#[cfg(feature = "std")]
+use std::sync::OnceLock;
 
 use miden_crypto::{Felt, Word, ZERO};
 use miden_formatting::prettier::PrettyPrint;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
+
+// Type alias for decorator reference storage
+#[cfg(feature = "std")]
+type DecoratorsRef = OnceLock<Arc<DecoratorList>>;
+#[cfg(not(feature = "std"))]
+type DecoratorsRef = OnceCell<Arc<DecoratorList>>;
 
 use crate::{
     DecoratorList, Operation,
@@ -65,7 +75,7 @@ pub const BATCH_SIZE: usize = 8;
 ///
 /// Where `batches` is the concatenation of each `batch` in the basic block, and each batch is 8
 /// field elements (512 bits).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(
     all(feature = "serde", feature = "arbitrary", test),
@@ -81,6 +91,9 @@ pub struct BasicBlockNode {
     digest: Word,
     #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Vec::is_empty"))]
     decorators: DecoratorList,
+    #[cfg_attr(feature = "serde", serde(skip))]
+    // This field is for runtime reference only and should not be part of serialization
+    decorators_ref: DecoratorsRef,
     #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Vec::is_empty"))]
     before_enter: Vec<DecoratorId>,
     #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Vec::is_empty"))]
@@ -122,6 +135,7 @@ impl BasicBlockNode {
             op_batches,
             digest,
             decorators: reflowed_decorators,
+            decorators_ref: DecoratorsRef::new(),
             before_enter: Vec::new(),
             after_exit: Vec::new(),
         })
@@ -149,6 +163,7 @@ impl BasicBlockNode {
             op_batches,
             digest,
             decorators,
+            decorators_ref: DecoratorsRef::new(),
             before_enter: Vec::new(),
             after_exit: Vec::new(),
         }
@@ -210,8 +225,14 @@ impl BasicBlockNode {
     /// differently through block operations: contrarily to e.g. the implementation of
     /// [`MastNodeErrorContext`] this does not include the `before_enter` or `after_exit`
     /// decorators.
-    pub fn indexed_decorator_iter(&self) -> DecoratorOpLinkIterator<'_> {
-        DecoratorOpLinkIterator::new(&[], &self.decorators, &[], self.num_operations() as usize)
+    pub fn indexed_decorator_iter(&self) -> Result<DecoratorOpLinkIterator<'_>, MastForestError> {
+        let decorators = self.get_decorators();
+        Ok(DecoratorOpLinkIterator::new(
+            &[],
+            decorators,
+            &[],
+            self.num_operations() as usize,
+        ))
     }
 
     /// Returns an iterator which allows us to iterate through the decorator list of
@@ -220,14 +241,64 @@ impl BasicBlockNode {
     ///
     /// Though this adjusts the indexation of op-indexed decorators, this iterator returns all
     /// decorators of the [`BasicBlockNode`] in the order in which they appear in the program.
-    /// This includes `before_enter`, op-indexed decorators, and after_exit`.
-    pub fn raw_decorator_iter(&self) -> RawDecoratorOpLinkIterator<'_> {
-        RawDecoratorOpLinkIterator::new(
+    /// This includes `before_enter`, op-indexed decorators, and after_exit.
+    pub fn raw_decorator_iter(&self) -> Result<RawDecoratorOpLinkIterator<'_>, MastForestError> {
+        let decorators = self.get_decorators();
+        Ok(RawDecoratorOpLinkIterator::new(
             &self.before_enter,
-            &self.decorators,
+            decorators,
             &self.after_exit,
             &self.op_batches,
-        )
+        ))
+    }
+
+    /// Returns a reference to the decorator list if it has been linked to a `MastForest`.
+    ///
+    /// This method will return an error if the block has not been linked to its decorator
+    /// information in a `MastForest`. For most use cases, prefer using `get_decorators()`
+    /// which handles both linked and unlinked blocks transparently.
+    pub fn try_get_decorators(&self) -> Result<&DecoratorList, MastForestError> {
+        self.decorators_ref
+            .get()
+            .map(|arc| &**arc)
+            .ok_or(MastForestError::UnlinkedBlock)
+    }
+
+    /// Returns a reference to the decorator list, preferring the linked reference
+    /// when available, otherwise falling back to the internal field.
+    ///
+    /// This is the primary accessor for decorators and should be used instead
+    /// of direct field access to `self.decorators`. It automatically handles both
+    /// linked blocks (which use the forest-level storage) and unlinked blocks
+    /// (which use the node-level storage).
+    ///
+    /// # Examples
+    /// ```ignore
+    /// let decorators = block.get_decorators();
+    /// for (op_idx, decorator_id) in decorators {
+    ///     // Process decorator
+    /// }
+    /// ```
+    fn get_decorators(&self) -> &DecoratorList {
+        self.try_get_decorators().unwrap_or(&self.decorators)
+    }
+
+    /// Returns the number of decorators in this basic block.
+    ///
+    /// This method prefers the linked reference when available, providing an
+    /// efficient way to check the decorator count without directly accessing
+    /// the internal field.
+    fn num_decorators(&self) -> usize {
+        self.try_get_decorators()
+            .map_or_else(|_| self.decorators.len(), |dec| dec.len())
+    }
+
+    /// Links this block to its decorator list.
+    /// This should only be called by `MastForest` upon node insertion.
+    pub fn link_decorators(&self, decorators: Arc<DecoratorList>) {
+        // This may be called multiple times during complex merges. `set` will panic if called
+        // again.
+        let _ = self.decorators_ref.set(decorators);
     }
 
     /// Returns an iterator over the operations in the order in which they appear in the program.
@@ -244,7 +315,7 @@ impl BasicBlockNode {
     /// Returns the total number of operations and decorators in this basic block.
     pub fn num_operations_and_decorators(&self) -> u32 {
         let num_ops: usize = self.num_operations() as usize;
-        let num_decorators = self.decorators.len();
+        let num_decorators = self.num_decorators();
 
         (num_ops + num_decorators)
             .try_into()
@@ -265,6 +336,12 @@ impl BasicBlockNode {
     /// with the given ['DecoratorList'].
     pub fn set_decorators(&mut self, decorator_list: DecoratorList) {
         self.decorators = decorator_list;
+        self.decorators_ref = DecoratorsRef::new();
+    }
+
+    /// Returns a mutable reference to the decorators field for serialization compatibility.
+    pub fn decorators_mut(&mut self) -> &mut DecoratorList {
+        &mut self.decorators
     }
 }
 
@@ -273,9 +350,10 @@ impl MastNodeErrorContext for BasicBlockNode {
     /// appear in the program. This includes `before_enter`, op-indexed decorators, and
     /// `after_exit`.
     fn decorators(&self) -> impl Iterator<Item = DecoratedOpLink> {
+        let decorators = self.get_decorators();
         DecoratorOpLinkIterator::new(
             &self.before_enter,
-            &self.decorators,
+            decorators,
             &self.after_exit,
             self.num_operations() as usize,
         )
@@ -328,6 +406,7 @@ impl MastNodeExt for BasicBlockNode {
     /// Removes all decorators from this node.
     fn remove_decorators(&mut self) {
         self.decorators.truncate(0);
+        self.decorators_ref = DecoratorsRef::new();
         self.before_enter.truncate(0);
         self.after_exit.truncate(0);
     }
@@ -672,7 +751,9 @@ impl<'a> OperationOrDecoratorIterator<'a> {
 
     #[inline]
     fn next_decorator_if_due(&mut self) -> Option<OperationOrDecorator<'a>> {
-        if let Some((op_idx, deco)) = self.node.decorators.get(self.decorator_list_next_index)
+        let decorators = self.node.get_decorators();
+
+        if let Some((op_idx, deco)) = decorators.get(self.decorator_list_next_index)
             && *op_idx == self.op_index
         {
             self.decorator_list_next_index += 1;
@@ -853,4 +934,17 @@ fn batch_ops(ops: Vec<Operation>) -> Vec<OpBatch> {
     }
 
     batches
+}
+
+// Custom PartialEq implementation that ignores the decorators_ref field
+// since it's a transient performance optimization and shouldn't affect equality
+impl PartialEq for BasicBlockNode {
+    fn eq(&self, other: &Self) -> bool {
+        // Only compare the fields that matter for logical equality
+        self.op_batches == other.op_batches
+            && self.digest == other.digest
+            && self.decorators == other.decorators
+            && self.before_enter == other.before_enter
+            && self.after_exit == other.after_exit
+    }
 }

@@ -263,15 +263,37 @@ impl Deserializable for MastForest {
 
         let basic_block_decorators: Vec<(usize, DecoratorList)> =
             read_block_decorators(source, &mast_forest)?;
+
+        // Clear existing block_decorators before populating from serialized data
+        mast_forest.block_decorators.clear();
+
         for (node_id, decorator_list) in basic_block_decorators {
             let node_id = MastNodeId::from_usize_safe(node_id, &mast_forest)?;
 
             match &mut mast_forest[node_id] {
                 MastNode::Block(basic_block) => {
-                    basic_block.set_decorators(decorator_list.clone());
-                    // Also populate the block_decorators field in the forest, but only if there are decorators
+                    // Link the decorators to the block using Arc only if there are decorators
                     if !decorator_list.is_empty() {
-                        mast_forest.block_decorators.insert(node_id, decorator_list);
+                        let arc_decorators = Arc::new(decorator_list.clone());
+                        basic_block.link_decorators(arc_decorators.clone());
+
+                        // Initialize the legacy decorators field to match the linked decorators
+                        // This ensures backward compatibility and proper serialization
+                        if let Ok(linked_decorators) = basic_block.try_get_decorators() {
+                            *basic_block.decorators_mut() = linked_decorators.to_vec();
+                        } else {
+                            // If there are decorators but no linked reference, something is wrong
+                            return Err(DeserializationError::InvalidValue(format!(
+                                "Failed to link decorators for block {}",
+                                node_id
+                            )));
+                        }
+
+                        // Also populate the block_decorators field in the forest
+                        mast_forest.block_decorators.insert(node_id, arc_decorators);
+                    } else {
+                        // Ensure the legacy decorators field is empty when there are no decorators
+                        *basic_block.decorators_mut() = Vec::new();
                     }
                 },
                 other => {

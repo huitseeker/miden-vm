@@ -347,7 +347,7 @@ impl MastForestBuilder {
                 self.mast_forest.is_procedure_root(basic_block_id),
                 basic_block_node.num_op_batches(),
             ) {
-                for (op_idx, decorator) in basic_block_node.raw_decorator_iter() {
+                for (op_idx, decorator) in basic_block_node.raw_decorator_iter().unwrap() {
                     decorators.push((op_idx + operations.len(), decorator));
                 }
                 for batch in basic_block_node.op_batches() {

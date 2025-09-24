@@ -131,6 +131,10 @@ impl MastForest {
         let adjusted_decorators =
             Arc::new(BasicBlockNode::adjust_decorators(decorators, block.op_batches()));
         let new_node_id = self.add_node(block)?;
+        // Always link the decorators to the block, even if empty
+        if let Some(MastNode::Block(block)) = self.nodes.get(new_node_id.as_usize()) {
+            block.link_decorators(adjusted_decorators.clone());
+        }
         if !adjusted_decorators.is_empty() {
             self.block_decorators.insert(new_node_id, adjusted_decorators);
         }
@@ -149,13 +153,7 @@ impl MastForest {
         for (idx, decorator) in &raw_decorators {
             decorator_list.push((*idx, self.add_decorator(decorator.clone())?));
         }
-
-        let block = BasicBlockNode::new(operations, decorator_list.clone())?;
-        let adjusted_decorators =
-            Arc::new(BasicBlockNode::adjust_decorators(decorator_list, block.op_batches()));
-        let new_node_id = self.add_node(block)?;
-        self.block_decorators.insert(new_node_id, adjusted_decorators);
-        Ok(new_node_id)
+        self.add_block(operations, decorator_list)
     }
 
     /// Adds a join node to the forest, and returns the [`MastNodeId`] associated with it.

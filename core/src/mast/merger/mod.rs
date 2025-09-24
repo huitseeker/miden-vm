@@ -329,6 +329,7 @@ impl MastForestMerger {
                     // mapped.
                     basic_block_node
                         .indexed_decorator_iter()
+                        .unwrap()
                         .map(|(idx, decorator_id)| match map_decorator_id(&decorator_id) {
                             Ok(mapped_decorator) => Ok((idx, mapped_decorator)),
                             Err(err) => Err(err),

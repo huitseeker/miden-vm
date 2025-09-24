@@ -139,3 +139,52 @@ fn digest_from_seed(seed: [u8; 32]) -> Word {
     });
     digest.into()
 }
+
+#[test]
+fn test_decorator_linking_and_equivalence() {
+    let mut forest = MastForest::new();
+    let operations = vec![Operation::Push(Felt::new(1)), Operation::Add];
+
+    // --- Case 1: Block with decorators ---
+    let decorator_id = forest.add_decorator(Decorator::Trace(1)).unwrap();
+    let decorators = vec![(0, decorator_id)];
+
+    let block_id_with_decs = forest.add_block(operations.clone(), decorators.clone()).unwrap();
+
+    let block_with_decs = forest[block_id_with_decs].get_basic_block().unwrap();
+
+    // Access legacy field using the public method (adjusted for padding)
+    let legacy_decorators: Vec<_> = block_with_decs.raw_decorator_iter().unwrap().collect();
+
+    // Access new linked reference
+    let linked_decorators = block_with_decs.try_get_decorators().unwrap();
+
+    // Check what's stored in block_decorators for debugging
+    let stored_decorators = forest.block_decorators.get(&block_id_with_decs);
+    assert!(
+        stored_decorators.is_some(),
+        "No decorators stored in block_decorators for block {:?}",
+        block_id_with_decs
+    );
+    assert_eq!(stored_decorators.unwrap().len(), 1, "Expected 1 decorator in block_decorators");
+
+    assert_eq!(legacy_decorators.len(), linked_decorators.len());
+    assert_eq!(linked_decorators.len(), 1);
+
+    // --- Case 2: Block without decorators ---
+    let block_id_no_decs = forest.add_block(operations.clone(), vec![]).unwrap();
+    let block_no_decs = forest[block_id_no_decs].get_basic_block().unwrap();
+
+    // Access legacy field using the public method
+    let legacy_decorators_empty: Vec<_> = block_no_decs.raw_decorator_iter().unwrap().collect();
+    // Access new linked reference
+    let linked_decorators_empty = block_no_decs.try_get_decorators().unwrap();
+
+    assert!(legacy_decorators_empty.is_empty());
+    assert!(linked_decorators_empty.is_empty());
+    assert_eq!(legacy_decorators_empty.len(), linked_decorators_empty.len());
+
+    // --- Case 3: Unlinked block returns error ---
+    let unlinked_block = BasicBlockNode::new(operations.clone(), vec![]).unwrap();
+    assert!(unlinked_block.try_get_decorators().is_err());
+}

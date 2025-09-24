@@ -204,7 +204,7 @@ impl MastNode {
 // ===============================================================================================
 
 /// A trait for extending the functionality of all [`MastNode`]s.
-pub trait MastNodeErrorContext: Send + Sync {
+pub trait MastNodeErrorContext: Send {
     // REQUIRED METHODS
     // -------------------------------------------------------------------------------------------
 
