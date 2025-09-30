@@ -2,6 +2,7 @@ mod basic_block_node;
 use alloc::{boxed::Box, vec::Vec};
 use core::fmt;
 
+
 pub use basic_block_node::{
     BATCH_SIZE as OP_BATCH_SIZE, BasicBlockNode, DecoratorOpLinkIterator,
     GROUP_SIZE as OP_GROUP_SIZE, OpBatch, OperationOrDecorator,
@@ -35,7 +36,7 @@ pub use loop_node::LoopNode;
 use super::DecoratorId;
 use crate::{
     AssemblyOp, Decorator,
-    mast::{MastForest, MastNodeId, Remapping},
+    mast::{MastForest, MastForestError, MastNodeId, Remapping},
 };
 
 #[enum_dispatch]
@@ -212,7 +213,10 @@ pub trait MastNodeErrorContext: Send {
     ///
     /// The index is only meaningful for [`BasicBlockNode`]s, where it corresponds to the index of
     /// the operation in the basic block to which the decorator is attached.
-    fn decorators(&self) -> impl Iterator<Item = DecoratedOpLink>;
+    ///
+    /// Returns an iterator over decorators if the node is properly linked to a MastForest,
+    /// or an `UnlinkedBlock` error if the node is not linked.
+    fn decorators(&self) -> Result<impl Iterator<Item = DecoratedOpLink> + '_, MastForestError>;
 
     // PROVIDED METHODS
     // -------------------------------------------------------------------------------------------
@@ -228,36 +232,41 @@ pub trait MastNodeErrorContext: Send {
         mast_forest: &'m MastForest,
         target_op_idx: Option<usize>,
     ) -> Option<&'m AssemblyOp> {
-        match target_op_idx {
-            // If a target operation index is provided, return the assembly op associated with that
-            // operation.
-            Some(target_op_idx) => {
-                for (op_idx, decorator_id) in self.decorators() {
-                    if let Some(Decorator::AsmOp(assembly_op)) =
-                        mast_forest.get_decorator_by_id(decorator_id)
-                    {
-                        // when an instruction compiles down to multiple operations, only the first
-                        // operation is associated with the assembly op. We need to check if the
-                        // target operation index falls within the range of operations associated
-                        // with the assembly op.
-                        if target_op_idx >= op_idx
-                            && target_op_idx < op_idx + assembly_op.num_cycles() as usize
-                        {
-                            return Some(assembly_op);
+        match self.decorators() {
+            Ok(decorators) => {
+                match target_op_idx {
+                    // If a target operation index is provided, return the assembly op associated with that
+                    // operation.
+                    Some(target_op_idx) => {
+                        for (op_idx, decorator_id) in decorators {
+                            if let Some(Decorator::AsmOp(assembly_op)) =
+                                mast_forest.get_decorator_by_id(decorator_id)
+                            {
+                                // when an instruction compiles down to multiple operations, only the first
+                                // operation is associated with the assembly op. We need to check if the
+                                // target operation index falls within the range of operations associated
+                                // with the assembly op.
+                                if target_op_idx >= op_idx
+                                    && target_op_idx < op_idx + assembly_op.num_cycles() as usize
+                                {
+                                    return Some(assembly_op);
+                                }
+                            }
                         }
-                    }
+                    },
+                    // If no target operation index is provided, return the first assembly op found.
+                    None => {
+                        for (_, decorator_id) in decorators {
+                            if let Some(Decorator::AsmOp(assembly_op)) =
+                                mast_forest.get_decorator_by_id(decorator_id)
+                            {
+                                return Some(assembly_op);
+                            }
+                        }
+                    },
                 }
             },
-            // If no target operation index is provided, return the first assembly op found.
-            None => {
-                for (_, decorator_id) in self.decorators() {
-                    if let Some(Decorator::AsmOp(assembly_op)) =
-                        mast_forest.get_decorator_by_id(decorator_id)
-                    {
-                        return Some(assembly_op);
-                    }
-                }
-            },
+            Err(_) => return None,
         }
 
         None

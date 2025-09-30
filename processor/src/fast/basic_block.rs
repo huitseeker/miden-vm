@@ -1,8 +1,9 @@
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 
 use miden_core::{
     EventId, Operation,
-    mast::{BasicBlockNode, DecoratorOpLinkIterator, MastForest, MastNodeId, OpBatch},
+    mast::{BasicBlockNode, DecoratorId, DecoratorOpLinkIterator, DecoratedOpLink, MastForest, MastForestError, MastNodeId, OpBatch},
     sys_events::SystemEvent,
 };
 
@@ -44,9 +45,15 @@ impl FastProcessor {
 
         let mut batch_offset_in_block = 0;
         let mut op_batches = basic_block_node.op_batches().iter();
-        let mut decorator_ids = basic_block_node
-            .indexed_decorator_iter()
-            .expect("Basic block should be linked to MastForest in execution context");
+        let mut decorator_ids = match basic_block_node.indexed_decorator_iter() {
+            Ok(iter) => iter,
+            Err(MastForestError::UnlinkedBlock) => {
+                // If the block is not linked to a MastForest, create an empty iterator
+                static EMPTY_DECORATORS: Vec<(usize, DecoratorId)> = Vec::new();
+                DecoratorOpLinkIterator::new(&[], &EMPTY_DECORATORS, &[], 0)
+            }
+            Err(e) => return Err(ExecutionError::CallInSyscall("failed to access decorators on unlinked block")),
+        };
 
         // execute first op batch
         if let Some(first_op_batch) = op_batches.next() {

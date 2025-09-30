@@ -80,8 +80,8 @@ impl LoopNode {
 }
 
 impl MastNodeErrorContext for LoopNode {
-    fn decorators(&self) -> impl Iterator<Item = DecoratedOpLink> {
-        self.before_enter.iter().chain(&self.after_exit).copied().enumerate()
+    fn decorators(&self) -> Result<impl Iterator<Item = DecoratedOpLink> + '_, MastForestError> {
+        Ok(core::iter::empty())
     }
 }
 

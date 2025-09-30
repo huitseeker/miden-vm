@@ -469,7 +469,7 @@ fn test_mast_node_error_context_decorators_iterates_all_decorators() {
     block.append_before_enter(&[before_enter_id]);
     block.append_after_exit(&[after_exit_id]);
 
-    let all_decorators: Vec<_> = block.decorators().collect();
+    let all_decorators: Vec<_> = block.decorators().unwrap().collect();
 
     // Should have 3 decorators total: 1 before_enter, 1 during, 1 after_exit
     assert_eq!(all_decorators.len(), 3);
@@ -563,7 +563,7 @@ fn test_decorator_positions() {
     block.append_after_exit(&[trace_id]);
 
     // Test that MastNodeErrorContext::decorators returns all decorators
-    let all_decorators: Vec<_> = block.decorators().collect();
+    let all_decorators: Vec<_> = block.decorators().unwrap().collect();
     assert_eq!(all_decorators.len(), 5);
 
     // Verify the order and positions:
@@ -596,7 +596,7 @@ fn test_decorator_positions() {
     block.append_before_enter(&[]);
     block.append_after_exit(&[]);
 
-    let all_decorators_after_mod: Vec<_> = block.decorators().collect();
+    let all_decorators_after_mod: Vec<_> = block.decorators().unwrap().collect();
     assert_eq!(
         all_decorators_after_mod.len(),
         5,

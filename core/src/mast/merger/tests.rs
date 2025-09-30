@@ -406,7 +406,7 @@ fn mast_forest_merge_decorators() {
     };
 
     assert_eq!(
-        &merged_foo_block.decorators().collect::<Vec<_>>()[..],
+        &merged_foo_block.decorators().unwrap().collect::<Vec<_>>()[..],
         &[(0, merged_deco1), (0, merged_deco2)]
     );
 

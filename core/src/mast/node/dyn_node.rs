@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use super::{MastNodeErrorContext, MastNodeExt};
 use crate::{
     OPCODE_DYN, OPCODE_DYNCALL,
-    mast::{DecoratedOpLink, DecoratorId, MastForest, MastNodeId, Remapping},
+    mast::{DecoratedOpLink, DecoratorId, MastForest, MastForestError, MastNodeId, Remapping},
 };
 
 // DYN NODE
@@ -71,8 +71,8 @@ impl DynNode {
 }
 
 impl MastNodeErrorContext for DynNode {
-    fn decorators(&self) -> impl Iterator<Item = DecoratedOpLink> {
-        self.before_enter.iter().chain(&self.after_exit).copied().enumerate()
+    fn decorators(&self) -> Result<impl Iterator<Item = DecoratedOpLink> + '_, MastForestError> {
+        Ok(core::iter::empty())
     }
 }
 

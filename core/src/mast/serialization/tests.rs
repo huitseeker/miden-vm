@@ -484,7 +484,7 @@ fn mast_forest_basic_block_serialization_no_decorator_duplication() {
     );
 
     // Verify that all decorators() method returns all decorators (this is the full iterator)
-    let all_decorators: Vec<_> = deserialized_block.decorators().collect();
+    let all_decorators: Vec<_> = deserialized_block.decorators().unwrap().collect();
     assert_eq!(all_decorators.len(), 3, "decorators() should return all 3 decorators");
 
     // Verify the order: before_enter, op-indexed, after_exit

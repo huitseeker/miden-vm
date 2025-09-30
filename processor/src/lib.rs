@@ -19,7 +19,7 @@ pub use miden_core::{
     StackInputs, StackOutputs, WORD_SIZE, Word, ZERO,
     crypto::merkle::SMT_DEPTH,
     errors::InputError,
-    mast::{MastForest, MastNode, MastNodeExt, MastNodeId},
+    mast::{DecoratedOpLink, DecoratorId, MastForest, MastForestError, MastNode, MastNodeExt, MastNodeId},
     sys_events::SystemEvent,
     utils::DeserializationError,
 };
@@ -551,9 +551,15 @@ impl Process {
         self.start_basic_block_node(basic_block, program, host)?;
 
         let mut op_offset = 0;
-        let mut decorator_ids = basic_block
-            .indexed_decorator_iter()
-            .expect("Basic block should be linked to MastForest in execution context");
+        let empty_decorator_list: Vec<DecoratedOpLink> = Vec::new();
+        let mut decorator_ids = match basic_block.indexed_decorator_iter() {
+            Ok(iter) => iter,
+            Err(MastForestError::UnlinkedBlock) => {
+                // If the block is not linked to a MastForest, create an empty iterator
+                DecoratorOpLinkIterator::new(&[], &empty_decorator_list, &[], 0)
+            }
+            Err(_e) => return Err(ExecutionError::CallInSyscall("failed to access decorators on unlinked block")),
+        };
 
         // execute the first operation batch
         self.execute_op_batch(

@@ -77,7 +77,7 @@ fn test_new_decorator_pattern() {
         panic!("Expected a block node");
     };
 
-    let block_decorators: Vec<_> = MastNodeErrorContext::decorators(block).collect();
+    let block_decorators: Vec<_> = MastNodeErrorContext::decorators(block).unwrap().collect();
     assert_eq!(block_decorators.len(), 2);
 
     // Verify that the adjust_decorators method works correctly

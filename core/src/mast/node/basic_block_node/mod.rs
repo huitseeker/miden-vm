@@ -289,19 +289,14 @@ impl BasicBlockNode {
 }
 
 impl MastNodeErrorContext for BasicBlockNode {
-    /// This iterator returns all decorators of the [`BasicBlockNode`] in the order in which they
-    /// appear in the program. This includes `before_enter`, op-indexed decorators, and
-    /// `after_exit`.
-    fn decorators(&self) -> impl Iterator<Item = DecoratedOpLink> {
-        let decorators = self.try_get_decorators().expect(
-            "Decorator access failed: BasicBlockNode must be linked to a MastForest. Use a try_* variant for fallible access."
-        );
-        DecoratorOpLinkIterator::new(
+    fn decorators(&self) -> Result<impl Iterator<Item = DecoratedOpLink> + '_, MastForestError> {
+        let decorators = self.try_get_decorators()?;
+        Ok(DecoratorOpLinkIterator::new(
             &self.before_enter,
             decorators,
             &self.after_exit,
             self.num_operations() as usize,
-        )
+        ))
     }
 }
 

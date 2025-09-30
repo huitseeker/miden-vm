@@ -10,7 +10,7 @@ use miden_formatting::{
 use serde::{Deserialize, Serialize};
 
 use super::{MastNodeErrorContext, MastNodeExt};
-use crate::mast::{DecoratedOpLink, DecoratorId, MastForest, MastNodeId, Remapping};
+use crate::mast::{DecoratedOpLink, DecoratorId, MastForest, MastForestError, MastNodeId, Remapping};
 
 // EXTERNAL NODE
 // ================================================================================================
@@ -45,8 +45,8 @@ impl ExternalNode {
 }
 
 impl MastNodeErrorContext for ExternalNode {
-    fn decorators(&self) -> impl Iterator<Item = DecoratedOpLink> {
-        self.before_enter.iter().chain(&self.after_exit).copied().enumerate()
+    fn decorators(&self) -> Result<impl Iterator<Item = DecoratedOpLink> + '_, MastForestError> {
+        Ok(core::iter::empty())
     }
 }
 

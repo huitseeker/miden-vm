@@ -458,12 +458,19 @@ impl MastForestBuilder {
                 .wrap_err("assembler failed to add new basic block node")?;
 
             // Store the decorators for this block in the block_decorators map
-            // Note: The block will be linked later when store_block_decorators is called
+            // and link them to the block node
             if !decorators.is_empty() {
                 let adjusted_decorators = BasicBlockNode::adjust_decorators(
                     decorators.clone(),
                     decorator_less_block.op_batches(),
                 );
+
+                // Link the decorators to the block node
+                if let MastNode::Block(block) = &mut self.mast_forest[new_node_id] {
+                    block.link_decorators(Arc::new(adjusted_decorators.clone()));
+                }
+
+                // Store the decorators in the block_decorators map
                 self.mast_forest.block_decorators_mut().insert(new_node_id, adjusted_decorators);
             }
 
@@ -736,20 +743,23 @@ mod tests {
         // For block2: operation 0 -> Trace(4), operation 1 -> Trace(5)
 
         // Check each decorator in the merged block
-        let decorators = merged_block.decorators();
-        assert_eq!(merged_block.decorators().count(), 5); // 3 from block1 + 2 from block2
+        let decorators = merged_block.decorators().unwrap();
+        assert_eq!(decorators.count(), 5); // 3 from block1 + 2 from block2
+
+        // Create a new iterator for checking individual decorators
+        let decorators_for_checking = merged_block.decorators().unwrap();
 
         // Create a map to track which trace values we've found
         let mut found_traces = std::collections::HashSet::new();
 
         // Check each decorator
-        for (op_idx, decorator_id) in decorators {
+        for (op_idx, decorator_id) in decorators_for_checking {
             let decorator = &builder.mast_forest[decorator_id];
 
             match decorator {
                 Decorator::Trace(trace_value) => {
                     // Record that we found this trace
-                    found_traces.insert(*trace_value);
+                    found_traces.insert(trace_value);
 
                     // Verify that the decorator points to the expected operation type
                     // Get the raw operations to check what's at this index
