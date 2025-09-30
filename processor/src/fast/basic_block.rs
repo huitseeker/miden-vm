@@ -44,7 +44,9 @@ impl FastProcessor {
 
         let mut batch_offset_in_block = 0;
         let mut op_batches = basic_block_node.op_batches().iter();
-        let mut decorator_ids = basic_block_node.indexed_decorator_iter().unwrap();
+        let mut decorator_ids = basic_block_node
+            .indexed_decorator_iter()
+            .expect("Basic block should be linked to MastForest in execution context");
 
         // execute first op batch
         if let Some(first_op_batch) = op_batches.next() {

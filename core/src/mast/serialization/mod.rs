@@ -277,23 +277,8 @@ impl Deserializable for MastForest {
                         let arc_decorators = Arc::new(decorator_list.clone());
                         basic_block.link_decorators(arc_decorators);
 
-                        // Initialize the legacy decorators field to match the linked decorators
-                        // This ensures backward compatibility and proper serialization
-                        if let Ok(linked_decorators) = basic_block.try_get_decorators() {
-                            *basic_block.decorators_mut() = linked_decorators.to_vec();
-                        } else {
-                            // If there are decorators but no linked reference, something is wrong
-                            return Err(DeserializationError::InvalidValue(format!(
-                                "Failed to link decorators for block {}",
-                                node_id
-                            )));
-                        }
-
                         // Also populate the block_decorators field in the forest
                         mast_forest.block_decorators.insert(node_id, decorator_list);
-                    } else {
-                        // Ensure the legacy decorators field is empty when there are no decorators
-                        *basic_block.decorators_mut() = Vec::new();
                     }
                 },
                 other => {

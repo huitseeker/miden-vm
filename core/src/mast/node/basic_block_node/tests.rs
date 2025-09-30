@@ -426,8 +426,12 @@ proptest! {
     fn test_raw_decorator_iter_preserves_decorators(
         (ops, decs) in decorator_list_strategy(20)
     ) {
-        // Create a basic block with the generated operations and decorators
-        let block = BasicBlockNode::new(ops.clone(), decs.clone()).unwrap();
+        // Create a basic block with the generated operations
+        let block = BasicBlockNode::new(ops.clone()).unwrap();
+
+        // Link the decorators to the block
+        let arc_decorators = Arc::new(decs.clone());
+        block.link_decorators(arc_decorators);
 
         // Collect the decorators using raw_decorator_iter()
         let collected_decorators: Vec<(usize, DecoratorId)> = block.raw_decorator_iter().unwrap().collect();
@@ -455,8 +459,13 @@ fn test_mast_node_error_context_decorators_iterates_all_decorators() {
     let op_id = forest.add_decorator(op_deco.clone()).unwrap();
     let after_exit_id = forest.add_decorator(after_exit_deco.clone()).unwrap();
 
-    // Create a basic block with all types of decorators
-    let mut block = BasicBlockNode::new(operations, vec![(1, op_id)]).unwrap();
+    // Create a basic block with operations
+    let mut block = BasicBlockNode::new(operations).unwrap();
+
+    // Link decorators to the block
+    let decorator_list = vec![(1, op_id)];
+    let arc_decorators = Arc::new(decorator_list);
+    block.link_decorators(arc_decorators);
     block.append_before_enter(&[before_enter_id]);
     block.append_after_exit(&[after_exit_id]);
 
@@ -491,8 +500,13 @@ fn test_indexed_decorator_iter_excludes_before_enter_after_exit() {
     let op_id2 = forest.add_decorator(op_deco2.clone()).unwrap();
     let after_exit_id = forest.add_decorator(after_exit_deco.clone()).unwrap();
 
-    // Create a basic block with all types of decorators
-    let mut block = BasicBlockNode::new(operations, vec![(0, op_id1), (1, op_id2)]).unwrap();
+    // Create a basic block with operations
+    let mut block = BasicBlockNode::new(operations).unwrap();
+
+    // Link decorators to the block
+    let decorator_list = vec![(0, op_id1), (1, op_id2)];
+    let arc_decorators = Arc::new(decorator_list);
+    block.link_decorators(arc_decorators);
     block.append_before_enter(&[before_enter_id]);
     block.append_after_exit(&[after_exit_id]);
 
@@ -537,8 +551,12 @@ fn test_decorator_positions() {
         Operation::Mul,
     ];
 
-    let mut block =
-        BasicBlockNode::new(operations.clone(), vec![(2, trace_id), (4, debug_id)]).unwrap();
+    let mut block = BasicBlockNode::new(operations.clone()).unwrap();
+
+    // Link decorators to the block
+    let decorator_list = vec![(2, trace_id), (4, debug_id)];
+    let arc_decorators = Arc::new(decorator_list);
+    block.link_decorators(arc_decorators);
 
     // Add before_enter and after_exit decorators
     block.append_before_enter(&[trace_id, debug_id]);

@@ -185,6 +185,6 @@ fn test_decorator_linking_and_equivalence() {
     assert_eq!(legacy_decorators_empty.len(), linked_decorators_empty.len());
 
     // --- Case 3: Unlinked block returns error ---
-    let unlinked_block = BasicBlockNode::new(operations.clone(), vec![]).unwrap();
+    let unlinked_block = BasicBlockNode::new(operations.clone()).unwrap();
     assert!(unlinked_block.try_get_decorators().is_err());
 }

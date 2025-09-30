@@ -118,6 +118,26 @@ impl MastForest {
         Ok(new_node_id)
     }
 
+    /// Stores operation-indexed decorators for a basic block node
+    fn store_block_decorators(
+        &mut self,
+        node_id: MastNodeId,
+        decorators: DecoratorList,
+        op_batches: &[OpBatch],
+    ) -> Result<(), MastForestError> {
+        let adjusted_decorators = BasicBlockNode::adjust_decorators(decorators, op_batches);
+
+        // Always link the decorators to the block, even if empty
+        if let Some(MastNode::Block(block)) = self.nodes.get_mut(node_id.as_usize()) {
+            block.link_decorators(Arc::new(adjusted_decorators.clone()));
+        }
+
+        if !adjusted_decorators.is_empty() {
+            self.block_decorators.insert(node_id, adjusted_decorators);
+        }
+        Ok(())
+    }
+
     /// Creates a basic block node and adds it to the forest with proper decorator handling.
     /// This method intercepts decorators before block creation, creates the block, then uses
     /// the decorator information along with operation offsets from the created block to populate
@@ -127,16 +147,10 @@ impl MastForest {
         operations: Vec<Operation>,
         decorators: DecoratorList,
     ) -> Result<MastNodeId, MastForestError> {
-        let block = BasicBlockNode::new(operations, decorators.clone())?;
-        let adjusted_decorators = BasicBlockNode::adjust_decorators(decorators, block.op_batches());
+        let block = BasicBlockNode::new(operations)?;
+        let op_batches = block.op_batches().to_vec();
         let new_node_id = self.add_node(block)?;
-        // Always link the decorators to the block, even if empty
-        if let Some(MastNode::Block(block)) = self.nodes.get_mut(new_node_id.as_usize()) {
-            block.link_decorators(Arc::new(adjusted_decorators.clone()));
-        }
-        if !adjusted_decorators.is_empty() {
-            self.block_decorators.insert(new_node_id, adjusted_decorators);
-        }
+        self.store_block_decorators(new_node_id, decorators, &op_batches)?;
         Ok(new_node_id)
     }
 
@@ -155,17 +169,10 @@ impl MastForest {
             decorator_list.push((*idx, self.add_decorator(decorator.clone())?));
         }
 
-        let block = BasicBlockNode::new(operations, decorator_list.clone())?;
-        let adjusted_decorators =
-            BasicBlockNode::adjust_decorators(decorator_list, block.op_batches());
+        let block = BasicBlockNode::new(operations)?;
+        let op_batches = block.op_batches().to_vec();
         let new_node_id = self.add_node(block)?;
-        // Always link the decorators to the block, even if empty
-        if let Some(MastNode::Block(block)) = self.nodes.get_mut(new_node_id.as_usize()) {
-            block.link_decorators(Arc::new(adjusted_decorators.clone()));
-        }
-        if !adjusted_decorators.is_empty() {
-            self.block_decorators.insert(new_node_id, adjusted_decorators);
-        }
+        self.store_block_decorators(new_node_id, decorator_list, &op_batches)?;
         Ok(new_node_id)
     }
 

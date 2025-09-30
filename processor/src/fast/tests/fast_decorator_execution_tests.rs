@@ -19,7 +19,7 @@ fn create_test_program(
     let mut mast_forest = MastForest::new();
 
     // Create the basic block with decorators
-    let mut basic_block = BasicBlockNode::new(operations.to_vec(), Vec::new()).unwrap();
+    let mut basic_block = BasicBlockNode::new(operations.to_vec()).unwrap();
 
     // Add before_enter decorators
     for decorator in before_enter {
@@ -331,7 +331,7 @@ fn create_test_program_with_inner_decorators(
     let mut mast_forest = MastForest::new();
 
     // Create the basic block with inner decorators
-    let inner_decorator_list: Vec<(usize, DecoratorId)> = inner_decorators
+    let _inner_decorator_list: Vec<(usize, DecoratorId)> = inner_decorators
         .iter()
         .map(|(op_idx, decorator)| {
             let decorator_id = mast_forest.add_decorator(decorator.clone()).unwrap();
@@ -339,7 +339,7 @@ fn create_test_program_with_inner_decorators(
         })
         .collect();
 
-    let mut basic_block = BasicBlockNode::new(operations.to_vec(), inner_decorator_list).unwrap();
+    let mut basic_block = BasicBlockNode::new(operations.to_vec()).unwrap();
 
     // Add before_enter decorators
     for decorator in before_enter {

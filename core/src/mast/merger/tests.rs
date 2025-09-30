@@ -7,19 +7,15 @@ use crate::{
 };
 
 fn block_foo() -> MastNode {
-    BasicBlockNode::new(vec![Operation::Mul, Operation::Add], Vec::new())
-        .unwrap()
-        .into()
+    BasicBlockNode::new(vec![Operation::Mul, Operation::Add]).unwrap().into()
 }
 
 fn block_bar() -> MastNode {
-    BasicBlockNode::new(vec![Operation::And, Operation::Eq], Vec::new())
-        .unwrap()
-        .into()
+    BasicBlockNode::new(vec![Operation::And, Operation::Eq]).unwrap().into()
 }
 
 fn block_qux() -> MastNode {
-    BasicBlockNode::new(vec![Operation::Swap, Operation::Push(ONE), Operation::Eq], Vec::new())
+    BasicBlockNode::new(vec![Operation::Swap, Operation::Push(ONE), Operation::Eq])
         .unwrap()
         .into()
 }

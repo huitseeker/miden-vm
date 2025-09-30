@@ -551,7 +551,9 @@ impl Process {
         self.start_basic_block_node(basic_block, program, host)?;
 
         let mut op_offset = 0;
-        let mut decorator_ids = basic_block.indexed_decorator_iter().unwrap();
+        let mut decorator_ids = basic_block
+            .indexed_decorator_iter()
+            .expect("Basic block should be linked to MastForest in execution context");
 
         // execute the first operation batch
         self.execute_op_batch(

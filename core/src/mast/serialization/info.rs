@@ -1,5 +1,3 @@
-use alloc::vec::Vec;
-
 use super::{NodeDataOffset, basic_blocks::BasicBlockDataDecoder};
 use crate::{
     mast::{
@@ -49,7 +47,7 @@ impl MastNodeInfo {
         match self.ty {
             MastNodeType::Block { ops_offset } => {
                 let operations = basic_block_data_decoder.decode_operations(ops_offset)?;
-                let block = BasicBlockNode::new_unsafe(operations, Vec::new(), self.digest);
+                let block = BasicBlockNode::new_unsafe(operations, self.digest);
                 Ok(MastNode::Block(block))
             },
             MastNodeType::Join { left_child_id, right_child_id } => {

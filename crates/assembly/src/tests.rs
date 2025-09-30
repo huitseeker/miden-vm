@@ -3707,10 +3707,10 @@ fn duplicate_nodes() {
 
     let mut expected_mast_forest = MastForest::new();
 
-    let mul_basic_block = BasicBlockNode::new(vec![Operation::Mul], Vec::new()).unwrap();
+    let mul_basic_block = BasicBlockNode::new(vec![Operation::Mul]).unwrap();
     let mul_basic_block_id = expected_mast_forest.add_node(mul_basic_block).unwrap();
 
-    let add_basic_block = BasicBlockNode::new(vec![Operation::Add], Vec::new()).unwrap();
+    let add_basic_block = BasicBlockNode::new(vec![Operation::Add]).unwrap();
     let add_basic_block_id = expected_mast_forest.add_node(add_basic_block).unwrap();
 
     // inner split: `if.true add else mul end`

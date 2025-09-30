@@ -426,10 +426,14 @@ fn mast_forest_basic_block_serialization_no_decorator_duplication() {
     let op_deco = forest.add_decorator(Decorator::Trace(2)).unwrap();
     let after_exit_deco = forest.add_decorator(Decorator::Trace(3)).unwrap();
 
-    // Create a basic block with all types of decorators
+    // Create a basic block with operations
     let operations = vec![Operation::Add, Operation::Mul];
     let decorators = vec![(0, op_deco)];
-    let mut block = BasicBlockNode::new(operations, decorators.clone()).unwrap();
+    let mut block = BasicBlockNode::new(operations).unwrap();
+
+    // Link decorators to the block
+    let arc_decorators = Arc::new(decorators.clone());
+    block.link_decorators(arc_decorators);
     block.append_before_enter(&[before_enter_deco]);
     block.append_after_exit(&[after_exit_deco]);
 

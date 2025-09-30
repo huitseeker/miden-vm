@@ -347,8 +347,11 @@ impl MastForestBuilder {
                 self.mast_forest.is_procedure_root(basic_block_id),
                 basic_block_node.num_op_batches(),
             ) {
-                for (op_idx, decorator) in basic_block_node.raw_decorator_iter().unwrap() {
-                    decorators.push((op_idx + operations.len(), decorator));
+                // Use raw_decorator_iter if the block is linked, otherwise skip decorators
+                if let Ok(decorator_iter) = basic_block_node.raw_decorator_iter() {
+                    for (op_idx, decorator) in decorator_iter {
+                        decorators.push((op_idx + operations.len(), decorator));
+                    }
                 }
                 for batch in basic_block_node.op_batches() {
                     operations.extend(batch.raw_ops());
@@ -433,34 +436,35 @@ impl MastForestBuilder {
         operations: Vec<Operation>,
         decorators: DecoratorList,
     ) -> Result<MastNodeId, Report> {
-        // Create the basic block node first to compute its fingerprint
-        let block = BasicBlockNode::new(operations.clone(), decorators.clone())
+        // Create a decorator-less block for fingerprinting to check for duplicates
+        let decorator_less_block = BasicBlockNode::new(operations.clone())
             .into_diagnostic()
-            .wrap_err("assembler failed to add new basic block node")?;
+            .wrap_err("assembler failed to create decorator-less basic block node")?;
 
-        // Compute the fingerprint for this block
-        let block_node: MastNode = block.clone().into();
-        let block_fingerprint = self.fingerprint_for_node(&block_node);
+        // Compute the fingerprint for this block without decorators
+        let decorator_less_node: MastNode = decorator_less_block.clone().into();
+        let block_fingerprint = self.fingerprint_for_node(&decorator_less_node);
 
         // Check if a node with this fingerprint already exists
         if let Some(&node_id) = self.node_id_by_fingerprint.get(&block_fingerprint) {
             // Node already exists in the forest; return previously assigned id
             Ok(node_id)
         } else {
-            // Node doesn't exist yet, add it using the generic add_node method
+            // Node doesn't exist yet, add the decorator-less block to the forest
             let new_node_id = self
                 .mast_forest
-                .add_node(MastNode::Block(block.clone()))
+                .add_node(MastNode::Block(decorator_less_block.clone()))
                 .into_diagnostic()
                 .wrap_err("assembler failed to add new basic block node")?;
 
-            // Manually populate the block_decorators field to ensure proper serialization
+            // Store the decorators for this block in the block_decorators map
+            // Note: The block will be linked later when store_block_decorators is called
             if !decorators.is_empty() {
-                let adjusted_decorators =
-                    BasicBlockNode::adjust_decorators(decorators.clone(), block.op_batches());
-                self.mast_forest
-                    .block_decorators_mut()
-                    .insert(new_node_id, adjusted_decorators.clone());
+                let adjusted_decorators = BasicBlockNode::adjust_decorators(
+                    decorators.clone(),
+                    decorator_less_block.op_batches(),
+                );
+                self.mast_forest.block_decorators_mut().insert(new_node_id, adjusted_decorators);
             }
 
             // Update the fingerprint maps for the new node

@@ -89,8 +89,6 @@ pub struct BasicBlockNode {
     /// Multiple batches are used for blocks consisting of more than 72 operations.
     op_batches: Vec<OpBatch>,
     digest: Word,
-    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Vec::is_empty"))]
-    decorators: DecoratorList,
     #[cfg_attr(feature = "serde", serde(skip))]
     // This field is for runtime reference only and should not be part of serialization
     decorators_ref: DecoratorsRef,
@@ -110,31 +108,20 @@ impl BasicBlockNode {
 // ------------------------------------------------------------------------------------------------
 /// Constructors
 impl BasicBlockNode {
-    /// Returns a new [`BasicBlockNode`] instantiated with the specified operations and decorators.
+    /// Returns a new [`BasicBlockNode`] instantiated with the specified operations.
     ///
     /// Returns an error if:
     /// - `operations` vector is empty.
-    pub fn new(
-        operations: Vec<Operation>,
-        decorators: DecoratorList,
-    ) -> Result<Self, MastForestError> {
+    pub fn new(operations: Vec<Operation>) -> Result<Self, MastForestError> {
         if operations.is_empty() {
             return Err(MastForestError::EmptyBasicBlock);
         }
 
-        // Validate decorators list (only in debug mode).
-        #[cfg(debug_assertions)]
-        validate_decorators(operations.len(), &decorators);
-
         let (op_batches, digest) = batch_and_hash_ops(operations);
-        // the prior line may have inserted some padding Noops in the op_batches
-        // the decorator mapping should still point to the correct operation when that happens
-        let reflowed_decorators = BasicBlockNode::adjust_decorators(decorators, &op_batches);
 
         Ok(Self {
             op_batches,
             digest,
-            decorators: reflowed_decorators,
             decorators_ref: DecoratorsRef::new(),
             before_enter: Vec::new(),
             after_exit: Vec::new(),
@@ -156,13 +143,12 @@ impl BasicBlockNode {
 
     /// Returns a new [`BasicBlockNode`] from values that are assumed to be correct.
     /// Should only be used when the source of the inputs is trusted (e.g. deserialization).
-    pub fn new_unsafe(operations: Vec<Operation>, decorators: DecoratorList, digest: Word) -> Self {
+    pub fn new_unsafe(operations: Vec<Operation>, digest: Word) -> Self {
         assert!(!operations.is_empty());
         let op_batches = batch_ops(operations);
         Self {
             op_batches,
             digest,
-            decorators,
             decorators_ref: DecoratorsRef::new(),
             before_enter: Vec::new(),
             after_exit: Vec::new(),
@@ -181,7 +167,13 @@ impl BasicBlockNode {
             decorator_list.push((idx, mast_forest.add_decorator(decorator)?));
         }
 
-        Self::new(operations, decorator_list)
+        // Create the block first
+        let block = Self::new(operations)?;
+
+        // Note: In the new system, decorators are handled separately via MastForest
+        // The decorator linking is handled by the caller or via the MastForest's block_decorators
+
+        Ok(block)
     }
 }
 
@@ -226,13 +218,7 @@ impl BasicBlockNode {
     /// [`MastNodeErrorContext`] this does not include the `before_enter` or `after_exit`
     /// decorators.
     pub fn indexed_decorator_iter(&self) -> Result<DecoratorOpLinkIterator<'_>, MastForestError> {
-        let decorators = if let Ok(decorators) = self.try_get_decorators() {
-            // Use linked reference if available
-            decorators
-        } else {
-            // Fall back to legacy field for unlinked blocks
-            &self.decorators
-        };
+        let decorators = self.try_get_decorators()?;
         Ok(DecoratorOpLinkIterator::new(
             &[],
             decorators,
@@ -249,13 +235,7 @@ impl BasicBlockNode {
     /// decorators of the [`BasicBlockNode`] in the order in which they appear in the program.
     /// This includes `before_enter`, op-indexed decorators, and after_exit`.
     pub fn raw_decorator_iter(&self) -> Result<RawDecoratorOpLinkIterator<'_>, MastForestError> {
-        let decorators = if let Ok(decorators) = self.try_get_decorators() {
-            // Use linked reference if available
-            decorators
-        } else {
-            // Fall back to legacy field for unlinked blocks
-            &self.decorators
-        };
+        let decorators = self.try_get_decorators()?;
         Ok(RawDecoratorOpLinkIterator::new(
             &self.before_enter,
             decorators,
@@ -294,9 +274,7 @@ impl BasicBlockNode {
     /// Returns the total number of operations and decorators in this basic block.
     pub fn num_operations_and_decorators(&self) -> u32 {
         let num_ops: usize = self.num_operations() as usize;
-        let num_decorators = self
-            .try_get_decorators()
-            .map_or_else(|_| self.decorators.len(), |dec| dec.len());
+        let num_decorators = self.try_get_decorators().map(|dec| dec.len()).unwrap_or(0);
 
         (num_ops + num_decorators)
             .try_into()
@@ -310,28 +288,14 @@ impl BasicBlockNode {
     }
 }
 
-//-------------------------------------------------------------------------------------------------
-/// Mutators
-impl BasicBlockNode {
-    /// Used to initialize decorators for the [`BasicBlockNode`]. Replaces the existing decorators
-    /// with the given ['DecoratorList'].
-    pub fn set_decorators(&mut self, decorator_list: DecoratorList) {
-        self.decorators = decorator_list;
-        self.decorators_ref = DecoratorsRef::new();
-    }
-
-    /// Returns a mutable reference to the decorators field for serialization compatibility.
-    pub fn decorators_mut(&mut self) -> &mut DecoratorList {
-        &mut self.decorators
-    }
-}
-
 impl MastNodeErrorContext for BasicBlockNode {
     /// This iterator returns all decorators of the [`BasicBlockNode`] in the order in which they
     /// appear in the program. This includes `before_enter`, op-indexed decorators, and
     /// `after_exit`.
     fn decorators(&self) -> impl Iterator<Item = DecoratedOpLink> {
-        let decorators = self.try_get_decorators().unwrap_or(&self.decorators);
+        let decorators = self.try_get_decorators().expect(
+            "Decorator access failed: BasicBlockNode must be linked to a MastForest. Use a try_* variant for fallible access."
+        );
         DecoratorOpLinkIterator::new(
             &self.before_enter,
             decorators,
@@ -386,7 +350,6 @@ impl MastNodeExt for BasicBlockNode {
 
     /// Removes all decorators from this node.
     fn remove_decorators(&mut self) {
-        self.decorators.truncate(0);
         self.decorators_ref = DecoratorsRef::new();
         self.before_enter.truncate(0);
         self.after_exit.truncate(0);
@@ -732,12 +695,7 @@ impl<'a> OperationOrDecoratorIterator<'a> {
 
     #[inline]
     fn next_decorator_if_due(&mut self) -> Option<OperationOrDecorator<'a>> {
-        // For linked blocks, use the new accessor. For unlinked blocks, fall back to legacy.
-        let decorators = if let Ok(decorators) = self.node.try_get_decorators() {
-            decorators
-        } else {
-            &self.node.decorators
-        };
+        let decorators = self.node.try_get_decorators().ok()?;
 
         if let Some((op_idx, deco)) = decorators.get(self.decorator_list_next_index)
             && *op_idx == self.op_index
@@ -803,24 +761,6 @@ impl<'a> Iterator for OperationOrDecoratorIterator<'a> {
 
 // HELPER FUNCTIONS
 // ================================================================================================
-
-/// Checks if a given decorators list is valid (only checked in debug mode)
-/// - Assert the decorator list is in ascending order.
-/// - Assert the last op index in decorator list is less than or equal to the number of operations.
-#[cfg(debug_assertions)]
-pub(crate) fn validate_decorators(operations_len: usize, decorators: &DecoratorList) {
-    if !decorators.is_empty() {
-        // check if decorator list is sorted
-        for i in 0..(decorators.len() - 1) {
-            debug_assert!(decorators[i + 1].0 >= decorators[i].0, "unsorted decorators list");
-        }
-        // assert the last index in decorator list is less than operations vector length
-        debug_assert!(
-            operations_len >= decorators.last().expect("empty decorators list").0,
-            "last op index in decorator list should be less than or equal to the number of ops"
-        );
-    }
-}
 
 // Indexes into an operations-long sequence of decorators. Should not be user-facing.
 //
@@ -929,8 +869,13 @@ impl PartialEq for BasicBlockNode {
         // Only compare the fields that matter for logical equality
         self.op_batches == other.op_batches
             && self.digest == other.digest
-            && self.decorators == other.decorators
             && self.before_enter == other.before_enter
             && self.after_exit == other.after_exit
+            // Compare decorator lists from the linked references if available
+            && (match (self.try_get_decorators(), other.try_get_decorators()) {
+                (Ok(a), Ok(b)) => a == b,
+                (Err(_), Err(_)) => true, // Both unlinked, considered equal
+                _ => false, // One linked, one unlinked
+            })
     }
 }

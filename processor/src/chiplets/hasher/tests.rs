@@ -250,10 +250,10 @@ fn hash_memoization_control_blocks() {
 
     let mut mast_forest = MastForest::new();
 
-    let t_branch = BasicBlockNode::new(vec![Operation::Push(ZERO)], Vec::new()).unwrap();
+    let t_branch = BasicBlockNode::new(vec![Operation::Push(ZERO)]).unwrap();
     let t_branch_id = mast_forest.add_node(t_branch.clone()).unwrap();
 
-    let f_branch = BasicBlockNode::new(vec![Operation::Push(ONE)], Vec::new()).unwrap();
+    let f_branch = BasicBlockNode::new(vec![Operation::Push(ONE)]).unwrap();
     let f_branch_id = mast_forest.add_node(f_branch.clone()).unwrap();
 
     let split1 = SplitNode::new([t_branch_id, f_branch_id], &mast_forest).unwrap();
@@ -354,8 +354,7 @@ fn hash_memoization_control_blocks() {
 fn hash_memoization_basic_blocks() {
     // --- basic block with 1 batch ----------------------------------------------------------------
     let basic_block =
-        BasicBlockNode::new(vec![Operation::Push(Felt::new(10)), Operation::Drop], Vec::new())
-            .unwrap();
+        BasicBlockNode::new(vec![Operation::Push(Felt::new(10)), Operation::Drop]).unwrap();
 
     hash_memoization_basic_blocks_check(basic_block.into());
 
@@ -398,7 +397,7 @@ fn hash_memoization_basic_blocks() {
         Operation::Drop,
         Operation::Drop,
     ];
-    let basic_block = BasicBlockNode::new(ops, Vec::new()).unwrap();
+    let basic_block = BasicBlockNode::new(ops).unwrap();
 
     hash_memoization_basic_blocks_check(basic_block.into());
 }

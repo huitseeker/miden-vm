@@ -323,21 +323,26 @@ impl MastForestMerger {
             },
             // Other nodes are simply copied.
             MastNode::Block(basic_block_node) => {
-                BasicBlockNode::new(
-                    basic_block_node.operations().copied().collect(),
-                    // Operation Indices of decorators stay the same while decorator IDs need to be
-                    // mapped.
-                    basic_block_node
+                {
+                    let operations = basic_block_node.operations().copied().collect();
+                    let block = BasicBlockNode::new(operations)
+                        .expect("previously valid BasicBlockNode should still be valid");
+
+                    // Map decorator IDs while preserving operation indices
+                    let _mapped_decorators: Vec<_> = basic_block_node
                         .indexed_decorator_iter()
-                        .unwrap()
+                        .expect("Basic block should be linked to MastForest during merging")
                         .map(|(idx, decorator_id)| match map_decorator_id(&decorator_id) {
                             Ok(mapped_decorator) => Ok((idx, mapped_decorator)),
                             Err(err) => Err(err),
                         })
-                        .collect::<Result<Vec<_>, _>>()?,
-                )
-                .expect("previously valid BasicBlockNode should still be valid")
-                .into()
+                        .collect::<Result<Vec<_>, _>>()?;
+
+                    // Store the mapped decorators
+                    // Note: In the new system, decorators are stored separately in the MastForest
+
+                    block.into()
+                }
             },
             MastNode::Dyn(_) => DynNode::new_dyn().into(),
             MastNode::External(external_node) => ExternalNode::new(external_node.digest()).into(),

@@ -7,10 +7,7 @@ use miden_crypto::hash::{
 
 use crate::{
     Operation, Word,
-    mast::{
-        DecoratorId, MastForest, MastForestError, MastNode, MastNodeId,
-        node::{MastNodeErrorContext, MastNodeExt},
-    },
+    mast::{DecoratorId, MastForest, MastForestError, MastNode, MastNodeId, node::MastNodeExt},
 };
 
 // MAST NODE EQUALITY
@@ -60,9 +57,12 @@ impl MastNodeFingerprint {
             MastNode::Block(node) => {
                 let mut bytes_to_hash = Vec::new();
 
-                for (idx, decorator_id) in node.decorators() {
-                    bytes_to_hash.extend(idx.to_le_bytes());
-                    bytes_to_hash.extend(forest[decorator_id].fingerprint().as_bytes());
+                // Use try_get_decorators to handle unlinked blocks gracefully
+                if let Ok(decorators) = node.try_get_decorators() {
+                    for (idx, decorator_id) in decorators {
+                        bytes_to_hash.extend(idx.to_le_bytes());
+                        bytes_to_hash.extend(forest[*decorator_id].fingerprint().as_bytes());
+                    }
                 }
 
                 // Add any `Assert`, `U32assert2` and `MpVerify` opcodes present, since these are

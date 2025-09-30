@@ -168,10 +168,9 @@ impl Arbitrary for BasicBlockNode {
             .prop_filter_map("non-empty ops", |(ops, decorators)| {
                 if ops.is_empty() { None } else { Some((ops, decorators)) }
             })
-            .prop_map(|(ops, decorators)| {
-                // BasicBlockNode::new will adjust indices for padding and set be/ae empty.
-                BasicBlockNode::new(ops, decorators)
-                    .expect("non-empty ops; new() only errs on empty ops")
+            .prop_map(|(ops, _decorators)| {
+                // BasicBlockNode::new no longer takes decorators directly
+                BasicBlockNode::new(ops).expect("non-empty ops; new() only errs on empty ops")
             })
             .boxed()
     }
