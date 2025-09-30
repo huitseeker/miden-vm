@@ -866,10 +866,11 @@ impl PartialEq for BasicBlockNode {
             && self.digest == other.digest
             && self.before_enter == other.before_enter
             && self.after_exit == other.after_exit
-            // Compare decorator lists from the linked references if available
+            // For unlinked blocks, we consider them equal based on content only
+            // Linked blocks will have decorator information compared in their MastNode equality
             && (match (self.try_get_decorators(), other.try_get_decorators()) {
                 (Ok(a), Ok(b)) => a == b,
-                (Err(_), Err(_)) => true, // Both unlinked, considered equal
+                (Err(_), Err(_)) => true, // Both unlinked - consider equal based on other fields
                 _ => false, // One linked, one unlinked
             })
     }

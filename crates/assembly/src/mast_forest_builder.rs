@@ -441,9 +441,23 @@ impl MastForestBuilder {
             .into_diagnostic()
             .wrap_err("assembler failed to create decorator-less basic block node")?;
 
-        // Compute the fingerprint for this block without decorators
-        let decorator_less_node: MastNode = decorator_less_block.clone().into();
-        let block_fingerprint = self.fingerprint_for_node(&decorator_less_node);
+        // Compute the fingerprint for this block considering decorators
+        let block_with_decorators = if !decorators.is_empty() {
+            let temp_block = decorator_less_block.clone();
+            let adjusted_decorators = BasicBlockNode::adjust_decorators(
+                decorators.clone(),
+                decorator_less_block.op_batches(),
+            );
+            // Temporarily link decorators for fingerprinting
+            let mut temp_block_with_decorators = temp_block;
+            temp_block_with_decorators.link_decorators(Arc::new(adjusted_decorators));
+            temp_block_with_decorators
+        } else {
+            decorator_less_block.clone()
+        };
+
+        let block_node: MastNode = block_with_decorators.into();
+        let block_fingerprint = self.fingerprint_for_node(&block_node);
 
         // Check if a node with this fingerprint already exists
         if let Some(&node_id) = self.node_id_by_fingerprint.get(&block_fingerprint) {

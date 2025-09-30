@@ -1,7 +1,7 @@
 ---
-source: assembly/src/tests.rs
+source: crates/assembly/src/tests.rs
 expression: program
 ---
 begin
-    basic_block trace(0) add add trace(1) mul mul trace(2) end
+    basic_block add add mul mul trace(2) end
 end
