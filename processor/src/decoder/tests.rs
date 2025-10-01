@@ -54,15 +54,14 @@ type DecoderTrace = [Vec<Felt>; DECODER_TRACE_WIDTH];
 #[test]
 fn basic_block_one_group() {
     let ops = vec![Operation::Pad, Operation::Add, Operation::Mul];
-    let basic_block = BasicBlockNode::new(ops.clone(), Vec::new()).unwrap();
-    let program = {
+    let (basic_block, program) = {
         let mut mast_forest = MastForest::new();
 
-        let basic_block_node = MastNode::Block(basic_block.clone());
-        let basic_block_id = mast_forest.add_node(basic_block_node).unwrap();
+        let basic_block_id = mast_forest.add_block(ops.clone(), Vec::new()).unwrap();
+        let basic_block = mast_forest[basic_block_id].unwrap_basic_block().clone();
         mast_forest.make_root(basic_block_id);
 
-        Program::new(mast_forest.into(), basic_block_id)
+        (basic_block, Program::new(mast_forest.into(), basic_block_id))
     };
 
     let (trace, trace_len) = build_trace(&[], &program);
@@ -107,15 +106,14 @@ fn basic_block_small() {
         Operation::Swap,
         Operation::Drop,
     ];
-    let basic_block = BasicBlockNode::new(ops.clone(), Vec::new()).unwrap();
-    let program = {
+    let (basic_block, program) = {
         let mut mast_forest = MastForest::new();
 
-        let basic_block_node = MastNode::Block(basic_block.clone());
-        let basic_block_id = mast_forest.add_node(basic_block_node).unwrap();
+        let basic_block_id = mast_forest.add_block(ops.clone(), Vec::new()).unwrap();
+        let basic_block = mast_forest[basic_block_id].unwrap_basic_block().clone();
         mast_forest.make_root(basic_block_id);
 
-        Program::new(mast_forest.into(), basic_block_id)
+        (basic_block, Program::new(mast_forest.into(), basic_block_id))
     };
 
     let (trace, trace_len) = build_trace(&[], &program);
@@ -169,15 +167,14 @@ fn basic_block_small_with_emit() {
         Operation::Drop,
         Operation::Add,
     ];
-    let basic_block = BasicBlockNode::new(ops.clone(), Vec::new()).unwrap();
-    let program = {
+    let (basic_block, program) = {
         let mut mast_forest = MastForest::new();
 
-        let basic_block_node = MastNode::Block(basic_block.clone());
-        let basic_block_id = mast_forest.add_node(basic_block_node).unwrap();
+        let basic_block_id = mast_forest.add_block(ops.clone(), Vec::new()).unwrap();
+        let basic_block = mast_forest[basic_block_id].unwrap_basic_block().clone();
         mast_forest.make_root(basic_block_id);
 
-        Program::new(mast_forest.into(), basic_block_id)
+        (basic_block, Program::new(mast_forest.into(), basic_block_id))
     };
 
     let (trace, trace_len) = build_trace(&[], &program);
@@ -239,15 +236,14 @@ fn basic_block() {
         Operation::Swap,
         Operation::Drop,
     ];
-    let basic_block = BasicBlockNode::new(ops.clone(), Vec::new()).unwrap();
-    let program = {
+    let (basic_block, program) = {
         let mut mast_forest = MastForest::new();
 
-        let basic_block_node = MastNode::Block(basic_block.clone());
-        let basic_block_id = mast_forest.add_node(basic_block_node).unwrap();
+        let basic_block_id = mast_forest.add_block(ops.clone(), Vec::new()).unwrap();
+        let basic_block = mast_forest[basic_block_id].unwrap_basic_block().clone();
         mast_forest.make_root(basic_block_id);
 
-        Program::new(mast_forest.into(), basic_block_id)
+        (basic_block, Program::new(mast_forest.into(), basic_block_id))
     };
     let (trace, trace_len) = build_trace(&[], &program);
 
@@ -346,15 +342,14 @@ fn span_block_with_respan() {
         Operation::Drop,
         Operation::Drop,
     ];
-    let basic_block = BasicBlockNode::new(ops.clone(), Vec::new()).unwrap();
-    let program = {
+    let (basic_block, program) = {
         let mut mast_forest = MastForest::new();
 
-        let basic_block_node = MastNode::Block(basic_block.clone());
-        let basic_block_id = mast_forest.add_node(basic_block_node).unwrap();
+        let basic_block_id = mast_forest.add_block(ops.clone(), Vec::new()).unwrap();
+        let basic_block = mast_forest[basic_block_id].unwrap_basic_block().clone();
         mast_forest.make_root(basic_block_id);
 
-        Program::new(mast_forest.into(), basic_block_id)
+        (basic_block, Program::new(mast_forest.into(), basic_block_id))
     };
     let (trace, trace_len) = build_trace(&[], &program);
 
@@ -1328,8 +1323,8 @@ fn dyn_block() {
     let join_node = mast_forest[join_node_id].clone();
 
     // This dyn will point to foo.
-    let dyn_node = DynNode::new_dyn();
-    let dyn_node_id = mast_forest.add_node(dyn_node.clone()).unwrap();
+    let dyn_node_id = mast_forest.add_dyn().unwrap();
+    let dyn_node = mast_forest[dyn_node_id].clone();
 
     let program_root_node_id = mast_forest.add_join(join_node_id, dyn_node_id).unwrap();
     let program_root_node = mast_forest[program_root_node_id].clone();
