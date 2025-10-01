@@ -258,44 +258,43 @@ fn serialize_deserialize_all_nodes() {
     let decorator_id2 = mast_forest.add_decorator(Decorator::Trace(2)).unwrap();
 
     // Call node
-    let call_node_id = mast_forest.add_call(basic_block_id).unwrap();
-    mast_forest[call_node_id].append_before_enter(&[decorator_id1]);
-    mast_forest[call_node_id].append_after_exit(&[decorator_id2]);
+    let call_node_id = mast_forest
+        .add_call_with_decorators(basic_block_id, &[decorator_id1], &[decorator_id2])
+        .unwrap();
 
     // Syscall node
-    let syscall_node_id = mast_forest.add_syscall(basic_block_id).unwrap();
-    mast_forest[syscall_node_id].append_before_enter(&[decorator_id1]);
-    mast_forest[syscall_node_id].append_after_exit(&[decorator_id2]);
+    let syscall_node_id = mast_forest
+        .add_syscall_with_decorators(basic_block_id, &[decorator_id1], &[decorator_id2])
+        .unwrap();
 
     // Loop node
-    let loop_node_id = mast_forest.add_loop(basic_block_id).unwrap();
-    mast_forest[loop_node_id].append_before_enter(&[decorator_id1]);
-    mast_forest[loop_node_id].append_after_exit(&[decorator_id2]);
+    let loop_node_id = mast_forest
+        .add_loop_with_decorators(basic_block_id, &[decorator_id1], &[decorator_id2])
+        .unwrap();
 
     // Join node
-    let join_node_id = mast_forest.add_join(basic_block_id, call_node_id).unwrap();
-    mast_forest[join_node_id].append_before_enter(&[decorator_id1]);
-    mast_forest[join_node_id].append_after_exit(&[decorator_id2]);
+    let join_node_id = mast_forest
+        .add_join_with_decorators(basic_block_id, call_node_id, &[decorator_id1], &[decorator_id2])
+        .unwrap();
 
     // Split node
-    let split_node_id = mast_forest.add_split(basic_block_id, call_node_id).unwrap();
-    mast_forest[split_node_id].append_before_enter(&[decorator_id1]);
-    mast_forest[split_node_id].append_after_exit(&[decorator_id2]);
+    let split_node_id = mast_forest
+        .add_split_with_decorators(basic_block_id, call_node_id, &[decorator_id1], &[decorator_id2])
+        .unwrap();
 
     // Dyn node
-    let dyn_node_id = mast_forest.add_dyn().unwrap();
-    mast_forest[dyn_node_id].append_before_enter(&[decorator_id1]);
-    mast_forest[dyn_node_id].append_after_exit(&[decorator_id2]);
+    let dyn_node_id =
+        mast_forest.add_dyn_with_decorators(&[decorator_id1], &[decorator_id2]).unwrap();
 
     // Dyncall node
-    let dyncall_node_id = mast_forest.add_dyncall().unwrap();
-    mast_forest[dyncall_node_id].append_before_enter(&[decorator_id1]);
-    mast_forest[dyncall_node_id].append_after_exit(&[decorator_id2]);
+    let dyncall_node_id = mast_forest
+        .add_dyncall_with_decorators(&[decorator_id1], &[decorator_id2])
+        .unwrap();
 
     // External node
-    let external_node_id = mast_forest.add_external(Word::default()).unwrap();
-    mast_forest[external_node_id].append_before_enter(&[decorator_id1]);
-    mast_forest[external_node_id].append_after_exit(&[decorator_id2]);
+    let external_node_id = mast_forest
+        .add_external_with_decorators(Word::default(), &[decorator_id1], &[decorator_id2])
+        .unwrap();
 
     mast_forest.make_root(join_node_id);
     mast_forest.make_root(syscall_node_id);
