@@ -13,7 +13,7 @@ use miden_air::trace::{
 };
 use miden_core::{
     EMPTY_WORD, EventId, ONE, Program, WORD_SIZE, ZERO, assert_matches,
-    mast::{CallNode, DynNode, MastForest, MastNode, MastNodeExt, MastNodeId, OP_BATCH_SIZE},
+    mast::{MastForest, MastNodeExt, MastNodeId, OP_BATCH_SIZE},
 };
 use miden_utils_testing::rand::rand_value;
 use rstest::rstest;
@@ -1450,23 +1450,18 @@ fn calls_in_syscall(#[case] op: Operation) {
         // add dummy block
         mast_forest.add_block(vec![Operation::Add], Vec::new()).unwrap();
 
-        let node: MastNode = match op {
-            Operation::Dyncall => DynNode::new_dyncall().into(),
+        let call_node_id = match op {
+            Operation::Dyncall => mast_forest.add_dyncall().unwrap(),
             Operation::Call => {
-                CallNode::new(MastNodeId::from_u32_safe(0, &mast_forest).unwrap(), &mast_forest)
-                    .unwrap()
-                    .into()
+                let callee_id = MastNodeId::from_u32_safe(0, &mast_forest).unwrap();
+                mast_forest.add_call(callee_id).unwrap()
             },
-            Operation::SysCall => CallNode::new_syscall(
-                MastNodeId::from_u32_safe(0, &mast_forest).unwrap(),
-                &mast_forest,
-            )
-            .unwrap()
-            .into(),
+            Operation::SysCall => {
+                let callee_id = MastNodeId::from_u32_safe(0, &mast_forest).unwrap();
+                mast_forest.add_syscall(callee_id).unwrap()
+            },
             _ => unreachable!(),
         };
-
-        let call_node_id = mast_forest.add_node(node).unwrap();
         mast_forest.make_root(call_node_id);
 
         Program::new(mast_forest.into(), call_node_id)

@@ -15,7 +15,9 @@ fn add_block_bar(forest: &mut MastForest) -> MastNodeId {
 }
 
 fn add_block_qux(forest: &mut MastForest) -> MastNodeId {
-    forest.add_block(vec![Operation::Swap, Operation::Push(ONE), Operation::Eq], Vec::new()).unwrap()
+    forest
+        .add_block(vec![Operation::Swap, Operation::Push(ONE), Operation::Eq], Vec::new())
+        .unwrap()
 }
 
 // Helper functions for creating decorated blocks
@@ -25,16 +27,24 @@ fn add_decorated_block_foo(forest: &mut MastForest, decorator_ids: &[DecoratorId
     forest.add_node(block).unwrap()
 }
 
-
 // Helper functions for creating decorated loops
-fn add_decorated_loop(forest: &mut MastForest, body: MastNodeId, decorator_ids: &[DecoratorId]) -> MastNodeId {
+fn add_decorated_loop(
+    forest: &mut MastForest,
+    body: MastNodeId,
+    decorator_ids: &[DecoratorId],
+) -> MastNodeId {
     let mut loop_node = LoopNode::new(body, forest).unwrap();
     loop_node.append_after_exit(decorator_ids);
     forest.add_node(loop_node).unwrap()
 }
 
 // Helper functions for creating decorated external nodes
-fn add_decorated_external(forest: &mut MastForest, mast_root: Word, before_enter: &[DecoratorId], after_exit: &[DecoratorId]) -> MastNodeId {
+fn add_decorated_external(
+    forest: &mut MastForest,
+    mast_root: Word,
+    before_enter: &[DecoratorId],
+    after_exit: &[DecoratorId],
+) -> MastNodeId {
     let mut external_node = ExternalNode::new(mast_root);
     external_node.append_before_enter(before_enter);
     external_node.append_after_exit(after_exit);
@@ -563,7 +573,8 @@ fn mast_forest_merge_external_node_with_decorator() {
     let deco1 = forest_a.add_decorator(trace1.clone()).unwrap();
     let deco2 = forest_a.add_decorator(trace2.clone()).unwrap();
 
-    let id_external_a = add_decorated_external(&mut forest_a, block_foo().digest(), &[deco1], &[deco2]);
+    let id_external_a =
+        add_decorated_external(&mut forest_a, block_foo().digest(), &[deco1], &[deco2]);
 
     forest_a.make_root(id_external_a);
 
@@ -627,7 +638,8 @@ fn mast_forest_merge_external_node_and_referenced_node_have_decorators() {
     // Build Forest A
     let deco1_a = forest_a.add_decorator(trace1.clone()).unwrap();
 
-    let id_external_a = add_decorated_external(&mut forest_a, block_foo().digest(), &[deco1_a], &[]);
+    let id_external_a =
+        add_decorated_external(&mut forest_a, block_foo().digest(), &[deco1_a], &[]);
 
     forest_a.make_root(id_external_a);
 
@@ -696,9 +708,11 @@ fn mast_forest_merge_multiple_external_nodes_with_decorator() {
     let deco1_a = forest_a.add_decorator(trace1.clone()).unwrap();
     let deco2_a = forest_a.add_decorator(trace2.clone()).unwrap();
 
-    let id_external_a = add_decorated_external(&mut forest_a, block_foo().digest(), &[deco1_a], &[deco2_a]);
+    let id_external_a =
+        add_decorated_external(&mut forest_a, block_foo().digest(), &[deco1_a], &[deco2_a]);
 
-    let id_external_b = add_decorated_external(&mut forest_a, block_foo().digest(), &[deco1_a], &[]);
+    let id_external_b =
+        add_decorated_external(&mut forest_a, block_foo().digest(), &[deco1_a], &[]);
 
     forest_a.make_root(id_external_a);
     forest_a.make_root(id_external_b);
