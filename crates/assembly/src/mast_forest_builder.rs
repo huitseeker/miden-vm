@@ -406,7 +406,7 @@ impl MastForestBuilder {
     /// Note that only one copy of nodes that have the same MAST root and decorators is added to the
     /// MAST forest; two nodes that have the same MAST root and decorators will have the same
     /// [`MastNodeId`].
-    pub fn ensure_node(&mut self, node: impl Into<MastNode>) -> Result<MastNodeId, Report> {
+    pub(crate) fn ensure_node(&mut self, node: impl Into<MastNode>) -> Result<MastNodeId, Report> {
         let node: MastNode = node.into();
         let node_fingerprint = self.fingerprint_for_node(&node);
 
@@ -432,10 +432,25 @@ impl MastForestBuilder {
         operations: Vec<Operation>,
         decorators: DecoratorList,
     ) -> Result<MastNodeId, Report> {
-        let block = BasicBlockNode::new(operations, decorators)
+        let block = BasicBlockNode::new(operations.clone(), decorators.clone())
             .into_diagnostic()
             .wrap_err("assembler failed to add new basic block node")?;
-        self.ensure_node(block)
+        let node_fingerprint = self.fingerprint_for_node(&MastNode::Block(block.clone()));
+
+        if let Some(node_id) = self.node_id_by_fingerprint.get(&node_fingerprint) {
+            // node already exists in the forest; return previously assigned id
+            Ok(*node_id)
+        } else {
+            let new_node_id = self
+                .mast_forest
+                .add_block(operations, decorators)
+                .into_diagnostic()
+                .wrap_err("assembler failed to add new basic block node")?;
+            self.node_id_by_fingerprint.insert(node_fingerprint, new_node_id);
+            self.hash_by_node_id.insert(new_node_id, node_fingerprint);
+
+            Ok(new_node_id)
+        }
     }
 
     /// Adds a join node to the forest, and returns the [`MastNodeId`] associated with it.
@@ -447,7 +462,22 @@ impl MastForestBuilder {
         let join = JoinNode::new([left_child, right_child], &self.mast_forest)
             .into_diagnostic()
             .wrap_err("assembler failed to add new join node")?;
-        self.ensure_node(join)
+        let node_fingerprint = self.fingerprint_for_node(&MastNode::Join(join.clone()));
+
+        if let Some(node_id) = self.node_id_by_fingerprint.get(&node_fingerprint) {
+            // node already exists in the forest; return previously assigned id
+            Ok(*node_id)
+        } else {
+            let new_node_id = self
+                .mast_forest
+                .add_join(left_child, right_child)
+                .into_diagnostic()
+                .wrap_err("assembler failed to add new join node")?;
+            self.node_id_by_fingerprint.insert(node_fingerprint, new_node_id);
+            self.hash_by_node_id.insert(new_node_id, node_fingerprint);
+
+            Ok(new_node_id)
+        }
     }
 
     /// Adds a split node to the forest, and returns the [`MastNodeId`] associated with it.
@@ -459,7 +489,22 @@ impl MastForestBuilder {
         let split = SplitNode::new([if_branch, else_branch], &self.mast_forest)
             .into_diagnostic()
             .wrap_err("assembler failed to add new split node")?;
-        self.ensure_node(split)
+        let node_fingerprint = self.fingerprint_for_node(&MastNode::Split(split.clone()));
+
+        if let Some(node_id) = self.node_id_by_fingerprint.get(&node_fingerprint) {
+            // node already exists in the forest; return previously assigned id
+            Ok(*node_id)
+        } else {
+            let new_node_id = self
+                .mast_forest
+                .add_split(if_branch, else_branch)
+                .into_diagnostic()
+                .wrap_err("assembler failed to add new split node")?;
+            self.node_id_by_fingerprint.insert(node_fingerprint, new_node_id);
+            self.hash_by_node_id.insert(new_node_id, node_fingerprint);
+
+            Ok(new_node_id)
+        }
     }
 
     /// Adds a loop node to the forest, and returns the [`MastNodeId`] associated with it.
@@ -467,7 +512,22 @@ impl MastForestBuilder {
         let loop_node = LoopNode::new(body, &self.mast_forest)
             .into_diagnostic()
             .wrap_err("assembler failed to add new loop node")?;
-        self.ensure_node(loop_node)
+        let node_fingerprint = self.fingerprint_for_node(&MastNode::Loop(loop_node.clone()));
+
+        if let Some(node_id) = self.node_id_by_fingerprint.get(&node_fingerprint) {
+            // node already exists in the forest; return previously assigned id
+            Ok(*node_id)
+        } else {
+            let new_node_id = self
+                .mast_forest
+                .add_loop(body)
+                .into_diagnostic()
+                .wrap_err("assembler failed to add new loop node")?;
+            self.node_id_by_fingerprint.insert(node_fingerprint, new_node_id);
+            self.hash_by_node_id.insert(new_node_id, node_fingerprint);
+
+            Ok(new_node_id)
+        }
     }
 
     /// Adds a call node to the forest, and returns the [`MastNodeId`] associated with it.
@@ -475,7 +535,22 @@ impl MastForestBuilder {
         let call = CallNode::new(callee, &self.mast_forest)
             .into_diagnostic()
             .wrap_err("assembler failed to add new call node")?;
-        self.ensure_node(call)
+        let node_fingerprint = self.fingerprint_for_node(&MastNode::Call(call.clone()));
+
+        if let Some(node_id) = self.node_id_by_fingerprint.get(&node_fingerprint) {
+            // node already exists in the forest; return previously assigned id
+            Ok(*node_id)
+        } else {
+            let new_node_id = self
+                .mast_forest
+                .add_call(callee)
+                .into_diagnostic()
+                .wrap_err("assembler failed to add new call node")?;
+            self.node_id_by_fingerprint.insert(node_fingerprint, new_node_id);
+            self.hash_by_node_id.insert(new_node_id, node_fingerprint);
+
+            Ok(new_node_id)
+        }
     }
 
     /// Adds a syscall node to the forest, and returns the [`MastNodeId`] associated with it.
@@ -483,17 +558,64 @@ impl MastForestBuilder {
         let syscall = CallNode::new_syscall(callee, &self.mast_forest)
             .into_diagnostic()
             .wrap_err("assembler failed to add new syscall node")?;
-        self.ensure_node(syscall)
+        let node_fingerprint = self.fingerprint_for_node(&MastNode::Call(syscall.clone()));
+
+        if let Some(node_id) = self.node_id_by_fingerprint.get(&node_fingerprint) {
+            // node already exists in the forest; return previously assigned id
+            Ok(*node_id)
+        } else {
+            let new_node_id = self
+                .mast_forest
+                .add_syscall(callee)
+                .into_diagnostic()
+                .wrap_err("assembler failed to add new syscall node")?;
+            self.node_id_by_fingerprint.insert(node_fingerprint, new_node_id);
+            self.hash_by_node_id.insert(new_node_id, node_fingerprint);
+
+            Ok(new_node_id)
+        }
     }
 
     /// Adds a dyn node to the forest, and returns the [`MastNodeId`] associated with it.
     pub fn ensure_dyn(&mut self) -> Result<MastNodeId, Report> {
-        self.ensure_node(DynNode::new_dyn())
+        let dyn_node = DynNode::new_dyn();
+        let node_fingerprint = self.fingerprint_for_node(&MastNode::Dyn(dyn_node.clone()));
+
+        if let Some(node_id) = self.node_id_by_fingerprint.get(&node_fingerprint) {
+            // node already exists in the forest; return previously assigned id
+            Ok(*node_id)
+        } else {
+            let new_node_id = self
+                .mast_forest
+                .add_dyn()
+                .into_diagnostic()
+                .wrap_err("assembler failed to add new dyn node")?;
+            self.node_id_by_fingerprint.insert(node_fingerprint, new_node_id);
+            self.hash_by_node_id.insert(new_node_id, node_fingerprint);
+
+            Ok(new_node_id)
+        }
     }
 
     /// Adds a dyncall node to the forest, and returns the [`MastNodeId`] associated with it.
     pub fn ensure_dyncall(&mut self) -> Result<MastNodeId, Report> {
-        self.ensure_node(DynNode::new_dyncall())
+        let dyncall_node = DynNode::new_dyncall();
+        let node_fingerprint = self.fingerprint_for_node(&MastNode::Dyn(dyncall_node.clone()));
+
+        if let Some(node_id) = self.node_id_by_fingerprint.get(&node_fingerprint) {
+            // node already exists in the forest; return previously assigned id
+            Ok(*node_id)
+        } else {
+            let new_node_id = self
+                .mast_forest
+                .add_dyncall()
+                .into_diagnostic()
+                .wrap_err("assembler failed to add new dyncall node")?;
+            self.node_id_by_fingerprint.insert(node_fingerprint, new_node_id);
+            self.hash_by_node_id.insert(new_node_id, node_fingerprint);
+
+            Ok(new_node_id)
+        }
     }
 
     /// Adds a node corresponding to the given MAST root, according to how it is linked.
