@@ -13,10 +13,7 @@ use miden_air::trace::{
 };
 use miden_core::{
     EMPTY_WORD, EventId, ONE, Program, WORD_SIZE, ZERO, assert_matches,
-    mast::{
-        BasicBlockNode, CallNode, DynNode, MastForest, MastNode, MastNodeExt, MastNodeId,
-        OP_BATCH_SIZE,
-    },
+    mast::{CallNode, DynNode, MastForest, MastNode, MastNodeExt, MastNodeId, OP_BATCH_SIZE},
 };
 use miden_utils_testing::rand::rand_value;
 use rstest::rstest;
@@ -430,18 +427,18 @@ fn span_block_with_respan() {
 
 #[test]
 fn join_node() {
-    let basic_block1 = BasicBlockNode::new(vec![Operation::Mul], Vec::new()).unwrap();
-    let basic_block2 = BasicBlockNode::new(vec![Operation::Add], Vec::new()).unwrap();
-    let program = {
+    let (basic_block1, basic_block2, program) = {
         let mut mast_forest = MastForest::new();
 
-        let basic_block1_id = mast_forest.add_node(basic_block1.clone()).unwrap();
-        let basic_block2_id = mast_forest.add_node(basic_block2.clone()).unwrap();
+        let basic_block1_id = mast_forest.add_block(vec![Operation::Mul], Vec::new()).unwrap();
+        let basic_block2_id = mast_forest.add_block(vec![Operation::Add], Vec::new()).unwrap();
+        let basic_block1 = mast_forest[basic_block1_id].unwrap_basic_block().clone();
+        let basic_block2 = mast_forest[basic_block2_id].unwrap_basic_block().clone();
 
         let join_node_id = mast_forest.add_join(basic_block1_id, basic_block2_id).unwrap();
         mast_forest.make_root(join_node_id);
 
-        Program::new(mast_forest.into(), join_node_id)
+        (basic_block1, basic_block2, Program::new(mast_forest.into(), join_node_id))
     };
 
     let (trace, trace_len) = build_trace(&[], &program);
@@ -496,18 +493,18 @@ fn join_node() {
 
 #[test]
 fn split_node_true() {
-    let basic_block1 = BasicBlockNode::new(vec![Operation::Mul], Vec::new()).unwrap();
-    let basic_block2 = BasicBlockNode::new(vec![Operation::Add], Vec::new()).unwrap();
-    let program = {
+    let (basic_block1, basic_block2, program) = {
         let mut mast_forest = MastForest::new();
 
-        let basic_block1_id = mast_forest.add_node(basic_block1.clone()).unwrap();
-        let basic_block2_id = mast_forest.add_node(basic_block2.clone()).unwrap();
+        let basic_block1_id = mast_forest.add_block(vec![Operation::Mul], Vec::new()).unwrap();
+        let basic_block2_id = mast_forest.add_block(vec![Operation::Add], Vec::new()).unwrap();
+        let basic_block1 = mast_forest[basic_block1_id].unwrap_basic_block().clone();
+        let basic_block2 = mast_forest[basic_block2_id].unwrap_basic_block().clone();
 
         let split_node_id = mast_forest.add_split(basic_block1_id, basic_block2_id).unwrap();
         mast_forest.make_root(split_node_id);
 
-        Program::new(mast_forest.into(), split_node_id)
+        (basic_block1, basic_block2, Program::new(mast_forest.into(), split_node_id))
     };
 
     let (trace, trace_len) = build_trace(&[1], &program);
@@ -549,18 +546,18 @@ fn split_node_true() {
 
 #[test]
 fn split_node_false() {
-    let basic_block1 = BasicBlockNode::new(vec![Operation::Mul], Vec::new()).unwrap();
-    let basic_block2 = BasicBlockNode::new(vec![Operation::Add], Vec::new()).unwrap();
-    let program = {
+    let (basic_block1, basic_block2, program) = {
         let mut mast_forest = MastForest::new();
 
-        let basic_block1_id = mast_forest.add_node(basic_block1.clone()).unwrap();
-        let basic_block2_id = mast_forest.add_node(basic_block2.clone()).unwrap();
+        let basic_block1_id = mast_forest.add_block(vec![Operation::Mul], Vec::new()).unwrap();
+        let basic_block2_id = mast_forest.add_block(vec![Operation::Add], Vec::new()).unwrap();
+        let basic_block1 = mast_forest[basic_block1_id].unwrap_basic_block().clone();
+        let basic_block2 = mast_forest[basic_block2_id].unwrap_basic_block().clone();
 
         let split_node_id = mast_forest.add_split(basic_block1_id, basic_block2_id).unwrap();
         mast_forest.make_root(split_node_id);
 
-        Program::new(mast_forest.into(), split_node_id)
+        (basic_block1, basic_block2, Program::new(mast_forest.into(), split_node_id))
     };
 
     let (trace, trace_len) = build_trace(&[0], &program);
@@ -605,15 +602,17 @@ fn split_node_false() {
 
 #[test]
 fn loop_node() {
-    let loop_body = BasicBlockNode::new(vec![Operation::Pad, Operation::Drop], Vec::new()).unwrap();
-    let program = {
+    let (loop_body, program) = {
         let mut mast_forest = MastForest::new();
 
-        let loop_body_id = mast_forest.add_node(loop_body.clone()).unwrap();
+        let loop_body_id = mast_forest
+            .add_block(vec![Operation::Pad, Operation::Drop], Vec::new())
+            .unwrap();
+        let loop_body = mast_forest[loop_body_id].unwrap_basic_block().clone();
         let loop_node_id = mast_forest.add_loop(loop_body_id).unwrap();
         mast_forest.make_root(loop_node_id);
 
-        Program::new(mast_forest.into(), loop_node_id)
+        (loop_body, Program::new(mast_forest.into(), loop_node_id))
     };
 
     let (trace, trace_len) = build_trace(&[0, 1], &program);
@@ -657,15 +656,17 @@ fn loop_node() {
 
 #[test]
 fn loop_node_skip() {
-    let loop_body = BasicBlockNode::new(vec![Operation::Pad, Operation::Drop], Vec::new()).unwrap();
-    let program = {
+    let (loop_body, program) = {
         let mut mast_forest = MastForest::new();
 
-        let loop_body_id = mast_forest.add_node(loop_body.clone()).unwrap();
+        let loop_body_id = mast_forest
+            .add_block(vec![Operation::Pad, Operation::Drop], Vec::new())
+            .unwrap();
+        let loop_body = mast_forest[loop_body_id].unwrap_basic_block().clone();
         let loop_node_id = mast_forest.add_loop(loop_body_id).unwrap();
         mast_forest.make_root(loop_node_id);
 
-        Program::new(mast_forest.into(), loop_node_id)
+        (loop_body, Program::new(mast_forest.into(), loop_node_id))
     };
 
     let (trace, trace_len) = build_trace(&[0], &program);
@@ -699,15 +700,17 @@ fn loop_node_skip() {
 
 #[test]
 fn loop_node_repeat() {
-    let loop_body = BasicBlockNode::new(vec![Operation::Pad, Operation::Drop], Vec::new()).unwrap();
-    let program = {
+    let (loop_body, program) = {
         let mut mast_forest = MastForest::new();
 
-        let loop_body_id = mast_forest.add_node(loop_body.clone()).unwrap();
+        let loop_body_id = mast_forest
+            .add_block(vec![Operation::Pad, Operation::Drop], Vec::new())
+            .unwrap();
+        let loop_body = mast_forest[loop_body_id].unwrap_basic_block().clone();
         let loop_node_id = mast_forest.add_loop(loop_body_id).unwrap();
         mast_forest.make_root(loop_node_id);
 
-        Program::new(mast_forest.into(), loop_node_id)
+        (loop_body, Program::new(mast_forest.into(), loop_node_id))
     };
 
     let (trace, trace_len) = build_trace(&[0, 1, 1], &program);
