@@ -494,8 +494,18 @@ impl MastForest {
                         self.add_call(callee_id).unwrap();
                     }
                 },
-                MastNode::Block(_) | MastNode::Dyn(_) | MastNode::External(_) => {
-                    self.add_node(live_node).unwrap();
+                MastNode::Block(block) => {
+                    self.add_block(
+                        block.raw_operations().cloned().collect::<Vec<_>>(),
+                        block.raw_decorator_iter().collect(),
+                    )
+                    .unwrap();
+                },
+                MastNode::Dyn(_) => {
+                    self.add_dyn().unwrap();
+                },
+                MastNode::External(external_node) => {
+                    self.add_external(external_node.digest()).unwrap();
                 },
             }
         }

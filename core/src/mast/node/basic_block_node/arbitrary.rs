@@ -218,7 +218,9 @@ pub fn mast_forest_strategy(params: MastForestParams) -> impl Strategy<Value = M
 
             // Insert the generated blocks into the forest
             for block in blocks {
-                forest.add_node(block).expect("Failed to add block");
+                let operations : Vec<_> = block.raw_operations().cloned().collect();
+                let decorators : Vec<_> = block.raw_decorator_iter().collect();
+                forest.add_block(operations, decorators).expect("Failed to add block");
             }
 
             forest
