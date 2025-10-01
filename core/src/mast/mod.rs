@@ -177,6 +177,140 @@ impl MastForest {
         self.add_node(ExternalNode::new(mast_root))
     }
 
+    // --- DECORATOR-AWARE SPECIALIZED METHODS -------------------------------------------------
+
+    /// Adds a basic block node to the forest with all types of decorators, and returns the
+    /// [`MastNodeId`] associated with it.
+    ///
+    /// This method accepts all three types of decorators that a basic block can have:
+    /// - `op_decorators`: Operation-indexed decorators tied to specific operations
+    /// - `before_enter`: Decorators executed before the block starts
+    /// - `after_exit`: Decorators executed after the block completes
+    pub fn add_block_with_decorators(
+        &mut self,
+        operations: Vec<Operation>,
+        op_decorators: DecoratorList,
+        before_enter: &[DecoratorId],
+        after_exit: &[DecoratorId],
+    ) -> Result<MastNodeId, MastForestError> {
+        let mut block = BasicBlockNode::new(operations, op_decorators)?;
+        block.append_before_enter(before_enter);
+        block.append_after_exit(after_exit);
+        self.add_node(block)
+    }
+
+    /// Adds a join node to the forest with decorators, and returns the [`MastNodeId`] associated
+    /// with it.
+    pub fn add_join_with_decorators(
+        &mut self,
+        left_child: MastNodeId,
+        right_child: MastNodeId,
+        before_enter: &[DecoratorId],
+        after_exit: &[DecoratorId],
+    ) -> Result<MastNodeId, MastForestError> {
+        let mut join = JoinNode::new([left_child, right_child], self)?;
+        join.append_before_enter(before_enter);
+        join.append_after_exit(after_exit);
+        self.add_node(join)
+    }
+
+    /// Adds a split node to the forest with decorators, and returns the [`MastNodeId`] associated
+    /// with it.
+    pub fn add_split_with_decorators(
+        &mut self,
+        if_branch: MastNodeId,
+        else_branch: MastNodeId,
+        before_enter: &[DecoratorId],
+        after_exit: &[DecoratorId],
+    ) -> Result<MastNodeId, MastForestError> {
+        let mut split = SplitNode::new([if_branch, else_branch], self)?;
+        split.append_before_enter(before_enter);
+        split.append_after_exit(after_exit);
+        self.add_node(split)
+    }
+
+    /// Adds a loop node to the forest with decorators, and returns the [`MastNodeId`] associated
+    /// with it.
+    pub fn add_loop_with_decorators(
+        &mut self,
+        body: MastNodeId,
+        before_enter: &[DecoratorId],
+        after_exit: &[DecoratorId],
+    ) -> Result<MastNodeId, MastForestError> {
+        let mut loop_node = LoopNode::new(body, self)?;
+        loop_node.append_before_enter(before_enter);
+        loop_node.append_after_exit(after_exit);
+        self.add_node(loop_node)
+    }
+
+    /// Adds a call node to the forest with decorators, and returns the [`MastNodeId`] associated
+    /// with it.
+    pub fn add_call_with_decorators(
+        &mut self,
+        callee: MastNodeId,
+        before_enter: &[DecoratorId],
+        after_exit: &[DecoratorId],
+    ) -> Result<MastNodeId, MastForestError> {
+        let mut call = CallNode::new(callee, self)?;
+        call.append_before_enter(before_enter);
+        call.append_after_exit(after_exit);
+        self.add_node(call)
+    }
+
+    /// Adds a syscall node to the forest with decorators, and returns the [`MastNodeId`] associated
+    /// with it.
+    pub fn add_syscall_with_decorators(
+        &mut self,
+        callee: MastNodeId,
+        before_enter: &[DecoratorId],
+        after_exit: &[DecoratorId],
+    ) -> Result<MastNodeId, MastForestError> {
+        let mut syscall = CallNode::new_syscall(callee, self)?;
+        syscall.append_before_enter(before_enter);
+        syscall.append_after_exit(after_exit);
+        self.add_node(syscall)
+    }
+
+    /// Adds a dyn node to the forest with decorators, and returns the [`MastNodeId`] associated
+    /// with it.
+    pub fn add_dyn_with_decorators(
+        &mut self,
+        before_enter: &[DecoratorId],
+        after_exit: &[DecoratorId],
+    ) -> Result<MastNodeId, MastForestError> {
+        let mut dyn_node = DynNode::new_dyn();
+        dyn_node.append_before_enter(before_enter);
+        dyn_node.append_after_exit(after_exit);
+        self.add_node(dyn_node)
+    }
+
+    /// Adds a dyncall node to the forest with decorators, and returns the [`MastNodeId`] associated
+    /// with it.
+    pub fn add_dyncall_with_decorators(
+        &mut self,
+        before_enter: &[DecoratorId],
+        after_exit: &[DecoratorId],
+    ) -> Result<MastNodeId, MastForestError> {
+        let mut dyn_node = DynNode::new_dyncall();
+        dyn_node.append_before_enter(before_enter);
+        dyn_node.append_after_exit(after_exit);
+        self.add_node(dyn_node)
+    }
+
+    /// Adds an external node to the forest with decorators, and returns the [`MastNodeId`]
+    /// associated with it.
+    pub fn add_external_with_decorators(
+        &mut self,
+        mast_root: Word,
+        before_enter: &[DecoratorId],
+        after_exit: &[DecoratorId],
+    ) -> Result<MastNodeId, MastForestError> {
+        let mut external_node = ExternalNode::new(mast_root);
+        external_node.append_before_enter(before_enter);
+        external_node.append_after_exit(after_exit);
+        self.add_node(external_node)
+    }
+
     /// Marks the given [`MastNodeId`] as being the root of a procedure.
     ///
     /// If the specified node is already marked as a root, this will have no effect.

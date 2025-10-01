@@ -22,9 +22,14 @@ fn add_block_qux(forest: &mut MastForest) -> MastNodeId {
 
 // Helper functions for creating decorated blocks
 fn add_decorated_block_foo(forest: &mut MastForest, decorator_ids: &[DecoratorId]) -> MastNodeId {
-    let mut block = BasicBlockNode::new(vec![Operation::Mul, Operation::Add], Vec::new()).unwrap();
-    block.append_before_enter(decorator_ids);
-    forest.add_node(block).unwrap()
+    forest
+        .add_block_with_decorators(
+            vec![Operation::Mul, Operation::Add],
+            Vec::new(),
+            decorator_ids,
+            &[],
+        )
+        .unwrap()
 }
 
 // Helper functions for creating decorated loops
@@ -33,9 +38,7 @@ fn add_decorated_loop(
     body: MastNodeId,
     decorator_ids: &[DecoratorId],
 ) -> MastNodeId {
-    let mut loop_node = LoopNode::new(body, forest).unwrap();
-    loop_node.append_after_exit(decorator_ids);
-    forest.add_node(loop_node).unwrap()
+    forest.add_loop_with_decorators(body, &[], decorator_ids).unwrap()
 }
 
 // Helper functions for creating decorated external nodes
@@ -45,10 +48,9 @@ fn add_decorated_external(
     before_enter: &[DecoratorId],
     after_exit: &[DecoratorId],
 ) -> MastNodeId {
-    let mut external_node = ExternalNode::new(mast_root);
-    external_node.append_before_enter(before_enter);
-    external_node.append_after_exit(after_exit);
-    forest.add_node(external_node).unwrap()
+    forest
+        .add_external_with_decorators(mast_root, before_enter, after_exit)
+        .unwrap()
 }
 
 // For backwards compatibility where a MastNode is still needed

@@ -2,7 +2,7 @@ use alloc::vec::Vec;
 
 use miden_core::{
     Decorator, Kernel, Operation,
-    mast::{BasicBlockNode, DecoratorId, MastForest, MastNodeExt},
+    mast::{DecoratorId, MastForest},
 };
 
 use crate::{
@@ -18,22 +18,27 @@ fn create_test_program(
 ) -> Program {
     let mut mast_forest = MastForest::new();
 
-    // Create the basic block with decorators
-    let mut basic_block = BasicBlockNode::new(operations.to_vec(), Vec::new()).unwrap();
-
-    // Add before_enter decorators
+    // Collect decorator IDs
+    let mut before_enter_ids = Vec::new();
     for decorator in before_enter {
-        let decorator_id = mast_forest.add_decorator(decorator.clone()).unwrap();
-        basic_block.append_before_enter(&[decorator_id]);
+        before_enter_ids.push(mast_forest.add_decorator(decorator.clone()).unwrap());
     }
 
-    // Add after_exit decorators
+    let mut after_exit_ids = Vec::new();
     for decorator in after_exit {
-        let decorator_id = mast_forest.add_decorator(decorator.clone()).unwrap();
-        basic_block.append_after_exit(&[decorator_id]);
+        after_exit_ids.push(mast_forest.add_decorator(decorator.clone()).unwrap());
     }
 
-    let basic_block_id = mast_forest.add_node(basic_block).unwrap();
+    // Create the basic block with all decorator types
+    let basic_block_id = mast_forest
+        .add_block_with_decorators(
+            operations.to_vec(),
+            Vec::new(), // no operation-indexed decorators
+            &before_enter_ids,
+            &after_exit_ids,
+        )
+        .unwrap();
+
     mast_forest.make_root(basic_block_id);
 
     Program::new(mast_forest.into(), basic_block_id)
@@ -339,21 +344,28 @@ fn create_test_program_with_inner_decorators(
         })
         .collect();
 
-    let mut basic_block = BasicBlockNode::new(operations.to_vec(), inner_decorator_list).unwrap();
-
-    // Add before_enter decorators
+    // Collect before_enter decorator IDs
+    let mut before_enter_ids = Vec::new();
     for decorator in before_enter {
-        let decorator_id = mast_forest.add_decorator(decorator.clone()).unwrap();
-        basic_block.append_before_enter(&[decorator_id]);
+        before_enter_ids.push(mast_forest.add_decorator(decorator.clone()).unwrap());
     }
 
-    // Add after_exit decorators
+    // Collect after_exit decorator IDs
+    let mut after_exit_ids = Vec::new();
     for decorator in after_exit {
-        let decorator_id = mast_forest.add_decorator(decorator.clone()).unwrap();
-        basic_block.append_after_exit(&[decorator_id]);
+        after_exit_ids.push(mast_forest.add_decorator(decorator.clone()).unwrap());
     }
 
-    let basic_block_id = mast_forest.add_node(basic_block).unwrap();
+    // Create the basic block with all decorator types using the new API
+    let basic_block_id = mast_forest
+        .add_block_with_decorators(
+            operations.to_vec(),
+            inner_decorator_list, // operation-indexed decorators
+            &before_enter_ids,    // before-enter decorators
+            &after_exit_ids,      // after-exit decorators
+        )
+        .unwrap();
+
     mast_forest.make_root(basic_block_id);
 
     Program::new(mast_forest.into(), basic_block_id)

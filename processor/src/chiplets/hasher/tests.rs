@@ -7,7 +7,7 @@ use miden_core::{
     ONE, Operation, ZERO,
     chiplets::hasher,
     crypto::merkle::{MerkleTree, NodeIndex},
-    mast::{MastForest, MastNode, MastNodeExt},
+    mast::{DecoratorId, MastForest, MastNodeExt},
 };
 use miden_utils_testing::rand::rand_array;
 
@@ -16,7 +16,7 @@ use super::{
     MerklePath, RETURN_HASH, RETURN_STATE, Selectors, TRACE_WIDTH, TraceFragment,
     init_state_from_words,
 };
-use crate::{BasicBlockNode, JoinNode};
+use crate::JoinNode;
 
 // LINEAR HASH TESTS
 // ================================================================================================
@@ -353,11 +353,10 @@ fn hash_memoization_control_blocks() {
 #[test]
 fn hash_memoization_basic_blocks() {
     // --- basic block with 1 batch ----------------------------------------------------------------
-    let basic_block =
-        BasicBlockNode::new(vec![Operation::Push(Felt::new(10)), Operation::Drop], Vec::new())
-            .unwrap();
-
-    hash_memoization_basic_blocks_check(basic_block.into());
+    hash_memoization_basic_blocks_check(
+        vec![Operation::Push(Felt::new(10)), Operation::Drop],
+        Vec::new(),
+    );
 
     // --- basic block with multiple batches -------------------------------------------------------
     let ops = vec![
@@ -398,12 +397,13 @@ fn hash_memoization_basic_blocks() {
         Operation::Drop,
         Operation::Drop,
     ];
-    let basic_block = BasicBlockNode::new(ops, Vec::new()).unwrap();
-
-    hash_memoization_basic_blocks_check(basic_block.into());
+    hash_memoization_basic_blocks_check(ops, Vec::new());
 }
 
-fn hash_memoization_basic_blocks_check(basic_block: MastNode) {
+fn hash_memoization_basic_blocks_check(
+    operations: Vec<Operation>,
+    decorators: Vec<(usize, DecoratorId)>,
+) {
     // Join block with a join and basic block as children. The child of the first join
     // child node is the same as the basic block child of root join node. Here the hash execution
     // trace of the second basic block is built by copying the trace built for the first same
@@ -420,8 +420,9 @@ fn hash_memoization_basic_blocks_check(basic_block: MastNode) {
 
     let mut mast_forest = MastForest::new();
 
-    let basic_block_1 = basic_block.clone();
-    let basic_block_1_id = mast_forest.add_node(basic_block_1.clone()).unwrap();
+    let basic_block_1_id = mast_forest
+        .add_block_with_decorators(operations.clone(), decorators.clone(), &[], &[])
+        .unwrap();
 
     let loop_body_id = mast_forest
         .add_block(vec![Operation::Pad, Operation::Eq, Operation::Not], Vec::new())
@@ -433,8 +434,8 @@ fn hash_memoization_basic_blocks_check(basic_block: MastNode) {
     let join2_block_id = mast_forest.add_join(basic_block_1_id, loop_block_id).unwrap();
     let join2_block = mast_forest[join2_block_id].clone();
 
-    let basic_block_2 = basic_block;
-    let basic_block_2_id = mast_forest.add_node(basic_block_2.clone()).unwrap();
+    let basic_block_2_id =
+        mast_forest.add_block_with_decorators(operations, decorators, &[], &[]).unwrap();
 
     let join1_block = JoinNode::new([join2_block_id, basic_block_2_id], &mast_forest).unwrap();
 
@@ -444,7 +445,7 @@ fn hash_memoization_basic_blocks_check(basic_block: MastNode) {
         .as_elements()
         .try_into()
         .expect("Could not convert slice to array");
-    let h2: [Felt; DIGEST_LEN] = basic_block_2
+    let h2: [Felt; DIGEST_LEN] = mast_forest[basic_block_2_id]
         .digest()
         .as_elements()
         .try_into()
@@ -458,7 +459,7 @@ fn hash_memoization_basic_blocks_check(basic_block: MastNode) {
     // make sure the hash of the final state of Join1 is the same as the expected hash.
     assert_eq!(final_state, expected_hash);
 
-    let h1: [Felt; DIGEST_LEN] = basic_block_1
+    let h1: [Felt; DIGEST_LEN] = mast_forest[basic_block_1_id]
         .digest()
         .as_elements()
         .try_into()
@@ -476,39 +477,31 @@ fn hash_memoization_basic_blocks_check(basic_block: MastNode) {
     // make sure the hash of the final state of Join2 is the same as the expected hash.
     assert_eq!(final_state, expected_hash);
 
-    let basic_block_1_val = if let MastNode::Block(basic_block) = basic_block_1.clone() {
-        basic_block
-    } else {
-        unreachable!()
-    };
+    let basic_block_1_val = mast_forest[basic_block_1_id].unwrap_basic_block();
 
     // builds the hash execution trace of the first basic block from scratch.
-    let (addr, final_state) =
-        hasher.hash_basic_block(basic_block_1_val.op_batches(), basic_block_1.digest());
+    let (addr, final_state) = hasher
+        .hash_basic_block(basic_block_1_val.op_batches(), mast_forest[basic_block_1_id].digest());
 
     let first_basic_block_final_state = final_state;
 
     // make sure the hash of the final state of basic block 1 is the same as the expected hash.
-    let expected_hash = basic_block_1.digest();
+    let expected_hash = mast_forest[basic_block_1_id].digest();
     assert_eq!(final_state, expected_hash);
 
     let start_row = addr.as_int() as usize - 1;
     let end_row = hasher.trace_len() - 1;
 
-    let basic_block_2_val = if let MastNode::Block(basic_block) = basic_block_2.clone() {
-        basic_block
-    } else {
-        unreachable!()
-    };
+    let basic_block_2_val = mast_forest[basic_block_2_id].unwrap_basic_block();
 
     // builds the hash execution trace of the second basic block by copying the sections of the
     // trace corresponding to the first basic block with the same hash.
-    let (addr, final_state) =
-        hasher.hash_basic_block(basic_block_2_val.op_batches(), basic_block_2.digest());
+    let (addr, final_state) = hasher
+        .hash_basic_block(basic_block_2_val.op_batches(), mast_forest[basic_block_2_id].digest());
 
     let _num_batches = basic_block_2_val.op_batches().len();
 
-    let expected_hash = basic_block_2.digest();
+    let expected_hash = mast_forest[basic_block_2_id].digest();
     // make sure the hash of the final state of basic block 2 is the same as the expected hash.
     assert_eq!(final_state, expected_hash);
 

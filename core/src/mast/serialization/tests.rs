@@ -5,7 +5,7 @@ use miden_crypto::{Felt, ONE, Word};
 use super::*;
 use crate::{
     AssemblyOp, DebugOptions, Decorator,
-    mast::{BasicBlockNode, MastForestError, MastNodeExt, node::MastNodeErrorContext},
+    mast::{MastForestError, MastNodeExt, node::MastNodeErrorContext},
     operations::Operation,
 };
 
@@ -428,12 +428,17 @@ fn mast_forest_basic_block_serialization_no_decorator_duplication() {
 
     // Create a basic block with all types of decorators
     let operations = vec![Operation::Add, Operation::Mul];
-    let mut block = BasicBlockNode::new(operations, vec![(0, op_deco)]).unwrap();
-    block.append_before_enter(&[before_enter_deco]);
-    block.append_after_exit(&[after_exit_deco]);
+    let op_decorators = vec![(0, op_deco)];
 
-    // Add the block to the forest
-    let block_id = forest.add_node(block).unwrap();
+    // Add the block to the forest using the new decorator-aware API
+    let block_id = forest
+        .add_block_with_decorators(
+            operations,
+            op_decorators,
+            &[before_enter_deco],
+            &[after_exit_deco],
+        )
+        .unwrap();
     forest.make_root(block_id);
 
     // Serialize and deserialize the forest
