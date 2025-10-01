@@ -289,8 +289,7 @@ impl BasicBlockNode {
     /// efficient way to check the decorator count without directly accessing
     /// the internal field.
     fn num_decorators(&self) -> usize {
-        self.try_get_decorators()
-            .map_or_else(|_| self.decorators.len(), |dec| dec.len())
+        self.get_decorators().len()
     }
 
     /// Links this block to its decorator list.
@@ -334,14 +333,13 @@ impl BasicBlockNode {
 impl BasicBlockNode {
     /// Used to initialize decorators for the [`BasicBlockNode`]. Replaces the existing decorators
     /// with the given ['DecoratorList'].
+    ///
+    /// This method operates on the internal decorators field and will clear any linked reference.
+    /// For linked blocks, the decorators should be accessed through the forest-level storage.
     pub fn set_decorators(&mut self, decorator_list: DecoratorList) {
         self.decorators = decorator_list;
+        // Clear any existing linked reference when setting new decorators
         self.decorators_ref = DecoratorsRef::new();
-    }
-
-    /// Returns a mutable reference to the decorators field for serialization compatibility.
-    pub fn decorators_mut(&mut self) -> &mut DecoratorList {
-        &mut self.decorators
     }
 }
 
@@ -405,8 +403,11 @@ impl MastNodeExt for BasicBlockNode {
 
     /// Removes all decorators from this node.
     fn remove_decorators(&mut self) {
+        // Clear the internal decorators field
         self.decorators.truncate(0);
+        // Reset the linked reference
         self.decorators_ref = DecoratorsRef::new();
+        // Clear before/after decorators
         self.before_enter.truncate(0);
         self.after_exit.truncate(0);
     }

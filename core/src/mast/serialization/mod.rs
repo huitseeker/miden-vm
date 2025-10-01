@@ -280,7 +280,7 @@ impl Deserializable for MastForest {
                         // Initialize the legacy decorators field to match the linked decorators
                         // This ensures backward compatibility and proper serialization
                         if let Ok(linked_decorators) = basic_block.try_get_decorators() {
-                            *basic_block.decorators_mut() = linked_decorators.to_vec();
+                            basic_block.set_decorators(linked_decorators.to_vec());
                         } else {
                             // If there are decorators but no linked reference, something is wrong
                             return Err(DeserializationError::InvalidValue(format!(
@@ -293,7 +293,7 @@ impl Deserializable for MastForest {
                         mast_forest.block_decorators.insert(node_id, arc_decorators);
                     } else {
                         // Ensure the legacy decorators field is empty when there are no decorators
-                        *basic_block.decorators_mut() = Vec::new();
+                        basic_block.set_decorators(Vec::new());
                     }
                 },
                 other => {
