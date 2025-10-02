@@ -80,6 +80,23 @@ impl MastForest {
     pub fn new() -> Self {
         Self::default()
     }
+
+    /// Creates a new [`MastForest`] from the provided component parts.
+    pub fn from_parts(
+        nodes: Vec<MastNode>,
+        roots: Vec<MastNodeId>,
+        decorators: Vec<Decorator>,
+        advice_map: AdviceMap,
+        error_codes: BTreeMap<u64, Arc<str>>,
+    ) -> Self {
+        Self {
+            nodes,
+            roots,
+            decorators,
+            advice_map,
+            error_codes,
+        }
+    }
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -103,7 +120,7 @@ impl MastForest {
     /// Adds a node to the forest, and returns the associated [`MastNodeId`].
     ///
     /// Adding two duplicate nodes will result in two distinct returned [`MastNodeId`]s.
-    pub fn add_node(&mut self, node: impl Into<MastNode>) -> Result<MastNodeId, MastForestError> {
+    pub(crate) fn add_node(&mut self, node: impl Into<MastNode>) -> Result<MastNodeId, MastForestError> {
         if self.nodes.len() == Self::MAX_NODES {
             return Err(MastForestError::TooManyNodes);
         }
@@ -173,7 +190,7 @@ impl MastForest {
     }
 
     /// Adds an external node to the forest, and returns the [`MastNodeId`] associated with it.
-    pub fn add_external(&mut self, mast_root: Word) -> Result<MastNodeId, MastForestError> {
+    pub(crate) fn add_external(&mut self, mast_root: Word) -> Result<MastNodeId, MastForestError> {
         self.add_node(ExternalNode::new(mast_root))
     }
 
@@ -759,7 +776,7 @@ impl MastNodeId {
     }
 
     /// Returns a new [`MastNodeId`] from the given `value` without checking its validity.
-    pub(crate) fn new_unchecked(value: u32) -> Self {
+    pub fn new_unchecked(value: u32) -> Self {
         Self(value)
     }
 
@@ -902,7 +919,7 @@ impl DecoratorId {
     }
 
     /// Creates a new [`DecoratorId`] without checking its validity.
-    pub(crate) fn new_unchecked(value: u32) -> Self {
+    pub fn new_unchecked(value: u32) -> Self {
         Self(value)
     }
 

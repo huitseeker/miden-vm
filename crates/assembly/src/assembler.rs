@@ -817,7 +817,7 @@ impl Assembler {
                         first_repeat_node.append_before_enter(&decorator_ids);
                         let first_repeat_node_id = block_builder
                             .mast_forest_builder_mut()
-                            .ensure_node(first_repeat_node)?;
+                            .ensure_node_modified(first_repeat_node)?;
 
                         body_node_ids.push(first_repeat_node_id);
                         for _ in 0..(*count - 1) {

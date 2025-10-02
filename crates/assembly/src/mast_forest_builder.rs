@@ -10,7 +10,7 @@ use miden_core::{
     mast::{
         BasicBlockNode, CallNode, DecoratorFingerprint, DecoratorId, DynNode, ExternalNode,
         JoinNode, LoopNode, MastForest, MastNode, MastNodeExt, MastNodeFingerprint, MastNodeId,
-        Remapping, SplitNode, SubtreeIterator,
+        Remapping, SplitNode, SubtreeIterator, error_code_from_msg,
     },
 };
 
@@ -41,10 +41,18 @@ const PROCEDURE_INLINING_THRESHOLD: usize = 32;
 ///   does not have an impact on other nodes in the forest.
 #[derive(Clone, Debug, Default)]
 pub struct MastForestBuilder {
-    /// The MAST forest being built by this builder; this MAST forest is up-to-date - i.e., all
-    /// nodes added to the MAST forest builder are also immediately added to the underlying MAST
-    /// forest.
-    mast_forest: MastForest,
+    /// All of the nodes local to the trees comprising the MAST forest.
+    nodes: Vec<MastNode>,
+    /// Roots of procedures defined within this MAST forest.
+    roots: Vec<MastNodeId>,
+    /// All the decorators included in the MAST forest.
+    decorators: Vec<Decorator>,
+    /// Advice map to be loaded into the VM prior to executing procedures from this MAST forest.
+    advice_map: AdviceMap,
+    /// A map from error codes to error messages. Error messages cannot be recovered from error
+    /// codes, so they are stored in order to provide a useful message to the user in case a error
+    /// code is triggered.
+    error_codes: BTreeMap<u64, Arc<str>>,
     /// A map of all procedures added to the MAST forest indexed by their global procedure ID.
     /// This includes all local, exported, and re-exported procedures. In case multiple procedures
     /// with the same digest are added to the MAST forest builder, only the first procedure is
@@ -86,15 +94,18 @@ impl MastForestBuilder {
         // All statically-linked libraries are merged into a single MastForest.
         let forests = static_libraries.into_iter().map(|lib| lib.mast_forest().as_ref());
         let (statically_linked_mast, _remapping) = MastForest::merge(forests).into_diagnostic()?;
-        // The AdviceMap of the statically-linkeed forest is copied to the forest being built.
+        // The AdviceMap of the statically-linked forest is copied to the forest being built.
         //
         // This might include excess advice map data in the built MastForest, but we currently do
         // not do any analysis to determine what advice map data is actually required by parts of
         // the library(s) that are actually linked into the output.
-        let mut mast_forest = MastForest::default();
-        *mast_forest.advice_map_mut() = statically_linked_mast.advice_map().clone();
+        let advice_map = statically_linked_mast.advice_map().clone();
         Ok(MastForestBuilder {
-            mast_forest,
+            nodes: Vec::new(),
+            roots: Vec::new(),
+            decorators: Vec::new(),
+            advice_map,
+            error_codes: BTreeMap::new(),
             statically_linked_mast: Arc::new(statically_linked_mast),
             ..Self::default()
         })
@@ -105,11 +116,20 @@ impl MastForestBuilder {
     ///
     /// It also returns the map from old node IDs to new node IDs. Any [`MastNodeId`] used in
     /// reference to the old [`MastForest`] should be remapped using this map.
-    pub fn build(mut self) -> (MastForest, BTreeMap<MastNodeId, MastNodeId>) {
-        let nodes_to_remove = get_nodes_to_remove(self.merged_basic_block_ids, &self.mast_forest);
-        let id_remappings = self.mast_forest.remove_nodes(&nodes_to_remove);
+    pub fn build(self) -> (MastForest, BTreeMap<MastNodeId, MastNodeId>) {
+        // Create a temporary MastForest to use remove_nodes logic
+        let mut mast_forest = MastForest::from_parts(
+            self.nodes,
+            self.roots,
+            self.decorators,
+            self.advice_map,
+            self.error_codes,
+        );
 
-        (self.mast_forest, id_remappings)
+        let nodes_to_remove = get_nodes_to_remove_from_builder(self.merged_basic_block_ids, &mast_forest);
+        let id_remappings = mast_forest.remove_nodes(&nodes_to_remove);
+
+        (mast_forest, id_remappings)
     }
 }
 
@@ -117,11 +137,8 @@ impl MastForestBuilder {
 /// process (i.e. they were contiguous and were merged into a single basic block), and returns the
 /// subset of nodes that can be removed from the MAST forest.
 ///
-/// Specifically, MAST node ids can be reused, so merging a basic block doesn't mean it should be
-/// removed (specifically in the case where another node refers to it). Hence, we cycle through all
-/// nodes of the forest and only mark for removal those nodes that are not referenced by any node.
-/// We also ensure that procedure roots are not removed.
-fn get_nodes_to_remove(
+/// This is a variant that works directly with MastForestBuilder components.
+fn get_nodes_to_remove_from_builder(
     merged_node_ids: BTreeSet<MastNodeId>,
     mast_forest: &MastForest,
 ) -> BTreeSet<MastNodeId> {
@@ -189,7 +206,7 @@ impl MastForestBuilder {
     /// Returns the [`MastNode`] for the provided MAST node ID, or None if a node with this ID is
     /// not present in this MAST forest builder.
     pub fn get_mast_node(&self, id: MastNodeId) -> Option<&MastNode> {
-        self.mast_forest.get_node_by_id(id)
+        self.nodes.get(id.as_usize())
     }
 }
 
@@ -246,7 +263,10 @@ impl MastForestBuilder {
             }
         }
 
-        self.mast_forest.make_root(procedure.body_node_id());
+        // Only add as root if not already present (same behavior as MastForest::make_root)
+        if !self.roots.contains(&procedure.body_node_id()) {
+            self.roots.push(procedure.body_node_id());
+        }
         self.proc_gid_by_mast_root.insert(procedure.mast_root(), gid);
         self.procedures.insert(gid, procedure);
 
@@ -300,7 +320,7 @@ impl MastForestBuilder {
         let mut contiguous_basic_block_ids: Vec<MastNodeId> = Vec::new();
 
         for mast_node_id in node_ids {
-            if self.mast_forest[mast_node_id].is_basic_block() {
+            if self[mast_node_id].is_basic_block() {
                 contiguous_basic_block_ids.push(mast_node_id);
             } else {
                 merged_node_ids.extend(self.merge_basic_blocks(&contiguous_basic_block_ids)?);
@@ -340,11 +360,11 @@ impl MastForestBuilder {
             // It is safe to unwrap here, since we already checked that all IDs in
             // `contiguous_basic_block_ids` are `BasicBlockNode`s
             let basic_block_node =
-                self.mast_forest[basic_block_id].get_basic_block().unwrap().clone();
+                self[basic_block_id].get_basic_block().unwrap().clone();
 
             // check if the block should be merged with other blocks
             if should_merge(
-                self.mast_forest.is_procedure_root(basic_block_id),
+                self.roots.contains(&basic_block_id),
                 basic_block_node.num_op_batches(),
             ) {
                 for (op_idx, decorator) in basic_block_node.raw_decorator_iter() {
@@ -390,11 +410,11 @@ impl MastForestBuilder {
             // decorator already exists in the forest; return previously assigned id
             Ok(*decorator_id)
         } else {
-            let new_decorator_id = self
-                .mast_forest
-                .add_decorator(decorator)
-                .into_diagnostic()
-                .wrap_err("assembler failed to add new decorator")?;
+            if self.decorators.len() >= u32::MAX as usize {
+                return Err(Report::msg("Too many decorators"));
+            }
+            let new_decorator_id = DecoratorId::new_unchecked(self.decorators.len() as u32);
+            self.decorators.push(decorator);
             self.decorator_id_by_fingerprint.insert(decorator_hash, new_decorator_id);
 
             Ok(new_decorator_id)
@@ -403,10 +423,37 @@ impl MastForestBuilder {
 
     /// Adds a node to the forest, and returns the [`MastNodeId`] associated with it.
     ///
+    /// This method is intended for cases where a node is being re-added after modification,
+    /// such as when decorators are added to an existing node.
+    ///
     /// Note that only one copy of nodes that have the same MAST root and decorators is added to the
     /// MAST forest; two nodes that have the same MAST root and decorators will have the same
     /// [`MastNodeId`].
-    pub(crate) fn ensure_node(&mut self, node: impl Into<MastNode>) -> Result<MastNodeId, Report> {
+    pub fn ensure_node_modified(&mut self, node: MastNode) -> Result<MastNodeId, Report> {
+        let node_fingerprint = self.fingerprint_for_node(&node);
+
+        if let Some(node_id) = self.node_id_by_fingerprint.get(&node_fingerprint) {
+            // node already exists in the forest; return previously assigned id
+            Ok(*node_id)
+        } else {
+            if self.nodes.len() >= (1 << 30) - 1 {
+                return Err(Report::msg("Too many nodes"));
+            }
+            let new_node_id = MastNodeId::new_unchecked(self.nodes.len() as u32);
+            self.nodes.push(node);
+            self.node_id_by_fingerprint.insert(node_fingerprint, new_node_id);
+            self.hash_by_node_id.insert(new_node_id, node_fingerprint);
+
+            Ok(new_node_id)
+        }
+    }
+
+    /// Adds a node to the forest, and returns the [`MastNodeId`] associated with it.
+    ///
+    /// Note that only one copy of nodes that have the same MAST root and decorators is added to the
+    /// MAST forest; two nodes that have the same MAST root and decorators will have the same
+    /// [`MastNodeId`].
+    fn ensure_node(&mut self, node: impl Into<MastNode>) -> Result<MastNodeId, Report> {
         let node: MastNode = node.into();
         let node_fingerprint = self.fingerprint_for_node(&node);
 
@@ -414,11 +461,11 @@ impl MastForestBuilder {
             // node already exists in the forest; return previously assigned id
             Ok(*node_id)
         } else {
-            let new_node_id = self
-                .mast_forest
-                .add_node(node)
-                .into_diagnostic()
-                .wrap_err("assembler failed to add new node")?;
+            if self.nodes.len() >= (1 << 30) - 1 {
+                return Err(Report::msg("Too many nodes"));
+            }
+            let new_node_id = MastNodeId::new_unchecked(self.nodes.len() as u32);
+            self.nodes.push(node);
             self.node_id_by_fingerprint.insert(node_fingerprint, new_node_id);
             self.hash_by_node_id.insert(new_node_id, node_fingerprint);
 
@@ -441,11 +488,11 @@ impl MastForestBuilder {
             // node already exists in the forest; return previously assigned id
             Ok(*node_id)
         } else {
-            let new_node_id = self
-                .mast_forest
-                .add_block(operations, decorators)
-                .into_diagnostic()
-                .wrap_err("assembler failed to add new basic block node")?;
+            if self.nodes.len() >= (1 << 30) - 1 {
+                return Err(Report::msg("Too many nodes"));
+            }
+            let new_node_id = MastNodeId::new_unchecked(self.nodes.len() as u32);
+            self.nodes.push(MastNode::Block(block));
             self.node_id_by_fingerprint.insert(node_fingerprint, new_node_id);
             self.hash_by_node_id.insert(new_node_id, node_fingerprint);
 
@@ -459,7 +506,10 @@ impl MastForestBuilder {
         left_child: MastNodeId,
         right_child: MastNodeId,
     ) -> Result<MastNodeId, Report> {
-        let join = JoinNode::new([left_child, right_child], &self.mast_forest)
+        // Create a temporary MastForest for node validation
+        let temp_forest = self.create_temp_forest();
+
+        let join = JoinNode::new([left_child, right_child], &temp_forest)
             .into_diagnostic()
             .wrap_err("assembler failed to add new join node")?;
         let node_fingerprint = self.fingerprint_for_node(&MastNode::Join(join.clone()));
@@ -468,11 +518,11 @@ impl MastForestBuilder {
             // node already exists in the forest; return previously assigned id
             Ok(*node_id)
         } else {
-            let new_node_id = self
-                .mast_forest
-                .add_join(left_child, right_child)
-                .into_diagnostic()
-                .wrap_err("assembler failed to add new join node")?;
+            if self.nodes.len() >= (1 << 30) - 1 {
+                return Err(Report::msg("Too many nodes"));
+            }
+            let new_node_id = MastNodeId::new_unchecked(self.nodes.len() as u32);
+            self.nodes.push(MastNode::Join(join));
             self.node_id_by_fingerprint.insert(node_fingerprint, new_node_id);
             self.hash_by_node_id.insert(new_node_id, node_fingerprint);
 
@@ -486,7 +536,7 @@ impl MastForestBuilder {
         if_branch: MastNodeId,
         else_branch: MastNodeId,
     ) -> Result<MastNodeId, Report> {
-        let split = SplitNode::new([if_branch, else_branch], &self.mast_forest)
+        let split = SplitNode::new([if_branch, else_branch], &self.create_temp_forest())
             .into_diagnostic()
             .wrap_err("assembler failed to add new split node")?;
         let node_fingerprint = self.fingerprint_for_node(&MastNode::Split(split.clone()));
@@ -495,11 +545,11 @@ impl MastForestBuilder {
             // node already exists in the forest; return previously assigned id
             Ok(*node_id)
         } else {
-            let new_node_id = self
-                .mast_forest
-                .add_split(if_branch, else_branch)
-                .into_diagnostic()
-                .wrap_err("assembler failed to add new split node")?;
+            if self.nodes.len() >= (1 << 30) - 1 {
+                return Err(Report::msg("Too many nodes"));
+            }
+            let new_node_id = MastNodeId::new_unchecked(self.nodes.len() as u32);
+            self.nodes.push(MastNode::Split(split));
             self.node_id_by_fingerprint.insert(node_fingerprint, new_node_id);
             self.hash_by_node_id.insert(new_node_id, node_fingerprint);
 
@@ -509,7 +559,7 @@ impl MastForestBuilder {
 
     /// Adds a loop node to the forest, and returns the [`MastNodeId`] associated with it.
     pub fn ensure_loop(&mut self, body: MastNodeId) -> Result<MastNodeId, Report> {
-        let loop_node = LoopNode::new(body, &self.mast_forest)
+        let loop_node = LoopNode::new(body, &self.create_temp_forest())
             .into_diagnostic()
             .wrap_err("assembler failed to add new loop node")?;
         let node_fingerprint = self.fingerprint_for_node(&MastNode::Loop(loop_node.clone()));
@@ -518,11 +568,11 @@ impl MastForestBuilder {
             // node already exists in the forest; return previously assigned id
             Ok(*node_id)
         } else {
-            let new_node_id = self
-                .mast_forest
-                .add_loop(body)
-                .into_diagnostic()
-                .wrap_err("assembler failed to add new loop node")?;
+            if self.nodes.len() >= (1 << 30) - 1 {
+                return Err(Report::msg("Too many nodes"));
+            }
+            let new_node_id = MastNodeId::new_unchecked(self.nodes.len() as u32);
+            self.nodes.push(MastNode::Loop(loop_node));
             self.node_id_by_fingerprint.insert(node_fingerprint, new_node_id);
             self.hash_by_node_id.insert(new_node_id, node_fingerprint);
 
@@ -532,7 +582,7 @@ impl MastForestBuilder {
 
     /// Adds a call node to the forest, and returns the [`MastNodeId`] associated with it.
     pub fn ensure_call(&mut self, callee: MastNodeId) -> Result<MastNodeId, Report> {
-        let call = CallNode::new(callee, &self.mast_forest)
+        let call = CallNode::new(callee, &self.create_temp_forest())
             .into_diagnostic()
             .wrap_err("assembler failed to add new call node")?;
         let node_fingerprint = self.fingerprint_for_node(&MastNode::Call(call.clone()));
@@ -541,11 +591,11 @@ impl MastForestBuilder {
             // node already exists in the forest; return previously assigned id
             Ok(*node_id)
         } else {
-            let new_node_id = self
-                .mast_forest
-                .add_call(callee)
-                .into_diagnostic()
-                .wrap_err("assembler failed to add new call node")?;
+            if self.nodes.len() >= (1 << 30) - 1 {
+                return Err(Report::msg("Too many nodes"));
+            }
+            let new_node_id = MastNodeId::new_unchecked(self.nodes.len() as u32);
+            self.nodes.push(MastNode::Call(call));
             self.node_id_by_fingerprint.insert(node_fingerprint, new_node_id);
             self.hash_by_node_id.insert(new_node_id, node_fingerprint);
 
@@ -555,7 +605,7 @@ impl MastForestBuilder {
 
     /// Adds a syscall node to the forest, and returns the [`MastNodeId`] associated with it.
     pub fn ensure_syscall(&mut self, callee: MastNodeId) -> Result<MastNodeId, Report> {
-        let syscall = CallNode::new_syscall(callee, &self.mast_forest)
+        let syscall = CallNode::new_syscall(callee, &self.create_temp_forest())
             .into_diagnostic()
             .wrap_err("assembler failed to add new syscall node")?;
         let node_fingerprint = self.fingerprint_for_node(&MastNode::Call(syscall.clone()));
@@ -564,11 +614,11 @@ impl MastForestBuilder {
             // node already exists in the forest; return previously assigned id
             Ok(*node_id)
         } else {
-            let new_node_id = self
-                .mast_forest
-                .add_syscall(callee)
-                .into_diagnostic()
-                .wrap_err("assembler failed to add new syscall node")?;
+            if self.nodes.len() >= (1 << 30) - 1 {
+                return Err(Report::msg("Too many nodes"));
+            }
+            let new_node_id = MastNodeId::new_unchecked(self.nodes.len() as u32);
+            self.nodes.push(MastNode::Call(syscall));
             self.node_id_by_fingerprint.insert(node_fingerprint, new_node_id);
             self.hash_by_node_id.insert(new_node_id, node_fingerprint);
 
@@ -585,11 +635,11 @@ impl MastForestBuilder {
             // node already exists in the forest; return previously assigned id
             Ok(*node_id)
         } else {
-            let new_node_id = self
-                .mast_forest
-                .add_dyn()
-                .into_diagnostic()
-                .wrap_err("assembler failed to add new dyn node")?;
+            if self.nodes.len() >= (1 << 30) - 1 {
+                return Err(Report::msg("Too many nodes"));
+            }
+            let new_node_id = MastNodeId::new_unchecked(self.nodes.len() as u32);
+            self.nodes.push(MastNode::Dyn(dyn_node));
             self.node_id_by_fingerprint.insert(node_fingerprint, new_node_id);
             self.hash_by_node_id.insert(new_node_id, node_fingerprint);
 
@@ -606,11 +656,11 @@ impl MastForestBuilder {
             // node already exists in the forest; return previously assigned id
             Ok(*node_id)
         } else {
-            let new_node_id = self
-                .mast_forest
-                .add_dyncall()
-                .into_diagnostic()
-                .wrap_err("assembler failed to add new dyncall node")?;
+            if self.nodes.len() >= (1 << 30) - 1 {
+                return Err(Report::msg("Too many nodes"));
+            }
+            let new_node_id = MastNodeId::new_unchecked(self.nodes.len() as u32);
+            self.nodes.push(MastNode::Dyn(dyncall_node));
             self.node_id_by_fingerprint.insert(node_fingerprint, new_node_id);
             self.hash_by_node_id.insert(new_node_id, node_fingerprint);
 
@@ -642,14 +692,14 @@ impl MastForestBuilder {
     /// If other decorators are already present, the new decorators are added to the end of the
     /// list.
     pub fn append_before_enter(&mut self, node_id: MastNodeId, decorator_ids: &[DecoratorId]) {
-        self.mast_forest[node_id].append_before_enter(decorator_ids);
+        self.nodes[node_id.as_usize()].append_before_enter(decorator_ids);
 
         let new_node_fingerprint = self.fingerprint_for_node(&self[node_id]);
         self.hash_by_node_id.insert(node_id, new_node_fingerprint);
     }
 
     pub fn append_after_exit(&mut self, node_id: MastNodeId, decorator_ids: &[DecoratorId]) {
-        self.mast_forest[node_id].append_after_exit(decorator_ids);
+        self.nodes[node_id.as_usize()].append_after_exit(decorator_ids);
 
         let new_node_fingerprint = self.fingerprint_for_node(&self[node_id]);
         self.hash_by_node_id.insert(node_id, new_node_fingerprint);
@@ -657,15 +707,31 @@ impl MastForestBuilder {
 }
 
 impl MastForestBuilder {
+    /// Creates a temporary MastForest for validation purposes
+    fn create_temp_forest(&self) -> MastForest {
+        MastForest::from_parts(
+            self.nodes.clone(),
+            self.roots.clone(),
+            self.decorators.clone(),
+            self.advice_map.clone(),
+            self.error_codes.clone(),
+        )
+    }
+
     fn fingerprint_for_node(&self, node: &MastNode) -> MastNodeFingerprint {
-        MastNodeFingerprint::from_mast_node(&self.mast_forest, &self.hash_by_node_id, node)
+        // Create a temporary MastForest for fingerprinting
+        let temp_forest = self.create_temp_forest();
+        MastNodeFingerprint::from_mast_node(&temp_forest, &self.hash_by_node_id, node)
             .expect("hash_by_node_id should contain the fingerprints of all children of `node`")
     }
 
     /// Registers an error message in the MAST Forest and returns the
     /// corresponding error code as a Felt.
     pub fn register_error(&mut self, msg: Arc<str>) -> Felt {
-        self.mast_forest.register_error(msg)
+        let code: Felt = error_code_from_msg(&msg);
+        // we use u64 as keys for the map
+        self.error_codes.insert(code.as_int(), msg);
+        code
     }
 }
 
@@ -674,7 +740,7 @@ impl Index<MastNodeId> for MastForestBuilder {
 
     #[inline(always)]
     fn index(&self, node_id: MastNodeId) -> &Self::Output {
-        &self.mast_forest[node_id]
+        &self.nodes[node_id.as_usize()]
     }
 }
 
@@ -683,14 +749,14 @@ impl Index<DecoratorId> for MastForestBuilder {
 
     #[inline(always)]
     fn index(&self, decorator_id: DecoratorId) -> &Self::Output {
-        &self.mast_forest[decorator_id]
+        &self.decorators[decorator_id.as_usize()]
     }
 }
 
 impl IndexMut<DecoratorId> for MastForestBuilder {
     #[inline(always)]
     fn index_mut(&mut self, decorator_id: DecoratorId) -> &mut Self::Output {
-        &mut self.mast_forest[decorator_id]
+        &mut self.decorators[decorator_id.as_usize()]
     }
 }
 
@@ -705,8 +771,7 @@ impl MastForestBuilder {
     /// are already present with a different value in the AdviceMap of the Mast Forest. In
     /// case of error the AdviceMap of the Mast Forest remains unchanged.
     pub fn merge_advice_map(&mut self, other: &AdviceMap) -> Result<(), Report> {
-        self.mast_forest
-            .advice_map_mut()
+        self.advice_map
             .merge(other)
             .map_err(|((key, prev_values), new_values)| LinkerError::AdviceMapKeyAlreadyPresent {
                 key: key.into(),
@@ -784,7 +849,7 @@ mod tests {
         let block1_id = builder.ensure_block(block1_ops.clone(), block1_decorators).unwrap();
 
         // Sanity check the test itself makes sense
-        let block1 = builder.mast_forest[block1_id].get_basic_block().unwrap().clone();
+        let block1 = builder[block1_id].get_basic_block().unwrap().clone();
         assert!(block1.operations().count() > block1_raw_ops_len); // this indeed generates padding, and thus a potential off-by-one
         assert_eq!(block1.raw_operations().count(), block1_raw_ops_len); // merging, which uses raw_ops, will elide padding
 
@@ -810,7 +875,7 @@ mod tests {
         let merged_block_id = merged_blocks[0];
 
         // Get the merged block
-        let merged_block = builder.mast_forest[merged_block_id].get_basic_block().unwrap().clone();
+        let merged_block = builder[merged_block_id].get_basic_block().unwrap().clone();
 
         // Merged block: two groups
         // [push drop drop drop drop drop drop push noop] [1] [2] [push push mul] [3] [4] [noop]
@@ -829,12 +894,12 @@ mod tests {
 
         // Check each decorator
         for (op_idx, decorator_id) in decorators {
-            let decorator = &builder.mast_forest[decorator_id];
+            let decorator = &builder[decorator_id];
 
             match decorator {
                 Decorator::Trace(trace_value) => {
                     // Record that we found this trace
-                    found_traces.insert(*trace_value);
+                    found_traces.insert(trace_value);
 
                     // Verify that the decorator points to the expected operation type
                     // Get the raw operations to check what's at this index
@@ -845,7 +910,7 @@ mod tests {
                             0 => {
                                 // Should be Push(1) from block1
                                 match &merged_ops[op_idx] {
-                                    Operation::Push(x) if *x == Felt::new(1) => {
+                                    Operation::Push(x) if x == &Felt::new(1) => {
                                         assert_eq!(
                                             *trace_value, 1,
                                             "Decorator for Push(1) should have trace value 1"
@@ -857,7 +922,7 @@ mod tests {
                             7 => {
                                 // Should be Push(2) from block1
                                 match &merged_ops[op_idx] {
-                                    Operation::Push(x) if *x == Felt::new(2) => {
+                                    Operation::Push(x) if x == &Felt::new(2) => {
                                         assert_eq!(
                                             *trace_value, 2,
                                             "Decorator for Push(2) should have trace value 2"
@@ -869,7 +934,7 @@ mod tests {
                             9 => {
                                 // Should be Push(3) from block1
                                 match &merged_ops[op_idx] {
-                                    Operation::Push(x) if *x == Felt::new(3) => {
+                                    Operation::Push(x) if x == &Felt::new(3) => {
                                         assert_eq!(
                                             *trace_value, 3,
                                             "Decorator for Push(3) should have trace value 3"
@@ -881,7 +946,7 @@ mod tests {
                             10 => {
                                 // Should be Push(4) from block2
                                 match &merged_ops[op_idx] {
-                                    Operation::Push(x) if *x == Felt::new(4) => {
+                                    Operation::Push(x) if x == &Felt::new(4) => {
                                         assert_eq!(
                                             *trace_value, 4,
                                             "Decorator for Push(4) should have trace value 4"
