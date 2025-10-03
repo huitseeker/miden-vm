@@ -5,6 +5,7 @@ use miden_crypto::{Felt, Word, ZERO};
 use miden_formatting::prettier::PrettyPrint;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
+use typed_builder::TypedBuilder;
 
 use crate::{
     DecoratorList, Operation,
@@ -857,37 +858,18 @@ fn batch_ops(ops: Vec<Operation>) -> Vec<OpBatch> {
 }
 
 // ------------------------------------------------------------------------------------------------
-/// Builder for creating [`BasicBlockNode`] instances with decorators.
-pub struct BasicBlockNodeBuilder {
+/// Parameters for building a [`BasicBlockNode`] using the typed builder pattern.
+#[derive(TypedBuilder)]
+pub struct BasicBlockParams {
     operations: Vec<Operation>,
     decorators: DecoratorList,
+    #[builder(default)]
     before_enter: Vec<DecoratorId>,
+    #[builder(default)]
     after_exit: Vec<DecoratorId>,
 }
 
-impl BasicBlockNodeBuilder {
-    /// Creates a new builder for a BasicBlockNode with the specified operations and decorators.
-    pub fn new(operations: Vec<Operation>, decorators: DecoratorList) -> Self {
-        Self {
-            operations,
-            decorators,
-            before_enter: Vec::new(),
-            after_exit: Vec::new(),
-        }
-    }
-
-    /// Adds decorators to be executed before this node.
-    pub fn with_before_enter(mut self, decorators: impl Into<Vec<DecoratorId>>) -> Self {
-        self.before_enter = decorators.into();
-        self
-    }
-
-    /// Adds decorators to be executed after this node.
-    pub fn with_after_exit(mut self, decorators: impl Into<Vec<DecoratorId>>) -> Self {
-        self.after_exit = decorators.into();
-        self
-    }
-
+impl BasicBlockParams {
     /// Builds the BasicBlockNode with the specified decorators.
     pub fn build(self) -> Result<BasicBlockNode, MastForestError> {
         if self.operations.is_empty() {

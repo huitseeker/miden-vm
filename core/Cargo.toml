@@ -55,6 +55,7 @@ proptest = { workspace = true, optional = true }
 proptest-derive = { workspace = true, optional = true }
 serde = { workspace = true, optional = true, features = ["derive"] }
 thiserror.workspace = true
+typed-builder = "0.18"
 winter-math.workspace = true
 winter-utils.workspace = true
 

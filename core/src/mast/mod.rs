@@ -15,10 +15,10 @@ mod node;
 #[cfg(any(test, feature = "arbitrary"))]
 pub use node::arbitrary;
 pub use node::{
-    BasicBlockNode, BasicBlockNodeBuilder, CallNode, CallNodeBuilder, DecoratedOpLink,
-    DecoratorOpLinkIterator, DynNode, DynNodeBuilder, ExternalNode, ExternalNodeBuilder, JoinNode,
-    JoinNodeBuilder, LoopNode, LoopNodeBuilder, MastNode, MastNodeErrorContext, MastNodeExt,
-    OP_BATCH_SIZE, OP_GROUP_SIZE, OpBatch, OperationOrDecorator, SplitNode, SplitNodeBuilder,
+    BasicBlockNode, BasicBlockParams, CallNode, CallParams, DecoratedOpLink,
+    DecoratorOpLinkIterator, DynNode, DynParams, ExternalNode, ExternalParams, JoinNode,
+    JoinParams, LoopNode, LoopParams, MastNode, MastNodeErrorContext, MastNodeExt, OP_BATCH_SIZE,
+    OP_GROUP_SIZE, OpBatch, OperationOrDecorator, SplitNode, SplitParams,
 };
 
 use crate::{

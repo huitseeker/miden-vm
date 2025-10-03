@@ -3,43 +3,49 @@ use miden_crypto::{Felt, ONE, Word};
 use super::*;
 use crate::{
     Decorator, Operation,
-    mast::{
-        BasicBlockNodeBuilder, DecoratorId, ExternalNodeBuilder, LoopNodeBuilder,
-        MastNodeErrorContext,
-    },
+    mast::{BasicBlockParams, DecoratorId, ExternalParams, LoopParams, MastNodeErrorContext},
 };
 
 fn block_foo() -> MastNode {
-    BasicBlockNodeBuilder::new(vec![Operation::Mul, Operation::Add], Vec::new())
+    BasicBlockParams::builder()
+        .operations(vec![Operation::Mul, Operation::Add])
+        .decorators(Vec::new())
+        .build()
         .build()
         .unwrap()
         .into()
 }
 
 fn block_foo_with_decorators(before_enter: &[DecoratorId], after_exit: &[DecoratorId]) -> MastNode {
-    BasicBlockNodeBuilder::new(vec![Operation::Mul, Operation::Add], Vec::new())
-        .with_before_enter(before_enter.to_vec())
-        .with_after_exit(after_exit.to_vec())
+    BasicBlockParams::builder()
+        .operations(vec![Operation::Mul, Operation::Add])
+        .decorators(Vec::new())
+        .before_enter(before_enter.to_vec())
+        .after_exit(after_exit.to_vec())
+        .build()
         .build()
         .unwrap()
         .into()
 }
 
 fn block_bar() -> MastNode {
-    BasicBlockNodeBuilder::new(vec![Operation::And, Operation::Eq], Vec::new())
+    BasicBlockParams::builder()
+        .operations(vec![Operation::And, Operation::Eq])
+        .decorators(Vec::new())
+        .build()
         .build()
         .unwrap()
         .into()
 }
 
 fn block_qux() -> MastNode {
-    BasicBlockNodeBuilder::new(
-        vec![Operation::Swap, Operation::Push(ONE), Operation::Eq],
-        Vec::new(),
-    )
-    .build()
-    .unwrap()
-    .into()
+    BasicBlockParams::builder()
+        .operations(vec![Operation::Swap, Operation::Push(ONE), Operation::Eq])
+        .decorators(Vec::new())
+        .build()
+        .build()
+        .unwrap()
+        .into()
 }
 
 fn loop_with_decorators(
@@ -48,9 +54,11 @@ fn loop_with_decorators(
     before_enter: &[DecoratorId],
     after_exit: &[DecoratorId],
 ) -> LoopNode {
-    LoopNodeBuilder::new(body_id)
-        .with_before_enter(before_enter.to_vec())
-        .with_after_exit(after_exit.to_vec())
+    LoopParams::builder()
+        .body(body_id)
+        .before_enter(before_enter.to_vec())
+        .after_exit(after_exit.to_vec())
+        .build()
         .build(forest)
         .unwrap()
 }
@@ -60,9 +68,11 @@ fn external_with_decorators(
     before_enter: &[DecoratorId],
     after_exit: &[DecoratorId],
 ) -> ExternalNode {
-    ExternalNodeBuilder::new(procedure_hash)
-        .with_before_enter(before_enter.to_vec())
-        .with_after_exit(after_exit.to_vec())
+    ExternalParams::builder()
+        .digest(procedure_hash)
+        .before_enter(before_enter.to_vec())
+        .after_exit(after_exit.to_vec())
+        .build()
         .build()
 }
 

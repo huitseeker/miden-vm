@@ -5,6 +5,7 @@ use miden_crypto::{Felt, Word};
 use miden_formatting::prettier::{Document, PrettyPrint, const_text, nl};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
+use typed_builder::TypedBuilder;
 
 use super::{MastNodeErrorContext, MastNodeExt};
 use crate::{
@@ -245,44 +246,18 @@ impl MastNodeExt for DynNode {
 }
 
 // ------------------------------------------------------------------------------------------------
-/// Builder for creating [`DynNode`] instances with decorators.
-pub struct DynNodeBuilder {
+/// Parameters for building a [`DynNode`] using the typed builder pattern.
+#[derive(TypedBuilder)]
+pub struct DynParams {
+    #[builder(default)]
     is_dyncall: bool,
+    #[builder(default)]
     before_enter: Vec<DecoratorId>,
+    #[builder(default)]
     after_exit: Vec<DecoratorId>,
 }
 
-impl DynNodeBuilder {
-    /// Creates a new builder for a DynNode representing a dynexec operation.
-    pub fn new_dyn() -> Self {
-        Self {
-            is_dyncall: false,
-            before_enter: Vec::new(),
-            after_exit: Vec::new(),
-        }
-    }
-
-    /// Creates a new builder for a DynNode representing a dyncall operation.
-    pub fn new_dyncall() -> Self {
-        Self {
-            is_dyncall: true,
-            before_enter: Vec::new(),
-            after_exit: Vec::new(),
-        }
-    }
-
-    /// Adds decorators to be executed before this node.
-    pub fn with_before_enter(mut self, decorators: impl Into<Vec<DecoratorId>>) -> Self {
-        self.before_enter = decorators.into();
-        self
-    }
-
-    /// Adds decorators to be executed after this node.
-    pub fn with_after_exit(mut self, decorators: impl Into<Vec<DecoratorId>>) -> Self {
-        self.after_exit = decorators.into();
-        self
-    }
-
+impl DynParams {
     /// Builds the DynNode with the specified decorators.
     pub fn build(self) -> DynNode {
         DynNode {

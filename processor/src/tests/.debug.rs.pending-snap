@@ -1,0 +1,17 @@
+{"run_id":"e6c98fe0-685a-4d2e-96aa-6f1875c7a3b1","line":232,"new":{"module_name":"miden_processor__tests__debug","snapshot_name":"debug_local","metadata":{"source":"processor/src/tests/debug.rs","assertion_line":232,"expression":"output"},"snapshot":"Memory state before step 25 for the context 0:\n├── 0x40000000: 0\n├── 0x40000001: 0\n├── 0x40000002: 1\n├── 0x40000003: 2\n├── 0x40000004: 3\n├── 0x40000005: 0\n├── 0x40000006: 42\n└── 0x40000007: 0\nState of procedure locals [0, 5] before step 25:\n├── 0: 1\n├── 1: 2\n├── 2: 3\n├── 3: 0\n├── 4: 42\n└── 5: 0\nState of procedure local 2 before step 25: 3\nState of procedure local 4 before step 25: 42\nState of procedure locals [1, 2] before step 25:\n├── 1: 2\n└── 2: 3\nState of procedure locals [0, 5] before step 29:\n├── 0: 1\n├── 1: 2\n├── 2: 3\n├── 3: 0\n├── 4: 5\n└── 5: 0\nState of procedure local 4 before step 29: 5\nState of procedure local 6 before step 29: EMPTY\nState of procedure locals [2, 6] before step 29:\n├── 2: 3\n├── 3: 0\n├── 4: 5\n├── 5: 0\n└── 6: EMPTY\nMemory state before step 32 for the context 0:\n├── 0x40000000: 0\n├── 0x40000001: 0\n├── 0x40000002: 1\n├── 0x40000003: 2\n├── 0x40000004: 3\n├── 0x40000005: 0\n├── 0x40000006: 5\n└── 0x40000007: 0"},"old":{"module_name":"miden_processor__tests__debug","metadata":{},"snapshot":"Memory state before step 25 for the context 0:\n├── 0x40000000: 0\n├── 0x40000001: 0\n├── 0x40000002: 1\n├── 0x40000003: 2\n├── 0x40000004: 3\n├── 0x40000005: 0\n├── 0x40000006: 42\n└── 0x40000007: 0\nState of procedure locals [0, 5] before step 25:\n├── 0: 1\n├── 1: 2\n├── 2: 3\n├── 3: 0\n├── 4: 42\n└── 5: 0\nState of procedure local 2 before step 25: 3\nState of procedure local 4 before step 25: 42\nState of procedure locals [1, 2] before step 25:\n├── 1: 2\n└── 2: 3\nState of procedure locals [0, 5] before step 29:\n├── 0: 1\n├── 1: 2\n├── 2: 3\n├── 3: 0\n├── 4: 5\n└── 5: 0\nState of procedure local 4 before step 29: 5\nState of procedure local 6 before step 29: EMPTY\nState of procedure locals [2, 6] before step 29:\n├── 2: 3\n├── 3: 0\n├── 4: 5\n├── 5: 0\n└── 6: EMPTY\nMemory state before step 34 for the context 0:\n├── 0x40000000: 0\n├── 0x40000001: 0\n├── 0x40000002: 1\n├── 0x40000003: 2\n├── 0x40000004: 3\n├── 0x40000005: 0\n├── 0x40000006: 5\n└── 0x40000007: 0"}}
+{"run_id":"8cfe52ff-8d7d-4281-848c-8cccab3de469","line":232,"new":null,"old":null}
+{"run_id":"8cfe52ff-8d7d-4281-848c-8cccab3de469","line":162,"new":null,"old":null}
+{"run_id":"8cfe52ff-8d7d-4281-848c-8cccab3de469","line":44,"new":null,"old":null}
+{"run_id":"8cfe52ff-8d7d-4281-848c-8cccab3de469","line":327,"new":null,"old":null}
+{"run_id":"5a741f9f-058d-45df-a4f1-dd035c46b5fd","line":232,"new":null,"old":null}
+{"run_id":"5a741f9f-058d-45df-a4f1-dd035c46b5fd","line":162,"new":null,"old":null}
+{"run_id":"5a741f9f-058d-45df-a4f1-dd035c46b5fd","line":327,"new":null,"old":null}
+{"run_id":"5a741f9f-058d-45df-a4f1-dd035c46b5fd","line":44,"new":null,"old":null}
+{"run_id":"1759521997-723838753","line":162,"new":null,"old":null}
+{"run_id":"1759521997-723838753","line":327,"new":null,"old":null}
+{"run_id":"1759521997-723838753","line":44,"new":null,"old":null}
+{"run_id":"1759521997-723838753","line":232,"new":null,"old":null}
+{"run_id":"c986a163-b1fb-4851-9e0e-0a48efc4cee0","line":327,"new":null,"old":null}
+{"run_id":"c986a163-b1fb-4851-9e0e-0a48efc4cee0","line":162,"new":null,"old":null}
+{"run_id":"c986a163-b1fb-4851-9e0e-0a48efc4cee0","line":232,"new":null,"old":null}
+{"run_id":"c986a163-b1fb-4851-9e0e-0a48efc4cee0","line":44,"new":null,"old":null}

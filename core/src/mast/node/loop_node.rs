@@ -5,6 +5,7 @@ use miden_crypto::{Felt, Word};
 use miden_formatting::prettier::PrettyPrint;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
+use typed_builder::TypedBuilder;
 
 use super::{MastNodeErrorContext, MastNodeExt};
 use crate::{
@@ -231,35 +232,17 @@ impl MastNodeExt for LoopNode {
 }
 
 // ------------------------------------------------------------------------------------------------
-/// Builder for creating [`LoopNode`] instances with decorators.
-pub struct LoopNodeBuilder {
+/// Parameters for building a [`LoopNode`] using the typed builder pattern.
+#[derive(TypedBuilder)]
+pub struct LoopParams {
     body: MastNodeId,
+    #[builder(default)]
     before_enter: Vec<DecoratorId>,
+    #[builder(default)]
     after_exit: Vec<DecoratorId>,
 }
 
-impl LoopNodeBuilder {
-    /// Creates a new builder for a LoopNode with the specified body.
-    pub fn new(body: MastNodeId) -> Self {
-        Self {
-            body,
-            before_enter: Vec::new(),
-            after_exit: Vec::new(),
-        }
-    }
-
-    /// Adds decorators to be executed before this node.
-    pub fn with_before_enter(mut self, decorators: impl Into<Vec<DecoratorId>>) -> Self {
-        self.before_enter = decorators.into();
-        self
-    }
-
-    /// Adds decorators to be executed after this node.
-    pub fn with_after_exit(mut self, decorators: impl Into<Vec<DecoratorId>>) -> Self {
-        self.after_exit = decorators.into();
-        self
-    }
-
+impl LoopParams {
     /// Builds the LoopNode with the specified decorators.
     pub fn build(self, mast_forest: &MastForest) -> Result<LoopNode, MastForestError> {
         if self.body.as_usize() >= mast_forest.nodes.len() {

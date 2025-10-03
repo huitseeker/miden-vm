@@ -5,6 +5,7 @@ use miden_crypto::{Felt, Word};
 use miden_formatting::prettier::PrettyPrint;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
+use typed_builder::TypedBuilder;
 
 use super::{MastNodeErrorContext, MastNodeExt};
 use crate::{
@@ -245,55 +246,27 @@ impl MastNodeExt for SplitNode {
 }
 
 // ------------------------------------------------------------------------------------------------
-/// Builder for creating [`SplitNode`] instances with decorators.
-pub struct SplitNodeBuilder {
+/// Parameters for building a [`SplitNode`] using typed-builder.
+#[derive(TypedBuilder)]
+pub struct SplitParams {
+    /// The two branches for conditional execution.
     branches: [MastNodeId; 2],
+    /// Decorators to be executed before this node.
+    #[builder(default)]
     before_enter: Vec<DecoratorId>,
+    /// Decorators to be executed after this node.
+    #[builder(default)]
     after_exit: Vec<DecoratorId>,
 }
 
-impl SplitNodeBuilder {
-    /// Creates a new builder for a SplitNode with the specified branches.
-    pub fn new(branches: [MastNodeId; 2]) -> Self {
-        Self {
-            branches,
-            before_enter: Vec::new(),
-            after_exit: Vec::new(),
-        }
-    }
-
-    /// Adds decorators to be executed before this node.
-    pub fn with_before_enter(mut self, decorators: impl Into<Vec<DecoratorId>>) -> Self {
-        self.before_enter = decorators.into();
-        self
-    }
-
-    /// Adds decorators to be executed after this node.
-    pub fn with_after_exit(mut self, decorators: impl Into<Vec<DecoratorId>>) -> Self {
-        self.after_exit = decorators.into();
-        self
-    }
-
-    /// Builds the SplitNode with the specified decorators.
+impl SplitParams {
+    /// Builds the [`SplitNode`] using the current parameters and the specified [`MastForest`].
     pub fn build(self, mast_forest: &MastForest) -> Result<SplitNode, MastForestError> {
-        let forest_len = mast_forest.nodes.len();
-        if self.branches[0].as_usize() >= forest_len {
-            return Err(MastForestError::NodeIdOverflow(self.branches[0], forest_len));
-        } else if self.branches[1].as_usize() >= forest_len {
-            return Err(MastForestError::NodeIdOverflow(self.branches[1], forest_len));
-        }
-        let digest = {
-            let if_branch_hash = mast_forest[self.branches[0]].digest();
-            let else_branch_hash = mast_forest[self.branches[1]].digest();
-
-            hasher::merge_in_domain(&[if_branch_hash, else_branch_hash], SplitNode::DOMAIN)
-        };
-
-        Ok(SplitNode {
-            branches: self.branches,
-            digest,
-            before_enter: self.before_enter,
-            after_exit: self.after_exit,
-        })
+        let mut node = SplitNode::new(self.branches, mast_forest)?;
+        node.before_enter = self.before_enter;
+        node.after_exit = self.after_exit;
+        Ok(node)
     }
 }
+
+// ------------------------------------------------------------------------------------------------

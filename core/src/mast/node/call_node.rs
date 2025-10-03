@@ -8,6 +8,7 @@ use miden_formatting::{
 };
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
+use typed_builder::TypedBuilder;
 
 use super::{MastNodeErrorContext, MastNodeExt};
 use crate::{
@@ -322,47 +323,19 @@ impl MastNodeExt for CallNode {
 }
 
 // ------------------------------------------------------------------------------------------------
-/// Builder for creating [`CallNode`] instances with decorators.
-pub struct CallNodeBuilder {
+/// Parameters for building a [`CallNode`] using the typed builder pattern.
+#[derive(TypedBuilder)]
+pub struct CallParams {
     callee: MastNodeId,
+    #[builder(default)]
     is_syscall: bool,
+    #[builder(default)]
     before_enter: Vec<DecoratorId>,
+    #[builder(default)]
     after_exit: Vec<DecoratorId>,
 }
 
-impl CallNodeBuilder {
-    /// Creates a new builder for a CallNode with the specified callee.
-    pub fn new(callee: MastNodeId) -> Self {
-        Self {
-            callee,
-            is_syscall: false,
-            before_enter: Vec::new(),
-            after_exit: Vec::new(),
-        }
-    }
-
-    /// Creates a new builder for a syscall CallNode with the specified callee.
-    pub fn new_syscall(callee: MastNodeId) -> Self {
-        Self {
-            callee,
-            is_syscall: true,
-            before_enter: Vec::new(),
-            after_exit: Vec::new(),
-        }
-    }
-
-    /// Adds decorators to be executed before this node.
-    pub fn with_before_enter(mut self, decorators: impl Into<Vec<DecoratorId>>) -> Self {
-        self.before_enter = decorators.into();
-        self
-    }
-
-    /// Adds decorators to be executed after this node.
-    pub fn with_after_exit(mut self, decorators: impl Into<Vec<DecoratorId>>) -> Self {
-        self.after_exit = decorators.into();
-        self
-    }
-
+impl CallParams {
     /// Builds the CallNode with the specified decorators.
     pub fn build(self, mast_forest: &MastForest) -> Result<CallNode, MastForestError> {
         if self.callee.as_usize() >= mast_forest.nodes.len() {

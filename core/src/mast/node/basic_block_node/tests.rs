@@ -3,7 +3,10 @@ use proptest::prelude::*;
 // Import strategy functions from arbitrary.rs
 pub(super) use super::arbitrary::op_non_control_sequence_strategy;
 use super::*;
-use crate::{Decorator, ONE, mast::MastForest};
+use crate::{
+    Decorator, ONE,
+    mast::{BasicBlockParams, MastForest},
+};
 
 #[test]
 fn batch_ops_1() {
@@ -456,9 +459,12 @@ fn test_mast_node_error_context_decorators_iterates_all_decorators() {
     let after_exit_id = forest.add_decorator(after_exit_deco.clone()).unwrap();
 
     // Create a basic block with all types of decorators using builder pattern
-    let block = BasicBlockNodeBuilder::new(operations, vec![(1, op_id)])
-        .with_before_enter(vec![before_enter_id])
-        .with_after_exit(vec![after_exit_id])
+    let block = BasicBlockParams::builder()
+        .operations(operations)
+        .decorators(vec![(1, op_id)])
+        .before_enter(vec![before_enter_id])
+        .after_exit(vec![after_exit_id])
+        .build()
         .build()
         .unwrap();
 
@@ -494,9 +500,12 @@ fn test_indexed_decorator_iter_excludes_before_enter_after_exit() {
     let after_exit_id = forest.add_decorator(after_exit_deco.clone()).unwrap();
 
     // Create a basic block with all types of decorators using builder pattern
-    let block = BasicBlockNodeBuilder::new(operations, vec![(0, op_id1), (1, op_id2)])
-        .with_before_enter(vec![before_enter_id])
-        .with_after_exit(vec![after_exit_id])
+    let block = BasicBlockParams::builder()
+        .operations(operations)
+        .decorators(vec![(0, op_id1), (1, op_id2)])
+        .before_enter(vec![before_enter_id])
+        .after_exit(vec![after_exit_id])
+        .build()
         .build()
         .unwrap();
 
@@ -542,12 +551,14 @@ fn test_decorator_positions() {
     ];
 
     // Create a basic block with complex operations using builder pattern
-    let mut block =
-        BasicBlockNodeBuilder::new(operations.clone(), vec![(2, trace_id), (4, debug_id)])
-            .with_before_enter(vec![trace_id, debug_id])
-            .with_after_exit(vec![trace_id])
-            .build()
-            .unwrap();
+    let mut block = BasicBlockParams::builder()
+        .operations(operations.clone())
+        .decorators(vec![(2, trace_id), (4, debug_id)])
+        .before_enter(vec![trace_id, debug_id])
+        .after_exit(vec![trace_id])
+        .build()
+        .build()
+        .unwrap();
 
     // Test that MastNodeErrorContext::decorators returns all decorators
     let all_decorators: Vec<_> = block.decorators().collect();

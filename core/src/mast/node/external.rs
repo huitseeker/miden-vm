@@ -8,6 +8,7 @@ use miden_formatting::{
 };
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
+use typed_builder::TypedBuilder;
 
 use super::{MastNodeErrorContext, MastNodeExt};
 use crate::mast::{DecoratedOpLink, DecoratorId, MastForest, MastNodeId, Remapping};
@@ -198,35 +199,17 @@ impl MastNodeExt for ExternalNode {
 }
 
 // ------------------------------------------------------------------------------------------------
-/// Builder for creating [`ExternalNode`] instances with decorators.
-pub struct ExternalNodeBuilder {
+/// Parameters for building a [`ExternalNode`] using the typed builder pattern.
+#[derive(TypedBuilder)]
+pub struct ExternalParams {
     digest: Word,
+    #[builder(default)]
     before_enter: Vec<DecoratorId>,
+    #[builder(default)]
     after_exit: Vec<DecoratorId>,
 }
 
-impl ExternalNodeBuilder {
-    /// Creates a new builder for an ExternalNode with the specified procedure hash.
-    pub fn new(digest: Word) -> Self {
-        Self {
-            digest,
-            before_enter: Vec::new(),
-            after_exit: Vec::new(),
-        }
-    }
-
-    /// Adds decorators to be executed before this node.
-    pub fn with_before_enter(mut self, decorators: impl Into<Vec<DecoratorId>>) -> Self {
-        self.before_enter = decorators.into();
-        self
-    }
-
-    /// Adds decorators to be executed after this node.
-    pub fn with_after_exit(mut self, decorators: impl Into<Vec<DecoratorId>>) -> Self {
-        self.after_exit = decorators.into();
-        self
-    }
-
+impl ExternalParams {
     /// Builds the ExternalNode with the specified decorators.
     pub fn build(self) -> ExternalNode {
         ExternalNode {

@@ -2,7 +2,7 @@ use alloc::vec::Vec;
 
 use miden_core::{
     Decorator, Kernel, Operation,
-    mast::{BasicBlockNodeBuilder, DecoratorId, MastForest},
+    mast::{BasicBlockParams, DecoratorId, MastForest},
 };
 
 use crate::{
@@ -29,9 +29,12 @@ fn create_test_program(
         .collect();
 
     // Create the basic block with decorators using builder pattern
-    let basic_block = BasicBlockNodeBuilder::new(operations.to_vec(), Vec::new())
-        .with_before_enter(before_enter_ids)
-        .with_after_exit(after_exit_ids)
+    let basic_block = BasicBlockParams::builder()
+        .operations(operations.to_vec())
+        .decorators(Vec::new())
+        .before_enter(before_enter_ids)
+        .after_exit(after_exit_ids)
+        .build()
         .build()
         .unwrap();
 
@@ -312,9 +315,12 @@ fn create_test_program_with_inner_decorators(
         .collect();
 
     // Create the basic block with decorators using builder pattern
-    let basic_block = BasicBlockNodeBuilder::new(operations.to_vec(), inner_decorator_list)
-        .with_before_enter(before_enter_ids)
-        .with_after_exit(after_exit_ids)
+    let basic_block = BasicBlockParams::builder()
+        .operations(operations.to_vec())
+        .decorators(inner_decorator_list)
+        .before_enter(before_enter_ids)
+        .after_exit(after_exit_ids)
+        .build()
         .build()
         .unwrap();
 
