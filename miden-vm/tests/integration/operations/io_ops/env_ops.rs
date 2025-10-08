@@ -1,6 +1,9 @@
 use miden_core::{
     Operation,
-    mast::{CallNodeBuilder, MastForest, MastNode, MastNodeExt},
+    mast::{
+        BasicBlockNodeBuilder, CallNodeBuilder, MastForest, MastForestContributor, MastNode,
+        MastNodeExt,
+    },
 };
 use miden_debug_types::{SourceLanguage, SourceManager};
 use miden_processor::FMP_MIN;
@@ -189,7 +192,9 @@ fn caller() {
 fn build_bar_hash() -> [u64; 4] {
     let mut mast_forest = MastForest::new();
 
-    let foo_root_id = mast_forest.add_block(vec![Operation::Caller], Vec::new()).unwrap();
+    let foo_root_id = BasicBlockNodeBuilder::new(vec![Operation::Caller], Vec::new())
+        .add_to_forest(&mut mast_forest)
+        .unwrap();
 
     let bar_root: MastNode =
         CallNodeBuilder::new_syscall(foo_root_id).build(&mast_forest).unwrap().into();

@@ -5,7 +5,7 @@ use super::*;
 use crate::{
     Decorator, Operation,
     mast::{
-        BasicBlockNodeBuilder, DecoratorId, ExternalNodeBuilder, LoopNodeBuilder,
+        BasicBlockNodeBuilder, CallNodeBuilder, DecoratorId, ExternalNodeBuilder, LoopNodeBuilder,
         MastNodeErrorContext, node::MastForestContributor,
     },
 };
@@ -116,12 +116,12 @@ fn assert_child_id_lt_parent_id(forest: &MastForest) -> Result<(), &str> {
 fn mast_forest_merge_remap() {
     let mut forest_a = MastForest::new();
     let id_foo = block_foo().add_to_forest(&mut forest_a).unwrap();
-    let id_call_a = forest_a.add_call(id_foo).unwrap();
+    let id_call_a = CallNodeBuilder::new(id_foo).add_to_forest(&mut forest_a).unwrap();
     forest_a.make_root(id_call_a);
 
     let mut forest_b = MastForest::new();
     let id_bar = block_bar().add_to_forest(&mut forest_b).unwrap();
-    let id_call_b = forest_b.add_call(id_bar).unwrap();
+    let id_call_b = CallNodeBuilder::new(id_bar).add_to_forest(&mut forest_b).unwrap();
     forest_b.make_root(id_call_b);
 
     let (merged, root_maps) = MastForest::merge([&forest_a, &forest_b]).unwrap();
@@ -145,10 +145,12 @@ fn mast_forest_merge_duplicate() {
     forest_a.add_decorator(Decorator::Debug(crate::DebugOptions::MemAll)).unwrap();
     forest_a.add_decorator(Decorator::Trace(25)).unwrap();
 
-    let id_external = forest_a.add_external(block_bar().build().unwrap().digest()).unwrap();
+    let id_external = ExternalNodeBuilder::new(block_bar().build().unwrap().digest())
+        .add_to_forest(&mut forest_a)
+        .unwrap();
     let id_foo = block_foo().add_to_forest(&mut forest_a).unwrap();
-    let id_call = forest_a.add_call(id_foo).unwrap();
-    let id_loop = forest_a.add_loop(id_external).unwrap();
+    let id_call = CallNodeBuilder::new(id_foo).add_to_forest(&mut forest_a).unwrap();
+    let id_loop = LoopNodeBuilder::new(id_external).add_to_forest(&mut forest_a).unwrap();
     forest_a.make_root(id_call);
     forest_a.make_root(id_loop);
 
@@ -189,13 +191,15 @@ fn mast_forest_merge_duplicate() {
 #[test]
 fn mast_forest_merge_replace_external() {
     let mut forest_a = MastForest::new();
-    let id_foo_a = forest_a.add_external(block_foo().build().unwrap().digest()).unwrap();
-    let id_call_a = forest_a.add_call(id_foo_a).unwrap();
+    let id_foo_a = ExternalNodeBuilder::new(block_foo().build().unwrap().digest())
+        .add_to_forest(&mut forest_a)
+        .unwrap();
+    let id_call_a = CallNodeBuilder::new(id_foo_a).add_to_forest(&mut forest_a).unwrap();
     forest_a.make_root(id_call_a);
 
     let mut forest_b = MastForest::new();
     let id_foo_b = block_foo().add_to_forest(&mut forest_b).unwrap();
-    let id_call_b = forest_b.add_call(id_foo_b).unwrap();
+    let id_call_b = CallNodeBuilder::new(id_foo_b).add_to_forest(&mut forest_b).unwrap();
     forest_b.make_root(id_call_b);
 
     let (merged_ab, root_maps_ab) = MastForest::merge([&forest_a, &forest_b]).unwrap();
@@ -227,13 +231,13 @@ fn mast_forest_merge_replace_external() {
 fn mast_forest_merge_roots() {
     let mut forest_a = MastForest::new();
     let id_foo_a = block_foo().add_to_forest(&mut forest_a).unwrap();
-    let call_a = forest_a.add_call(id_foo_a).unwrap();
+    let call_a = CallNodeBuilder::new(id_foo_a).add_to_forest(&mut forest_a).unwrap();
     forest_a.make_root(call_a);
 
     let mut forest_b = MastForest::new();
     let id_foo_b = block_foo().add_to_forest(&mut forest_b).unwrap();
     let id_bar_b = block_bar().add_to_forest(&mut forest_b).unwrap();
-    let call_b = forest_b.add_call(id_foo_b).unwrap();
+    let call_b = CallNodeBuilder::new(id_foo_b).add_to_forest(&mut forest_b).unwrap();
     forest_b.make_root(id_bar_b);
     forest_b.make_root(call_b);
 
@@ -275,20 +279,20 @@ fn mast_forest_merge_roots() {
 fn mast_forest_merge_multiple() {
     let mut forest_a = MastForest::new();
     let id_foo_a = block_foo().add_to_forest(&mut forest_a).unwrap();
-    let call_a = forest_a.add_call(id_foo_a).unwrap();
+    let call_a = CallNodeBuilder::new(id_foo_a).add_to_forest(&mut forest_a).unwrap();
     forest_a.make_root(call_a);
 
     let mut forest_b = MastForest::new();
     let id_foo_b = block_foo().add_to_forest(&mut forest_b).unwrap();
     let id_bar_b = block_bar().add_to_forest(&mut forest_b).unwrap();
-    let call_b = forest_b.add_call(id_foo_b).unwrap();
+    let call_b = CallNodeBuilder::new(id_foo_b).add_to_forest(&mut forest_b).unwrap();
     forest_b.make_root(id_bar_b);
     forest_b.make_root(call_b);
 
     let mut forest_c = MastForest::new();
     let id_foo_c = block_foo().add_to_forest(&mut forest_c).unwrap();
     let id_qux_c = block_qux().add_to_forest(&mut forest_c).unwrap();
-    let call_c = forest_c.add_call(id_foo_c).unwrap();
+    let call_c = CallNodeBuilder::new(id_foo_c).add_to_forest(&mut forest_c).unwrap();
     forest_c.make_root(id_qux_c);
     forest_c.make_root(call_c);
 
@@ -479,7 +483,8 @@ fn mast_forest_merge_external_node_reference_with_decorator() {
 
     // Build Forest B
     let mut forest_b = MastForest::new();
-    let id_external_b = forest_b.add_external(foo_node_digest).unwrap();
+    let id_external_b =
+        ExternalNodeBuilder::new(foo_node_digest).add_to_forest(&mut forest_b).unwrap();
 
     forest_b.make_root(id_external_b);
 
@@ -756,13 +761,17 @@ fn mast_forest_merge_multiple_external_nodes_with_decorator() {
 #[test]
 fn mast_forest_merge_external_dependencies() {
     let mut forest_a = MastForest::new();
-    let id_foo_a = forest_a.add_external(block_qux().build().unwrap().digest()).unwrap();
-    let id_call_a = forest_a.add_call(id_foo_a).unwrap();
+    let id_foo_a = ExternalNodeBuilder::new(block_qux().build().unwrap().digest())
+        .add_to_forest(&mut forest_a)
+        .unwrap();
+    let id_call_a = CallNodeBuilder::new(id_foo_a).add_to_forest(&mut forest_a).unwrap();
     forest_a.make_root(id_call_a);
 
     let mut forest_b = MastForest::new();
-    let id_ext_b = forest_b.add_external(forest_a[id_call_a].digest()).unwrap();
-    let id_call_b = forest_b.add_call(id_ext_b).unwrap();
+    let id_ext_b = ExternalNodeBuilder::new(forest_a[id_call_a].digest())
+        .add_to_forest(&mut forest_b)
+        .unwrap();
+    let id_call_b = CallNodeBuilder::new(id_ext_b).add_to_forest(&mut forest_b).unwrap();
     let id_qux_b = block_qux().add_to_forest(&mut forest_b).unwrap();
     forest_b.make_root(id_call_b);
     forest_b.make_root(id_qux_b);
@@ -818,7 +827,7 @@ fn mast_forest_merge_invalid_decorator_index() {
 fn mast_forest_merge_advice_maps_merged() {
     let mut forest_a = MastForest::new();
     let id_foo = block_foo().add_to_forest(&mut forest_a).unwrap();
-    let id_call_a = forest_a.add_call(id_foo).unwrap();
+    let id_call_a = CallNodeBuilder::new(id_foo).add_to_forest(&mut forest_a).unwrap();
     forest_a.make_root(id_call_a);
     let key_a = Word::new([Felt::new(1), Felt::new(2), Felt::new(3), Felt::new(4)]);
     let value_a = vec![ONE, ONE];
@@ -826,7 +835,7 @@ fn mast_forest_merge_advice_maps_merged() {
 
     let mut forest_b = MastForest::new();
     let id_bar = block_bar().add_to_forest(&mut forest_b).unwrap();
-    let id_call_b = forest_b.add_call(id_bar).unwrap();
+    let id_call_b = CallNodeBuilder::new(id_bar).add_to_forest(&mut forest_b).unwrap();
     forest_b.make_root(id_call_b);
     let key_b = Word::new([Felt::new(1), Felt::new(3), Felt::new(2), Felt::new(1)]);
     let value_b = vec![Felt::new(2), Felt::new(2)];
@@ -845,7 +854,7 @@ fn mast_forest_merge_advice_maps_merged() {
 fn mast_forest_merge_advice_maps_collision() {
     let mut forest_a = MastForest::new();
     let id_foo = block_foo().add_to_forest(&mut forest_a).unwrap();
-    let id_call_a = forest_a.add_call(id_foo).unwrap();
+    let id_call_a = CallNodeBuilder::new(id_foo).add_to_forest(&mut forest_a).unwrap();
     forest_a.make_root(id_call_a);
     let key_a = Word::new([Felt::new(1), Felt::new(2), Felt::new(3), Felt::new(4)]);
     let value_a = vec![ONE, ONE];
@@ -853,7 +862,7 @@ fn mast_forest_merge_advice_maps_collision() {
 
     let mut forest_b = MastForest::new();
     let id_bar = block_bar().add_to_forest(&mut forest_b).unwrap();
-    let id_call_b = forest_b.add_call(id_bar).unwrap();
+    let id_call_b = CallNodeBuilder::new(id_bar).add_to_forest(&mut forest_b).unwrap();
     forest_b.make_root(id_call_b);
     // The key collides with key_a in the forest_a.
     let key_b = key_a;
