@@ -15,7 +15,7 @@ use miden_core::{
     EMPTY_WORD, EventId, ONE, Program, WORD_SIZE, ZERO, assert_matches,
     mast::{
         BasicBlockNodeBuilder, CallNodeBuilder, DynNodeBuilder, JoinNodeBuilder, LoopNodeBuilder,
-        MastForest, MastForestContributor, MastNode, MastNodeExt, MastNodeId, OP_BATCH_SIZE,
+        MastForest, MastForestContributor, MastNodeExt, MastNodeId, OP_BATCH_SIZE,
         SplitNodeBuilder,
     },
 };
@@ -1505,24 +1505,22 @@ fn calls_in_syscall(#[case] op: Operation) {
             .add_to_forest(&mut mast_forest)
             .unwrap();
 
-        let node: MastNode = match op {
-            Operation::Dyncall => DynNodeBuilder::new_dyncall().build().into(),
+        let call_node_id = match op {
+            Operation::Dyncall => {
+                DynNodeBuilder::new_dyncall().add_to_forest(&mut mast_forest).unwrap()
+            },
             Operation::Call => {
                 CallNodeBuilder::new(MastNodeId::from_u32_safe(0, &mast_forest).unwrap())
-                    .build(&mast_forest)
+                    .add_to_forest(&mut mast_forest)
                     .unwrap()
-                    .into()
             },
             Operation::SysCall => {
                 CallNodeBuilder::new_syscall(MastNodeId::from_u32_safe(0, &mast_forest).unwrap())
-                    .build(&mast_forest)
+                    .add_to_forest(&mut mast_forest)
                     .unwrap()
-                    .into()
             },
             _ => unreachable!(),
         };
-
-        let call_node_id = mast_forest.add_node(node).unwrap();
         mast_forest.make_root(call_node_id);
 
         Program::new(mast_forest.into(), call_node_id)
