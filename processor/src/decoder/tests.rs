@@ -1506,15 +1506,13 @@ fn calls_in_syscall(#[case] op: Operation) {
             .unwrap();
 
         let builder = match op {
-            Operation::Dyncall => {
-                MastNodeBuilder::Dyn(DynNodeBuilder::new_dyncall())
-            },
-            Operation::Call => {
-                MastNodeBuilder::Call(CallNodeBuilder::new(MastNodeId::from_u32_safe(0, &mast_forest).unwrap()))
-            },
-            Operation::SysCall => {
-                MastNodeBuilder::Call(CallNodeBuilder::new_syscall(MastNodeId::from_u32_safe(0, &mast_forest).unwrap()))
-            },
+            Operation::Dyncall => MastNodeBuilder::Dyn(DynNodeBuilder::new_dyncall()),
+            Operation::Call => MastNodeBuilder::Call(CallNodeBuilder::new(
+                MastNodeId::from_u32_safe(0, &mast_forest).unwrap(),
+            )),
+            Operation::SysCall => MastNodeBuilder::Call(CallNodeBuilder::new_syscall(
+                MastNodeId::from_u32_safe(0, &mast_forest).unwrap(),
+            )),
             _ => unreachable!(),
         };
         let call_node_id = builder.add_to_forest(&mut mast_forest).unwrap();
