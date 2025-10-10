@@ -1,10 +1,10 @@
 [package]
-name = "miden-derive-mast-node-ext"
+name = "miden-enum-thispatch"
 version = "0.1.0"
-description = "Proc macro to derive MastNodeExt trait implementations"
+description = "Proc macro to derive enum thispatch trait implementations (thispatched enum_dispatch)"
 readme = "README.md"
 categories = ["development-tools::procedural-macro-helpers", "no-std"]
-keywords = ["miden", "mast", "proc-macro", "derive"]
+keywords = ["enum", "thispatch", "proc-macro", "derive", "enum_dispatch"]
 publish = false
 license.workspace = true
 authors.workspace = true

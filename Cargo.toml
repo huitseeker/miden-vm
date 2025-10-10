@@ -45,7 +45,7 @@ miden-assembly = { path = "./crates/assembly", version = "0.19", default-feature
 miden-assembly-syntax = { path = "./crates/assembly-syntax", version = "0.19", default-features = false }
 miden-core = { path = "./core", version = "0.19", default-features = false }
 miden-debug-types = { path = "./crates/debug/types", version = "0.19", default-features = false }
-miden-derive-mast-node-ext = { path = "./crates/utils/derive-mast-node-ext", version = "0.1", default-features = false }
+miden-enum-thispatch = { path = "./crates/utils/enum_thispatch", version = "0.1", default-features = false }
 miden-mast-package = { path = "./package", version = "0.19", default-features = false }
 miden-processor = { path = "./processor", version = "0.19", default-features = false }
 miden-serde-test-macros = { path = "./crates/utils/serde-test-macros", default-features = false }
