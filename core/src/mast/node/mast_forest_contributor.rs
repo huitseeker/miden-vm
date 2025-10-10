@@ -1,4 +1,5 @@
 use alloc::vec::Vec;
+
 use enum_dispatch::enum_dispatch;
 
 use super::{
@@ -29,7 +30,6 @@ pub trait MastForestContributor {
     fn with_before_enter(self, _decorators: impl Into<Vec<crate::mast::DecoratorId>>) -> Self;
 
     /// Adds decorators to be executed after this node.
-    ///
     fn with_after_exit(self, _decorators: impl Into<Vec<crate::mast::DecoratorId>>) -> Self;
 }
 

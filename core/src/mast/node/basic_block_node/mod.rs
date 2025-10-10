@@ -883,7 +883,6 @@ impl BasicBlockNodeBuilder {
         }
     }
 
-    
     /// Builds the BasicBlockNode with the specified decorators.
     pub fn build(self) -> Result<BasicBlockNode, MastForestError> {
         if self.operations.is_empty() {
