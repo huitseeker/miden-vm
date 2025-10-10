@@ -14,7 +14,6 @@ use crate::{
     chiplets::hasher,
     mast::{
         DecoratedOpLink, DecoratorId, MastForest, MastForestError, MastNodeFingerprint, MastNodeId,
-        Remapping,
     },
 };
 
@@ -332,10 +331,6 @@ impl MastNodeExt for BasicBlockNode {
         Box::new(BasicBlockNode::to_pretty_print(self, mast_forest))
     }
 
-    fn remap_children(&self, _remapping: &Remapping) -> Self {
-        self.clone()
-    }
-
     fn has_children(&self) -> bool {
         false
     }
@@ -360,7 +355,7 @@ impl MastNodeExt for BasicBlockNode {
     fn to_builder(self) -> Self::Builder {
         let operations: Vec<Operation> = self.raw_operations().cloned().collect();
         let un_adjusted_decorators =
-            RawDecoratorOpLinkIterator::new(&[], &self.decorators, &[], &self.op_batches())
+            RawDecoratorOpLinkIterator::new(&[], &self.decorators, &[], self.op_batches())
                 .collect();
 
         BasicBlockNodeBuilder::new(operations, un_adjusted_decorators)
@@ -991,6 +986,11 @@ impl MastForestContributor for BasicBlockNodeBuilder {
             let decorator_root = Blake3_256::hash(&bytes_to_hash);
             Ok(MastNodeFingerprint::with_decorator_root(digest, decorator_root))
         }
+    }
+
+    fn remap_children(self, _remapping: &crate::mast::Remapping) -> Self {
+        // BasicBlockNode has no children to remap
+        self
     }
 }
 
