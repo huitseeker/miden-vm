@@ -1379,6 +1379,7 @@ dependencies = [
  "insta",
  "miden-crypto",
  "miden-debug-types",
+ "miden-derive-mast-node-ext",
  "miden-formatting",
  "miden-serde-test-macros",
  "miden-utils-indexing",
@@ -1437,6 +1438,15 @@ dependencies = [
  "serde",
  "serde_spanned",
  "thiserror",
+]
+
+[[package]]
+name = "miden-derive-mast-node-ext"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 1.0.109",
 ]
 
 [[package]]
