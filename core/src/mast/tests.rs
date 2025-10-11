@@ -53,3 +53,22 @@ fn digest_from_seed(seed: [u8; 32]) -> Word {
     });
     digest.into()
 }
+
+#[test]
+fn mast_node_deserialization_error_handling() {
+    // Test that deserialization handles malformed input gracefully
+    use crate::utils::{Deserializable, Serializable};
+    use alloc::vec::Vec;
+
+    // Create a valid node and serialize it
+    let original_node = DynNode::new_dyn();
+    let serialized = original_node.to_bytes();
+
+    // Test deserialization with valid data
+    let deserialized = DynNode::read_from_bytes(&serialized).unwrap();
+    assert_eq!(original_node.digest(), deserialized.digest());
+
+    // Test that empty input fails gracefully
+    let result = DynNode::read_from_bytes(&[]);
+    assert!(result.is_err());
+}
