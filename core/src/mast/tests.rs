@@ -40,6 +40,20 @@ proptest! {
     }
 }
 
+#[test]
+fn mast_node_hash_consistency() {
+    // Test that hash computation is consistent for basic mast nodes
+    let node1 = DynNode::new_dyn();
+    let node2 = DynNode::new_dyn();
+
+    // Same node type should produce same hash
+    assert_eq!(node1.digest(), node2.digest());
+
+    // Verify hash length is correct
+    let digest = node1.digest();
+    assert_eq!(digest.len(), WORD_SIZE);
+}
+
 // HELPER FUNCTIONS
 // --------------------------------------------------------------------------------------------
 
