@@ -651,7 +651,11 @@ fn test_basic_block_digest_forcing_with_decorators() {
     let node = builder.build().expect("Failed to build node with forced digest");
 
     assert_eq!(node.digest(), forced_digest, "Digest should be forced");
-    assert_eq!(node.before_enter(), &[decorator_id], "Before-enter decorators should be preserved");
+    assert_eq!(
+        node.before_enter(),
+        &[decorator_id],
+        "Before-enter decorators should be preserved"
+    );
     assert_eq!(node.after_exit(), &[decorator_id], "After-exit decorators should be preserved");
 }
 
