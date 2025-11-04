@@ -47,6 +47,15 @@ impl SplitNode {
     pub fn on_false(&self) -> MastNodeId {
         self.branches[1]
     }
+
+    /// Converts this node to use Linked decorators with the provided node ID.
+    pub fn with_linked_decorators(self, decorator_node_id: MastNodeId) -> Self {
+        SplitNode {
+            branches: self.branches,
+            digest: self.digest,
+            decorator_store: DecoratorStore::Linked { id: decorator_node_id },
+        }
+    }
 }
 
 impl MastNodeErrorContext for SplitNode {
@@ -278,34 +287,40 @@ impl SplitNodeBuilder {
 
 impl MastForestContributor for SplitNodeBuilder {
     fn add_to_forest(self, forest: &mut MastForest) -> Result<MastNodeId, MastForestError> {
-        let node = self.build(forest)?;
-
-        let SplitNode {
-            branches,
-            digest,
-            decorator_store: DecoratorStore::Owned { before_enter, after_exit, .. },
-        } = node
-        else {
-            unreachable!("SplitNodeBuilder::build() should always return owned decorators");
-        };
+        // Validate branches
+        let forest_len = forest.nodes.len();
+        if self.branches[0].to_usize() >= forest_len {
+            return Err(MastForestError::NodeIdOverflow(self.branches[0], forest_len));
+        } else if self.branches[1].to_usize() >= forest_len {
+            return Err(MastForestError::NodeIdOverflow(self.branches[1], forest_len));
+        }
 
         // Determine the node ID that will be assigned
         let future_node_id = MastNodeId::new_unchecked(forest.nodes.len() as u32);
 
-        // Store node-level decorators in the centralized NodeDecoratorStorage for efficient access
+        // Store node-level decorators directly from builder state
         forest.node_decorator_storage.add_node_decorators(
             future_node_id,
-            &before_enter,
-            &after_exit,
+            &self.before_enter,
+            &self.after_exit,
         );
 
-        // Create the node in the forest with Linked variant from the start
-        // Move the data directly without intermediate cloning
+        // Compute the digest
+        let digest = if let Some(forced_digest) = self.digest {
+            forced_digest
+        } else {
+            let if_branch_hash = forest[self.branches[0]].digest();
+            let else_branch_hash = forest[self.branches[1]].digest();
+
+            hasher::merge_in_domain(&[if_branch_hash, else_branch_hash], SplitNode::DOMAIN)
+        };
+
+        // Build the node directly with Linked decorators
         let node_id = forest
             .nodes
             .push(
                 SplitNode {
-                    branches,
+                    branches: self.branches,
                     digest,
                     decorator_store: DecoratorStore::Linked { id: future_node_id },
                 }

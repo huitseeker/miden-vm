@@ -48,6 +48,15 @@ impl DynNode {
             Self::DYN_DOMAIN
         }
     }
+
+    /// Converts this node to use Linked decorators with the provided node ID.
+    pub fn with_linked_decorators(self, decorator_node_id: MastNodeId) -> Self {
+        DynNode {
+            is_dyncall: self.is_dyncall,
+            digest: self.digest,
+            decorator_store: DecoratorStore::Linked { id: decorator_node_id },
+        }
+    }
 }
 
 impl MastNodeErrorContext for DynNode {
@@ -305,34 +314,41 @@ impl DynNodeBuilder {
 
 impl MastForestContributor for DynNodeBuilder {
     fn add_to_forest(self, forest: &mut MastForest) -> Result<MastNodeId, MastForestError> {
-        let node = self.build();
-
-        let DynNode {
-            is_dyncall,
-            digest,
-            decorator_store: DecoratorStore::Owned { before_enter, after_exit, .. },
-        } = node
-        else {
-            unreachable!("DynNodeBuilder::build() should always return owned decorators");
-        };
-
         // Determine the node ID that will be assigned
         let future_node_id = MastNodeId::new_unchecked(forest.nodes.len() as u32);
 
-        // Store node-level decorators in the centralized NodeDecoratorStorage for efficient access
+        // Store node-level decorators directly from builder state
         forest.node_decorator_storage.add_node_decorators(
             future_node_id,
-            &before_enter,
-            &after_exit,
+            &self.before_enter,
+            &self.after_exit,
         );
 
-        // Create the node in the forest with Linked variant from the start
-        // Move the data directly without intermediate cloning
+        // Compute the digest
+        let digest = if let Some(forced_digest) = self.digest {
+            forced_digest
+        } else if self.is_dyncall {
+            Word::new([
+                Felt::new(8751004906421739448),
+                Felt::new(13469709002495534233),
+                Felt::new(12584249374630430826),
+                Felt::new(7624899870831503004),
+            ])
+        } else {
+            Word::new([
+                Felt::new(8115106948140260551),
+                Felt::new(13491227816952616836),
+                Felt::new(15015806788322198710),
+                Felt::new(16575543461540527115),
+            ])
+        };
+
+        // Build the node directly with Linked decorators
         let node_id = forest
             .nodes
             .push(
                 DynNode {
-                    is_dyncall,
+                    is_dyncall: self.is_dyncall,
                     digest,
                     decorator_store: DecoratorStore::Linked { id: future_node_id },
                 }

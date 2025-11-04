@@ -64,6 +64,16 @@ impl CallNode {
             Self::CALL_DOMAIN
         }
     }
+
+    /// Converts this node to use Linked decorators with the provided node ID.
+    pub fn with_linked_decorators(self, decorator_node_id: MastNodeId) -> Self {
+        CallNode {
+            callee: self.callee,
+            is_syscall: self.is_syscall,
+            digest: self.digest,
+            decorator_store: DecoratorStore::Linked { id: decorator_node_id },
+        }
+    }
 }
 
 impl MastNodeErrorContext for CallNode {
@@ -349,36 +359,42 @@ impl CallNodeBuilder {
 
 impl MastForestContributor for CallNodeBuilder {
     fn add_to_forest(self, forest: &mut MastForest) -> Result<MastNodeId, MastForestError> {
-        let node = self.build(forest)?;
-
-        let CallNode {
-            callee,
-            is_syscall,
-            digest,
-            decorator_store: DecoratorStore::Owned { before_enter, after_exit, .. },
-        } = node
-        else {
-            unreachable!("CallNodeBuilder::build() should always return owned decorators");
-        };
+        // Validate callee
+        if self.callee.to_usize() >= forest.nodes.len() {
+            return Err(MastForestError::NodeIdOverflow(self.callee, forest.nodes.len()));
+        }
 
         // Determine the node ID that will be assigned
         let future_node_id = MastNodeId::new_unchecked(forest.nodes.len() as u32);
 
-        // Store node-level decorators in the centralized NodeDecoratorStorage for efficient access
+        // Store node-level decorators directly from builder state
         forest.node_decorator_storage.add_node_decorators(
             future_node_id,
-            &before_enter,
-            &after_exit,
+            &self.before_enter,
+            &self.after_exit,
         );
 
-        // Create the node in the forest with Linked variant from the start
-        // Move the data directly without intermediate cloning
+        // Compute the digest
+        let digest = if let Some(forced_digest) = self.digest {
+            forced_digest
+        } else {
+            let callee_digest = forest[self.callee].digest();
+            let domain = if self.is_syscall {
+                CallNode::SYSCALL_DOMAIN
+            } else {
+                CallNode::CALL_DOMAIN
+            };
+
+            hasher::merge_in_domain(&[callee_digest, Word::default()], domain)
+        };
+
+        // Build the node directly with Linked decorators
         let node_id = forest
             .nodes
             .push(
                 CallNode {
-                    callee,
-                    is_syscall,
+                    callee: self.callee,
+                    is_syscall: self.is_syscall,
                     digest,
                     decorator_store: DecoratorStore::Linked { id: future_node_id },
                 }

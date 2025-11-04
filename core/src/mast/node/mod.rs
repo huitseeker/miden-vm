@@ -97,6 +97,21 @@ pub enum MastNode {
     External(ExternalNode),
 }
 
+impl MastNode {
+    /// Converts this node to use Linked decorators with the provided node ID.
+    pub fn with_linked_decorators(self, decorator_node_id: MastNodeId) -> Self {
+        match self {
+            MastNode::Block(node) => node.with_linked_decorators(decorator_node_id).into(),
+            MastNode::Loop(node) => node.with_linked_decorators(decorator_node_id).into(),
+            MastNode::Join(node) => node.with_linked_decorators(decorator_node_id).into(),
+            MastNode::Split(node) => node.with_linked_decorators(decorator_node_id).into(),
+            MastNode::Call(node) => node.with_linked_decorators(decorator_node_id).into(),
+            MastNode::Dyn(node) => node.with_linked_decorators(decorator_node_id).into(),
+            MastNode::External(node) => node.with_linked_decorators(decorator_node_id).into(),
+        }
+    }
+}
+
 // ------------------------------------------------------------------------------------------------
 /// Public accessors
 impl MastNode {

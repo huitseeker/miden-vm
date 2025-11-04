@@ -97,6 +97,15 @@ pub struct BasicBlockNode {
 impl BasicBlockNode {
     /// The domain of the basic block node (used for control block hashing).
     pub const DOMAIN: Felt = ZERO;
+
+    /// Converts this node to use Linked decorators with the provided node ID.
+    pub fn with_linked_decorators(self, decorator_node_id: MastNodeId) -> Self {
+        BasicBlockNode {
+            op_batches: self.op_batches,
+            digest: self.digest,
+            decorators: DecoratorStore::Linked { id: decorator_node_id },
+        }
+    }
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -419,7 +428,6 @@ impl BasicBlockNode {
     }
 }
 
-#[allow(refining_impl_trait_reachable)]
 impl MastNodeErrorContext for BasicBlockNode {
     /// Returns all decorators in program order: before_enter, op-indexed, after_exit.
     fn decorators<'a>(
@@ -1309,40 +1317,36 @@ impl BasicBlockNodeBuilder {
 
 impl MastForestContributor for BasicBlockNodeBuilder {
     fn add_to_forest(self, forest: &mut MastForest) -> Result<MastNodeId, MastForestError> {
-        let basic_block = self.build()?;
-
-        let BasicBlockNode {
-            op_batches,
-            digest,
-            decorators:
-                DecoratorStore::Owned {
-                    decorators: decorators_info,
-                    before_enter,
-                    after_exit,
-                },
-        } = basic_block
-        else {
-            unreachable!("BasicBlockBuilder::build() should always return owned decorators");
-        };
+        if self.operations.is_empty() {
+            return Err(MastForestError::EmptyBasicBlock);
+        }
 
         // Determine the node ID that will be assigned
         let future_node_id = MastNodeId::new_unchecked(forest.nodes.len() as u32);
 
+        // Batch operations and compute digest
+        let (op_batches, computed_digest) = batch_and_hash_ops(self.operations);
+
+        // Adjust decorators for padding (same as build() does)
+        let reflowed_decorators = BasicBlockNode::adjust_decorators(self.decorators, &op_batches);
+
+        // Use the forced digest if provided, otherwise use the computed digest
+        let digest = self.digest.unwrap_or(computed_digest);
+
         // Add decorator info to the forest storage
         forest
             .decorator_storage
-            .add_decorator_info_for_node(future_node_id, decorators_info)
+            .add_decorator_info_for_node(future_node_id, reflowed_decorators)
             .map_err(MastForestError::DecoratorError)?;
 
         // Add node-level decorators to the centralized NodeDecoratorStorage for efficient access
         forest.node_decorator_storage.add_node_decorators(
             future_node_id,
-            &before_enter,
-            &after_exit,
+            &self.before_enter,
+            &self.after_exit,
         );
 
         // Create the node in the forest with Linked variant from the start
-        // Move the data directly without intermediate cloning
         let node_id = forest
             .nodes
             .push(MastNode::Block(BasicBlockNode {
@@ -1352,7 +1356,6 @@ impl MastForestContributor for BasicBlockNodeBuilder {
             }))
             .map_err(|_| MastForestError::TooManyNodes)?;
 
-        // The decorator info was already added to forest storage, so we're done
         Ok(node_id)
     }
 

@@ -53,6 +53,14 @@ impl MastNodeErrorContext for ExternalNode {
 // ================================================================================================
 
 impl ExternalNode {
+    /// Converts this node to use Linked decorators with the provided node ID.
+    pub fn with_linked_decorators(self, decorator_node_id: MastNodeId) -> Self {
+        ExternalNode {
+            digest: self.digest,
+            decorator_store: DecoratorStore::Linked { id: decorator_node_id },
+        }
+    }
+
     pub(super) fn to_display<'a>(&'a self, mast_forest: &'a MastForest) -> impl fmt::Display + 'a {
         ExternalNodePrettyPrint { node: self, mast_forest }
     }
@@ -250,33 +258,22 @@ impl ExternalNodeBuilder {
 
 impl MastForestContributor for ExternalNodeBuilder {
     fn add_to_forest(self, forest: &mut MastForest) -> Result<MastNodeId, MastForestError> {
-        let node = self.build();
-
-        let ExternalNode {
-            digest,
-            decorator_store: DecoratorStore::Owned { before_enter, after_exit, .. },
-        } = node
-        else {
-            unreachable!("ExternalNodeBuilder::build() should always return owned decorators");
-        };
-
         // Determine the node ID that will be assigned
         let future_node_id = MastNodeId::new_unchecked(forest.nodes.len() as u32);
 
-        // Store node-level decorators in the centralized NodeDecoratorStorage for efficient access
+        // Store node-level decorators directly from builder state
         forest.node_decorator_storage.add_node_decorators(
             future_node_id,
-            &before_enter,
-            &after_exit,
+            &self.before_enter,
+            &self.after_exit,
         );
 
-        // Create the node in the forest with Linked variant from the start
-        // Move the data directly without intermediate cloning
+        // Build the node directly with Linked decorators
         let node_id = forest
             .nodes
             .push(
                 ExternalNode {
-                    digest,
+                    digest: self.digest,
                     decorator_store: DecoratorStore::Linked { id: future_node_id },
                 }
                 .into(),

@@ -41,6 +41,15 @@ impl LoopNode {
     pub fn body(&self) -> MastNodeId {
         self.body
     }
+
+    /// Converts this node to use Linked decorators with the provided node ID.
+    pub fn with_linked_decorators(self, decorator_node_id: MastNodeId) -> Self {
+        LoopNode {
+            body: self.body,
+            digest: self.digest,
+            decorator_store: DecoratorStore::Linked { id: decorator_node_id },
+        }
+    }
 }
 
 impl MastNodeErrorContext for LoopNode {
@@ -263,34 +272,35 @@ impl LoopNodeBuilder {
 
 impl MastForestContributor for LoopNodeBuilder {
     fn add_to_forest(self, forest: &mut MastForest) -> Result<MastNodeId, MastForestError> {
-        let node = self.build(forest)?;
-
-        let LoopNode {
-            body,
-            digest,
-            decorator_store: DecoratorStore::Owned { before_enter, after_exit, .. },
-        } = node
-        else {
-            unreachable!("LoopNodeBuilder::build() should always return owned decorators");
-        };
+        // Validate body node ID
+        if self.body.to_usize() >= forest.nodes.len() {
+            return Err(MastForestError::NodeIdOverflow(self.body, forest.nodes.len()));
+        }
 
         // Determine the node ID that will be assigned
         let future_node_id = MastNodeId::new_unchecked(forest.nodes.len() as u32);
 
-        // Store node-level decorators in the centralized NodeDecoratorStorage for efficient access
+        // Store node-level decorators directly from builder state (no need to build first!)
         forest.node_decorator_storage.add_node_decorators(
             future_node_id,
-            &before_enter,
-            &after_exit,
+            &self.before_enter,
+            &self.after_exit,
         );
 
-        // Create the node in the forest with Linked variant from the start
-        // Move the data directly without intermediate cloning
+        // Compute the digest
+        let digest = if let Some(forced_digest) = self.digest {
+            forced_digest
+        } else {
+            let body_hash = forest[self.body].digest();
+            hasher::merge_in_domain(&[body_hash, Word::default()], LoopNode::DOMAIN)
+        };
+
+        // Build the node directly with Linked decorators
         let node_id = forest
             .nodes
             .push(
                 LoopNode {
-                    body,
+                    body: self.body,
                     digest,
                     decorator_store: DecoratorStore::Linked { id: future_node_id },
                 }
@@ -383,23 +393,21 @@ impl LoopNodeBuilder {
         self,
         forest: &mut MastForest,
     ) -> Result<MastNodeId, MastForestError> {
-        // Use the forced digest if provided, otherwise use a default digest
-        // The actual digest computation will be handled when the forest is complete
+        // Use the forced digest if provided
         let Some(digest) = self.digest else {
             panic!("Digest is required for deserialization")
         };
 
         let future_node_id = MastNodeId::new_unchecked(forest.nodes.len() as u32);
 
-        // Store node-level decorators in the centralized NodeDecoratorStorage for efficient access
+        // Store node-level decorators
         forest.node_decorator_storage.add_node_decorators(
             future_node_id,
             &self.before_enter,
             &self.after_exit,
         );
 
-        // Create the node in the forest with Linked variant from the start
-        // Move the data directly without intermediate cloning
+        // Create the node in the forest with Linked variant
         let node_id = forest
             .nodes
             .push(
