@@ -1,4 +1,4 @@
-use miden_processor::{ExecutionError, MemoryError};
+use miden_processor::{ExecutionError, MemoryError, OperationError};
 use miden_utils_testing::{
     Felt, build_expected_hash, build_expected_perm, build_op_test,
     crypto::{MerkleTree, NodeIndex, init_merkle_leaf, init_merkle_store},
@@ -317,7 +317,8 @@ fn crypto_stream_rejects_in_place() {
     let err = test.execute().expect_err("crypto_stream should reject in-place encryption");
     assert!(matches!(
         err,
-        ExecutionError::MemoryError(MemoryError::IllegalMemoryAccess { .. })
+        ExecutionError::OperationError { err, .. } | ExecutionError::OperationErrorNoContext { err, .. }
+        if matches!(err.as_ref(), OperationError::MemoryError(MemoryError::IllegalMemoryAccess { .. }))
     ));
 }
 
@@ -350,7 +351,8 @@ fn crypto_stream_rejects_partial_overlap() {
         .expect_err("crypto_stream should reject partial overlap (dst within src)");
     assert!(matches!(
         err,
-        ExecutionError::MemoryError(MemoryError::IllegalMemoryAccess { .. })
+        ExecutionError::OperationError { err, .. } | ExecutionError::OperationErrorNoContext { err, .. }
+        if matches!(err.as_ref(), OperationError::MemoryError(MemoryError::IllegalMemoryAccess { .. }))
     ));
 
     // Test case 2: src starts within dst range (src=1004, dst=1000)
@@ -374,7 +376,8 @@ fn crypto_stream_rejects_partial_overlap() {
         .expect_err("crypto_stream should reject partial overlap (src within dst)");
     assert!(matches!(
         err,
-        ExecutionError::MemoryError(MemoryError::IllegalMemoryAccess { .. })
+        ExecutionError::OperationError { err, .. } | ExecutionError::OperationErrorNoContext { err, .. }
+        if matches!(err.as_ref(), OperationError::MemoryError(MemoryError::IllegalMemoryAccess { .. }))
     ));
 }
 
@@ -397,7 +400,8 @@ fn crypto_stream_rejects_src_range_overflow() {
     let err = test.execute().expect_err("crypto_stream should reject when src+8 overflows");
     assert!(matches!(
         err,
-        ExecutionError::MemoryError(MemoryError::AddressOutOfBounds { .. })
+        ExecutionError::OperationError { err, .. } | ExecutionError::OperationErrorNoContext { err, .. }
+        if matches!(err.as_ref(), OperationError::MemoryError(MemoryError::AddressOutOfBounds { .. }))
     ));
 }
 
@@ -420,7 +424,8 @@ fn crypto_stream_rejects_dst_range_overflow() {
     let err = test.execute().expect_err("crypto_stream should reject when dst+8 overflows");
     assert!(matches!(
         err,
-        ExecutionError::MemoryError(MemoryError::AddressOutOfBounds { .. })
+        ExecutionError::OperationError { err, .. } | ExecutionError::OperationErrorNoContext { err, .. }
+        if matches!(err.as_ref(), OperationError::MemoryError(MemoryError::AddressOutOfBounds { .. }))
     ));
 }
 
@@ -441,7 +446,8 @@ fn crypto_stream_rejects_unaligned_src() {
     let err = test.execute().expect_err("crypto_stream should reject unaligned src");
     assert!(matches!(
         err,
-        ExecutionError::MemoryError(MemoryError::UnalignedWordAccess { .. })
+        ExecutionError::OperationError { err, .. } | ExecutionError::OperationErrorNoContext { err, .. }
+        if matches!(err.as_ref(), OperationError::MemoryError(MemoryError::UnalignedWordAccess { .. }))
     ));
 }
 
@@ -462,7 +468,8 @@ fn crypto_stream_rejects_unaligned_dst() {
     let err = test.execute().expect_err("crypto_stream should reject unaligned dst");
     assert!(matches!(
         err,
-        ExecutionError::MemoryError(MemoryError::UnalignedWordAccess { .. })
+        ExecutionError::OperationError { err, .. } | ExecutionError::OperationErrorNoContext { err, .. }
+        if matches!(err.as_ref(), OperationError::MemoryError(MemoryError::UnalignedWordAccess { .. }))
     ));
 }
 

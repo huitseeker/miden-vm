@@ -1,4 +1,4 @@
-use alloc::vec::Vec;
+use alloc::{boxed::Box, vec::Vec};
 
 use paste::paste;
 
@@ -6,27 +6,31 @@ use super::{
     super::utils::{split_element, split_u32_into_u16},
     ExecutionError, Felt, FieldElement, Operation, Process,
 };
-use crate::{ErrorContext, ZERO};
+use crate::{ErrorContext, OperationError, ZERO};
 
 const U32_MAX: u64 = u32::MAX as u64;
 
 macro_rules! require_u32_operands {
-    ($stack:expr, [$($idx:expr),*], $err_ctx:expr) => {
-        require_u32_operands!($stack, [$($idx),*], ZERO, $err_ctx)
+    ($self:expr, [$($idx:expr),*], $err_ctx:expr) => {
+        require_u32_operands!($self, [$($idx),*], ZERO, $err_ctx)
     };
-    ($stack:expr, [$($idx:expr),*], $errno:expr, $err_ctx:expr) => {{
+    ($self:expr, [$($idx:expr),*], $errno:expr, $err_ctx:expr) => {{
         paste!{
             let mut invalid_values = Vec::new();
 
             $(
-                let [<_operand_ $idx>] = $stack.get($idx);
+                let [<_operand_ $idx>] = $self.stack.get($idx);
                 if [<_operand_ $idx>].as_int() > U32_MAX {
                     invalid_values.push([<_operand_ $idx>]);
                 }
             )*
 
             if !invalid_values.is_empty() {
-                return Err(ExecutionError::not_u32_values(invalid_values, $errno, $err_ctx));
+                let op_err = OperationError::NotU32Values { values: invalid_values, err_code: $errno };
+                return Err(ExecutionError::OperationErrorNoContext {
+                    clk: $self.system.clk(),
+                    err: Box::new(op_err),
+                });
             }
             // Return tuple of operands based on indices
             ($([<_operand_ $idx>].as_int()),*)
@@ -55,12 +59,14 @@ impl Process {
     /// Pops top two element off the stack, splits them into low and high 32-bit values, checks if
     /// the high values are equal to 0; if they are, puts the original elements back onto the
     /// stack; if they are not, returns an error.
-    pub(super) fn op_u32assert2(
-        &mut self,
-        err_code: Felt,
-        err_ctx: &impl ErrorContext,
-    ) -> Result<(), ExecutionError> {
-        let (b, a) = require_u32_operands!(self.stack, [0, 1], err_code, err_ctx);
+    pub(super) fn op_u32assert2(&mut self, err_code: Felt) -> Result<(), ExecutionError> {
+        // Note: err_ctx is not used by the macro - it creates
+        // ExecutionError::OperationErrorNoContext directly
+        let _dummy_ctx = &ErrorContext::new(
+            &miden_core::mast::MastForest::new(),
+            miden_core::mast::MastNodeId::from(0),
+        );
+        let (b, a) = require_u32_operands!(self, [0, 1], err_code, _dummy_ctx);
 
         self.add_range_checks(Operation::U32assert2(err_code), Felt::new(a), Felt::new(b), false);
 
@@ -73,8 +79,12 @@ impl Process {
 
     /// Pops two elements off the stack, adds them, splits the result into low and high 32-bit
     /// values, and pushes these values back onto the stack.
-    pub(super) fn op_u32add(&mut self, err_ctx: &impl ErrorContext) -> Result<(), ExecutionError> {
-        let (b, a) = require_u32_operands!(self.stack, [0, 1], err_ctx);
+    pub(super) fn op_u32add(&mut self) -> Result<(), ExecutionError> {
+        let _dummy_ctx = &ErrorContext::new(
+            &miden_core::mast::MastForest::new(),
+            miden_core::mast::MastNodeId::from(0),
+        );
+        let (b, a) = require_u32_operands!(self, [0, 1], _dummy_ctx);
 
         let result = Felt::new(a + b);
         let (hi, lo) = split_element(result);
@@ -88,8 +98,12 @@ impl Process {
 
     /// Pops three elements off the stack, adds them, splits the result into low and high 32-bit
     /// values, and pushes these values back onto the stack.
-    pub(super) fn op_u32add3(&mut self, err_ctx: &impl ErrorContext) -> Result<(), ExecutionError> {
-        let (c, b, a) = require_u32_operands!(self.stack, [0, 1, 2], err_ctx);
+    pub(super) fn op_u32add3(&mut self) -> Result<(), ExecutionError> {
+        let _dummy_ctx = &ErrorContext::new(
+            &miden_core::mast::MastForest::new(),
+            miden_core::mast::MastNodeId::from(0),
+        );
+        let (c, b, a) = require_u32_operands!(self, [0, 1, 2], _dummy_ctx);
         let result = Felt::new(a + b + c);
         let (hi, lo) = split_element(result);
 
@@ -104,8 +118,12 @@ impl Process {
     /// Pops two elements off the stack, subtracts the top element from the second element, and
     /// pushes the result as well as a flag indicating whether there was underflow back onto the
     /// stack.
-    pub(super) fn op_u32sub(&mut self, err_ctx: &impl ErrorContext) -> Result<(), ExecutionError> {
-        let (b, a) = require_u32_operands!(self.stack, [0, 1], err_ctx);
+    pub(super) fn op_u32sub(&mut self) -> Result<(), ExecutionError> {
+        let _dummy_ctx = &ErrorContext::new(
+            &miden_core::mast::MastForest::new(),
+            miden_core::mast::MastNodeId::from(0),
+        );
+        let (b, a) = require_u32_operands!(self, [0, 1], _dummy_ctx);
         let result = a.wrapping_sub(b);
         let d = Felt::new(result >> 63);
         let c = Felt::new(result & U32_MAX);
@@ -123,8 +141,12 @@ impl Process {
 
     /// Pops two elements off the stack, multiplies them, splits the result into low and high
     /// 32-bit values, and pushes these values back onto the stack.
-    pub(super) fn op_u32mul(&mut self, err_ctx: &impl ErrorContext) -> Result<(), ExecutionError> {
-        let (b, a) = require_u32_operands!(self.stack, [0, 1], err_ctx);
+    pub(super) fn op_u32mul(&mut self) -> Result<(), ExecutionError> {
+        let _dummy_ctx = &ErrorContext::new(
+            &miden_core::mast::MastForest::new(),
+            miden_core::mast::MastNodeId::from(0),
+        );
+        let (b, a) = require_u32_operands!(self, [0, 1], _dummy_ctx);
         let result = Felt::new(a * b);
         let (hi, lo) = split_element(result);
 
@@ -139,8 +161,12 @@ impl Process {
     /// Pops three elements off the stack, multiplies the first two and adds the third element to
     /// the result, splits the result into low and high 32-bit values, and pushes these values
     /// back onto the stack.
-    pub(super) fn op_u32madd(&mut self, err_ctx: &impl ErrorContext) -> Result<(), ExecutionError> {
-        let (b, a, c) = require_u32_operands!(self.stack, [0, 1, 2], err_ctx);
+    pub(super) fn op_u32madd(&mut self) -> Result<(), ExecutionError> {
+        let _dummy_ctx = &ErrorContext::new(
+            &miden_core::mast::MastForest::new(),
+            miden_core::mast::MastNodeId::from(0),
+        );
+        let (b, a, c) = require_u32_operands!(self, [0, 1, 2], _dummy_ctx);
         let result = Felt::new(a * b + c);
         let (hi, lo) = split_element(result);
 
@@ -157,11 +183,19 @@ impl Process {
     ///
     /// # Errors
     /// Returns an error if the divisor is ZERO.
-    pub(super) fn op_u32div(&mut self, err_ctx: &impl ErrorContext) -> Result<(), ExecutionError> {
-        let (b, a) = require_u32_operands!(self.stack, [0, 1], err_ctx);
+    pub(super) fn op_u32div(&mut self) -> Result<(), ExecutionError> {
+        let _dummy_ctx = &ErrorContext::new(
+            &miden_core::mast::MastForest::new(),
+            miden_core::mast::MastNodeId::from(0),
+        );
+        let (b, a) = require_u32_operands!(self, [0, 1], _dummy_ctx);
 
         if b == 0 {
-            return Err(ExecutionError::divide_by_zero(self.system.clk(), err_ctx));
+            let op_err = OperationError::DivideByZero;
+            return Err(ExecutionError::OperationErrorNoContext {
+                clk: self.system.clk(),
+                err: Box::new(op_err),
+            });
         }
 
         let q = a / b;
@@ -184,9 +218,16 @@ impl Process {
 
     /// Pops two elements off the stack, computes their bitwise AND, and pushes the result back
     /// onto the stack.
-    pub(super) fn op_u32and(&mut self, err_ctx: &impl ErrorContext) -> Result<(), ExecutionError> {
-        let (b, a) = require_u32_operands!(self.stack, [0, 1], err_ctx);
-        let result = self.chiplets.bitwise.u32and(Felt::new(a), Felt::new(b), err_ctx)?;
+    pub(super) fn op_u32and(&mut self) -> Result<(), ExecutionError> {
+        let dummy_forest = miden_core::mast::MastForest::new();
+        let _dummy_ctx = ErrorContext::new(&dummy_forest, miden_core::mast::MastNodeId::from(0));
+        let (b, a) = require_u32_operands!(self, [0, 1], &_dummy_ctx);
+        let result = self.chiplets.bitwise.u32and(
+            Felt::new(a),
+            Felt::new(b),
+            &_dummy_ctx,
+            self.system.clk(),
+        )?;
 
         self.stack.set(0, result);
         self.stack.shift_left(2);
@@ -196,9 +237,16 @@ impl Process {
 
     /// Pops two elements off the stack, computes their bitwise XOR, and pushes the result back onto
     /// the stack.
-    pub(super) fn op_u32xor(&mut self, err_ctx: &impl ErrorContext) -> Result<(), ExecutionError> {
-        let (b, a) = require_u32_operands!(self.stack, [0, 1], err_ctx);
-        let result = self.chiplets.bitwise.u32xor(Felt::new(a), Felt::new(b), err_ctx)?;
+    pub(super) fn op_u32xor(&mut self) -> Result<(), ExecutionError> {
+        let dummy_forest = miden_core::mast::MastForest::new();
+        let _dummy_ctx = ErrorContext::new(&dummy_forest, miden_core::mast::MastNodeId::from(0));
+        let (b, a) = require_u32_operands!(self, [0, 1], &_dummy_ctx);
+        let result = self.chiplets.bitwise.u32xor(
+            Felt::new(a),
+            Felt::new(b),
+            &_dummy_ctx,
+            self.system.clk(),
+        )?;
 
         self.stack.set(0, result);
         self.stack.shift_left(2);
@@ -253,7 +301,7 @@ mod tests {
         super::{Felt, Operation},
         Process, split_u32_into_u16,
     };
-    use crate::{DefaultHost, ExecutionError, StackInputs, ZERO};
+    use crate::{DefaultHost, ExecutionError, OperationError, StackInputs, ZERO};
 
     // CASTING OPERATIONS
     // --------------------------------------------------------------------------------------------
@@ -319,14 +367,20 @@ mod tests {
             process.execute_op(Operation::U32assert2(Felt::from(123u32)), program, &mut host);
         assert!(result.is_err());
 
-        if let Err(ExecutionError::NotU32Values { values, err_code, .. }) = result {
-            assert_eq!(err_code, Felt::from(123u32));
-            assert_eq!(values.len(), 2);
-            // Values are collected in stack order: stack[0] (top) first, then stack[1]
-            assert_eq!(values[0].as_int(), 4294967296u64); // stack[0] = top value
-            assert_eq!(values[1].as_int(), 4294967297u64); // stack[1] = second value
-        } else {
-            panic!("Expected NotU32Values error");
+        match result {
+            Err(ExecutionError::OperationError { err: op_err, .. })
+            | Err(ExecutionError::OperationErrorNoContext { err: op_err, .. }) => {
+                if let OperationError::NotU32Values { values, err_code } = op_err.as_ref() {
+                    assert_eq!(*err_code, Felt::from(123u32));
+                    assert_eq!(values.len(), 2);
+                    // Values are collected in stack order: stack[0] (top) first, then stack[1]
+                    assert_eq!(values[0].as_int(), 4294967296u64); // stack[0] = top value
+                    assert_eq!(values[1].as_int(), 4294967297u64); // stack[1] = second value
+                } else {
+                    panic!("Expected NotU32Values error");
+                }
+            },
+            _ => panic!("Expected OperationError wrapping NotU32Values"),
         }
     }
 
@@ -343,12 +397,18 @@ mod tests {
             process.execute_op(Operation::U32assert2(Felt::from(456u32)), program, &mut host);
         assert!(result.is_err());
 
-        if let Err(ExecutionError::NotU32Values { values, err_code, .. }) = result {
-            assert_eq!(err_code, Felt::from(456u32));
-            assert_eq!(values.len(), 1);
-            assert_eq!(values[0].as_int(), 4294967297u64);
-        } else {
-            panic!("Expected NotU32Values error");
+        match result {
+            Err(ExecutionError::OperationError { err: op_err, .. })
+            | Err(ExecutionError::OperationErrorNoContext { err: op_err, .. }) => {
+                if let OperationError::NotU32Values { values, err_code } = op_err.as_ref() {
+                    assert_eq!(*err_code, Felt::from(456u32));
+                    assert_eq!(values.len(), 1);
+                    assert_eq!(values[0].as_int(), 4294967297u64);
+                } else {
+                    panic!("Expected NotU32Values error");
+                }
+            },
+            _ => panic!("Expected OperationError wrapping NotU32Values"),
         }
     }
 
@@ -365,12 +425,18 @@ mod tests {
             process.execute_op(Operation::U32assert2(Felt::from(789u32)), program, &mut host);
         assert!(result.is_err());
 
-        if let Err(ExecutionError::NotU32Values { values, err_code, .. }) = result {
-            assert_eq!(err_code, Felt::from(789u32));
-            assert_eq!(values.len(), 1);
-            assert_eq!(values[0].as_int(), 4294967296u64);
-        } else {
-            panic!("Expected NotU32Values error");
+        match result {
+            Err(ExecutionError::OperationError { err: op_err, .. })
+            | Err(ExecutionError::OperationErrorNoContext { err: op_err, .. }) => {
+                if let OperationError::NotU32Values { values, err_code } = op_err.as_ref() {
+                    assert_eq!(*err_code, Felt::from(789u32));
+                    assert_eq!(values.len(), 1);
+                    assert_eq!(values[0].as_int(), 4294967296u64);
+                } else {
+                    panic!("Expected NotU32Values error");
+                }
+            },
+            _ => panic!("Expected OperationError wrapping NotU32Values"),
         }
     }
 
