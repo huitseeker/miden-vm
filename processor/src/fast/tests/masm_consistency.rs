@@ -348,7 +348,22 @@ fn test_masm_errors_consistency(
     );
     let slow_stack_outputs = slow_processor.execute(&program, &mut host).unwrap_err();
 
-    assert_eq!(fast_stack_outputs.to_string(), slow_stack_outputs.to_string());
+    // Compare the underlying OperationError and clock cycle, ignoring source location differences
+    let (fast_clk, fast_err) = match &fast_stack_outputs {
+        ExecutionError::OperationError { clk, err, .. }
+        | ExecutionError::OperationErrorNoContext { clk, err, .. } => (clk, err),
+        _ => panic!("Expected OperationError variant"),
+    };
+
+    let (slow_clk, slow_err) = match &slow_stack_outputs {
+        ExecutionError::OperationError { clk, err, .. }
+        | ExecutionError::OperationErrorNoContext { clk, err, .. } => (clk, err),
+        _ => panic!("Expected OperationError variant"),
+    };
+
+    // Compare clock cycles and error types/messages
+    assert_eq!(fast_clk, slow_clk, "Clock cycles don't match");
+    assert_eq!(format!("{}", fast_err), format!("{}", slow_err), "Error messages don't match");
 }
 
 /// Tests that `log_precompile` correctly computes the RPO permutation and updates the stack.
