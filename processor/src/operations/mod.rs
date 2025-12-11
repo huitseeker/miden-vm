@@ -107,17 +107,23 @@ impl Process {
             Operation::Ext2Mul => self.op_ext2mul()?,
 
             // ----- u32 operations ---------------------------------------------------------------
-            Operation::U32split => self.op_u32split()?,
-            Operation::U32add => self.op_u32add()?,
-            Operation::U32add3 => self.op_u32add3()?,
-            Operation::U32sub => self.op_u32sub()?,
-            Operation::U32mul => self.op_u32mul()?,
-            Operation::U32madd => self.op_u32madd()?,
-            Operation::U32div => self.op_u32div()?,
+            Operation::U32split => self.op_u32split(),
+            Operation::U32add => self.op_u32add().map_exec_err(err_ctx, host, self.system.clk())?,
+            Operation::U32add3 => {
+                self.op_u32add3().map_exec_err(err_ctx, host, self.system.clk())?
+            },
+            Operation::U32sub => self.op_u32sub().map_exec_err(err_ctx, host, self.system.clk())?,
+            Operation::U32mul => self.op_u32mul().map_exec_err(err_ctx, host, self.system.clk())?,
+            Operation::U32madd => {
+                self.op_u32madd().map_exec_err(err_ctx, host, self.system.clk())?
+            },
+            Operation::U32div => self.op_u32div().map_exec_err(err_ctx, host, self.system.clk())?,
 
-            Operation::U32and => self.op_u32and()?,
-            Operation::U32xor => self.op_u32xor()?,
-            Operation::U32assert2(err_code) => self.op_u32assert2(err_code)?,
+            Operation::U32and => self.op_u32and().map_exec_err(err_ctx, host, self.system.clk())?,
+            Operation::U32xor => self.op_u32xor().map_exec_err(err_ctx, host, self.system.clk())?,
+            Operation::U32assert2(err_code) => {
+                self.op_u32assert2(err_code).map_exec_err(err_ctx, host, self.system.clk())?
+            },
 
             // ----- stack manipulation -----------------------------------------------------------
             Operation::Pad => self.op_pad()?,

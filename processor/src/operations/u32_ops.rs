@@ -1,20 +1,20 @@
-use alloc::{boxed::Box, vec::Vec};
+use alloc::vec::Vec;
 
 use paste::paste;
 
 use super::{
     super::utils::{split_element, split_u32_into_u16},
-    ExecutionError, Felt, FieldElement, Operation, Process,
+    Felt, FieldElement, Operation, Process,
 };
-use crate::{ErrorContext, OperationError, ZERO};
+use crate::{OperationError, ZERO};
 
 const U32_MAX: u64 = u32::MAX as u64;
 
 macro_rules! require_u32_operands {
-    ($self:expr, [$($idx:expr),*], $err_ctx:expr) => {
-        require_u32_operands!($self, [$($idx),*], ZERO, $err_ctx)
+    ($self:expr, [$($idx:expr),*]) => {
+        require_u32_operands!($self, [$($idx),*], ZERO)
     };
-    ($self:expr, [$($idx:expr),*], $errno:expr, $err_ctx:expr) => {{
+    ($self:expr, [$($idx:expr),*], $errno:expr) => {{
         paste!{
             let mut invalid_values = Vec::new();
 
@@ -26,11 +26,7 @@ macro_rules! require_u32_operands {
             )*
 
             if !invalid_values.is_empty() {
-                let op_err = OperationError::NotU32Values { values: invalid_values, err_code: $errno };
-                return Err(ExecutionError::OperationErrorNoContext {
-                    clk: $self.system.clk(),
-                    err: Box::new(op_err),
-                });
+                return Err(OperationError::NotU32Values { values: invalid_values, err_code: $errno });
             }
             // Return tuple of operands based on indices
             ($([<_operand_ $idx>].as_int()),*)
@@ -44,7 +40,7 @@ impl Process {
 
     /// Pops the top element off the stack, splits it into low and high 32-bit values, and pushes
     /// these values back onto the stack.
-    pub(super) fn op_u32split(&mut self) -> Result<(), ExecutionError> {
+    pub(super) fn op_u32split(&mut self) {
         let a = self.stack.get(0);
         let (hi, lo) = split_element(a);
 
@@ -53,20 +49,13 @@ impl Process {
         self.stack.set(0, hi);
         self.stack.set(1, lo);
         self.stack.shift_right(1);
-        Ok(())
     }
 
     /// Pops top two element off the stack, splits them into low and high 32-bit values, checks if
     /// the high values are equal to 0; if they are, puts the original elements back onto the
     /// stack; if they are not, returns an error.
-    pub(super) fn op_u32assert2(&mut self, err_code: Felt) -> Result<(), ExecutionError> {
-        // Note: err_ctx is not used by the macro - it creates
-        // ExecutionError::OperationErrorNoContext directly
-        let _dummy_ctx = &ErrorContext::new(
-            &miden_core::mast::MastForest::new(),
-            miden_core::mast::MastNodeId::from(0),
-        );
-        let (b, a) = require_u32_operands!(self, [0, 1], err_code, _dummy_ctx);
+    pub(super) fn op_u32assert2(&mut self, err_code: Felt) -> Result<(), OperationError> {
+        let (b, a) = require_u32_operands!(self, [0, 1], err_code);
 
         self.add_range_checks(Operation::U32assert2(err_code), Felt::new(a), Felt::new(b), false);
 
@@ -79,12 +68,8 @@ impl Process {
 
     /// Pops two elements off the stack, adds them, splits the result into low and high 32-bit
     /// values, and pushes these values back onto the stack.
-    pub(super) fn op_u32add(&mut self) -> Result<(), ExecutionError> {
-        let _dummy_ctx = &ErrorContext::new(
-            &miden_core::mast::MastForest::new(),
-            miden_core::mast::MastNodeId::from(0),
-        );
-        let (b, a) = require_u32_operands!(self, [0, 1], _dummy_ctx);
+    pub(super) fn op_u32add(&mut self) -> Result<(), OperationError> {
+        let (b, a) = require_u32_operands!(self, [0, 1]);
 
         let result = Felt::new(a + b);
         let (hi, lo) = split_element(result);
@@ -98,12 +83,8 @@ impl Process {
 
     /// Pops three elements off the stack, adds them, splits the result into low and high 32-bit
     /// values, and pushes these values back onto the stack.
-    pub(super) fn op_u32add3(&mut self) -> Result<(), ExecutionError> {
-        let _dummy_ctx = &ErrorContext::new(
-            &miden_core::mast::MastForest::new(),
-            miden_core::mast::MastNodeId::from(0),
-        );
-        let (c, b, a) = require_u32_operands!(self, [0, 1, 2], _dummy_ctx);
+    pub(super) fn op_u32add3(&mut self) -> Result<(), OperationError> {
+        let (c, b, a) = require_u32_operands!(self, [0, 1, 2]);
         let result = Felt::new(a + b + c);
         let (hi, lo) = split_element(result);
 
@@ -118,12 +99,8 @@ impl Process {
     /// Pops two elements off the stack, subtracts the top element from the second element, and
     /// pushes the result as well as a flag indicating whether there was underflow back onto the
     /// stack.
-    pub(super) fn op_u32sub(&mut self) -> Result<(), ExecutionError> {
-        let _dummy_ctx = &ErrorContext::new(
-            &miden_core::mast::MastForest::new(),
-            miden_core::mast::MastNodeId::from(0),
-        );
-        let (b, a) = require_u32_operands!(self, [0, 1], _dummy_ctx);
+    pub(super) fn op_u32sub(&mut self) -> Result<(), OperationError> {
+        let (b, a) = require_u32_operands!(self, [0, 1]);
         let result = a.wrapping_sub(b);
         let d = Felt::new(result >> 63);
         let c = Felt::new(result & U32_MAX);
@@ -141,12 +118,8 @@ impl Process {
 
     /// Pops two elements off the stack, multiplies them, splits the result into low and high
     /// 32-bit values, and pushes these values back onto the stack.
-    pub(super) fn op_u32mul(&mut self) -> Result<(), ExecutionError> {
-        let _dummy_ctx = &ErrorContext::new(
-            &miden_core::mast::MastForest::new(),
-            miden_core::mast::MastNodeId::from(0),
-        );
-        let (b, a) = require_u32_operands!(self, [0, 1], _dummy_ctx);
+    pub(super) fn op_u32mul(&mut self) -> Result<(), OperationError> {
+        let (b, a) = require_u32_operands!(self, [0, 1]);
         let result = Felt::new(a * b);
         let (hi, lo) = split_element(result);
 
@@ -161,12 +134,8 @@ impl Process {
     /// Pops three elements off the stack, multiplies the first two and adds the third element to
     /// the result, splits the result into low and high 32-bit values, and pushes these values
     /// back onto the stack.
-    pub(super) fn op_u32madd(&mut self) -> Result<(), ExecutionError> {
-        let _dummy_ctx = &ErrorContext::new(
-            &miden_core::mast::MastForest::new(),
-            miden_core::mast::MastNodeId::from(0),
-        );
-        let (b, a, c) = require_u32_operands!(self, [0, 1, 2], _dummy_ctx);
+    pub(super) fn op_u32madd(&mut self) -> Result<(), OperationError> {
+        let (b, a, c) = require_u32_operands!(self, [0, 1, 2]);
         let result = Felt::new(a * b + c);
         let (hi, lo) = split_element(result);
 
@@ -183,19 +152,11 @@ impl Process {
     ///
     /// # Errors
     /// Returns an error if the divisor is ZERO.
-    pub(super) fn op_u32div(&mut self) -> Result<(), ExecutionError> {
-        let _dummy_ctx = &ErrorContext::new(
-            &miden_core::mast::MastForest::new(),
-            miden_core::mast::MastNodeId::from(0),
-        );
-        let (b, a) = require_u32_operands!(self, [0, 1], _dummy_ctx);
+    pub(super) fn op_u32div(&mut self) -> Result<(), OperationError> {
+        let (b, a) = require_u32_operands!(self, [0, 1]);
 
         if b == 0 {
-            let op_err = OperationError::DivideByZero;
-            return Err(ExecutionError::OperationErrorNoContext {
-                clk: self.system.clk(),
-                err: Box::new(op_err),
-            });
+            return Err(OperationError::DivideByZero);
         }
 
         let q = a / b;
@@ -218,16 +179,9 @@ impl Process {
 
     /// Pops two elements off the stack, computes their bitwise AND, and pushes the result back
     /// onto the stack.
-    pub(super) fn op_u32and(&mut self) -> Result<(), ExecutionError> {
-        let dummy_forest = miden_core::mast::MastForest::new();
-        let _dummy_ctx = ErrorContext::new(&dummy_forest, miden_core::mast::MastNodeId::from(0));
-        let (b, a) = require_u32_operands!(self, [0, 1], &_dummy_ctx);
-        let result = self.chiplets.bitwise.u32and(
-            Felt::new(a),
-            Felt::new(b),
-            &_dummy_ctx,
-            self.system.clk(),
-        )?;
+    pub(super) fn op_u32and(&mut self) -> Result<(), OperationError> {
+        let (b, a) = require_u32_operands!(self, [0, 1]);
+        let result = self.chiplets.bitwise.u32and(Felt::new(a), Felt::new(b), self.system.clk())?;
 
         self.stack.set(0, result);
         self.stack.shift_left(2);
@@ -237,16 +191,9 @@ impl Process {
 
     /// Pops two elements off the stack, computes their bitwise XOR, and pushes the result back onto
     /// the stack.
-    pub(super) fn op_u32xor(&mut self) -> Result<(), ExecutionError> {
-        let dummy_forest = miden_core::mast::MastForest::new();
-        let _dummy_ctx = ErrorContext::new(&dummy_forest, miden_core::mast::MastNodeId::from(0));
-        let (b, a) = require_u32_operands!(self, [0, 1], &_dummy_ctx);
-        let result = self.chiplets.bitwise.u32xor(
-            Felt::new(a),
-            Felt::new(b),
-            &_dummy_ctx,
-            self.system.clk(),
-        )?;
+    pub(super) fn op_u32xor(&mut self) -> Result<(), OperationError> {
+        let (b, a) = require_u32_operands!(self, [0, 1]);
+        let result = self.chiplets.bitwise.u32xor(Felt::new(a), Felt::new(b), self.system.clk())?;
 
         self.stack.set(0, result);
         self.stack.shift_left(2);
