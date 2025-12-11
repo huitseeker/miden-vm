@@ -417,25 +417,38 @@ impl<'a> CoreTraceFragmentFiller<'a> {
             batch.iter_with_groups().enumerate().skip(start_op_idx)
         {
             {
-                // `execute_sync_op` does not support executing `Emit`, so we only call it for all
-                // other operations.
-                let user_op_helpers = if let Operation::Emit = op {
-                    None
-                } else {
-                    // Note that the `op_idx_in_block` is only used in case of error, so we set it
-                    // to 0.
-                    self.execute_sync_op(
-                        op,
-                        0,
-                        current_forest,
-                        &mut NoopHost,
-                        &(),
-                        &mut NoopTracer,
-                    )
-                    // The assumption here is that the computation was done by the FastProcessor,
-                    // and so all operations in the program are valid and can be executed
-                    // successfully.
-                    .expect("operation should execute successfully")
+                // `execute_sync_op` does not support executing `Emit` or `EvalCircuit`, so we
+                // handle them specially here.
+                let user_op_helpers = match op {
+                    Operation::Emit => None,
+                    Operation::EvalCircuit => {
+                        // EvalCircuit requires special handling with ErrorContext
+                        let dummy_forest = MastForest::new();
+                        let dummy_node_id = MastNodeId::from(0);
+                        let err_ctx = ErrorContext::new(&dummy_forest, dummy_node_id);
+                        self.op_eval_circuit(&err_ctx, &mut NoopTracer)
+                            .expect("operation should execute successfully");
+                        None
+                    },
+                    _ => {
+                        // Note that the `op_idx_in_block` is only used in case of error, so we set
+                        // it to 0.
+                        let dummy_forest = MastForest::new();
+                        let dummy_node_id = MastNodeId::from(0);
+                        let err_ctx = ErrorContext::new(&dummy_forest, dummy_node_id);
+                        self.execute_sync_op(
+                            op,
+                            0,
+                            current_forest,
+                            &mut NoopHost,
+                            &err_ctx,
+                            &mut NoopTracer,
+                        )
+                        // The assumption here is that the computation was done by the FastProcessor,
+                        // and so all operations in the program are valid and can be executed
+                        // successfully.
+                        .expect("operation should execute successfully")
+                    },
                 };
 
                 // write the operation to the trace
@@ -663,7 +676,7 @@ impl<'a> Processor for CoreTraceFragmentFiller<'a> {
 
     fn op_eval_circuit(
         &mut self,
-        err_ctx: &impl ErrorContext,
+        err_ctx: &ErrorContext,
         tracer: &mut impl Tracer,
     ) -> Result<(), ExecutionError> {
         let num_eval = self.stack().get(2);
@@ -883,7 +896,7 @@ fn eval_circuit_parallel_(
     num_vars: Felt,
     num_eval: Felt,
     processor: &mut CoreTraceFragmentFiller,
-    err_ctx: &impl ErrorContext,
+    err_ctx: &ErrorContext,
     tracer: &mut impl Tracer,
 ) -> Result<CircuitEvaluation, ExecutionError> {
     // Delegate to the fast implementation with the processor's memory interface.
