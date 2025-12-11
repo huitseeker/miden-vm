@@ -6,9 +6,8 @@ use miden_core::{
 };
 
 use crate::{
-    AsyncHost, ExecutionError,
+    AsyncHost, ErrorContext, ExecutionError, OperationError,
     continuation_stack::ContinuationStack,
-    err_ctx,
     fast::{FastProcessor, Tracer, trace_state::NodeExecutionState},
 };
 
@@ -39,6 +38,10 @@ impl FastProcessor {
         // drop the condition from the stack
         self.decrement_stack_size(tracer);
 
+        // Increment the clock for the Drop operation that removes the condition
+        // This must happen before checking if the condition is binary to match the slow path
+        self.increment_clk(tracer);
+
         // execute the loop body as long as the condition is true
         if condition == ONE {
             // Push the loop to check condition again after body
@@ -46,15 +49,12 @@ impl FastProcessor {
             continuation_stack.push_finish_loop(current_node_id);
             continuation_stack.push_start_node(loop_node.body());
 
-            // Corresponds to the row inserted for the LOOP operation added
-            // to the trace.
-            self.increment_clk(tracer);
+            // No additional clock increment needed here - already done above
         } else if condition == ZERO {
             // Start and exit the loop immediately - corresponding to adding a LOOP and END row
             // immediately since there is no body to execute.
 
-            // Increment the clock, corresponding to the LOOP operation
-            self.increment_clk(tracer);
+            // The clock was already incremented for the Drop/LOOP operation above
 
             tracer.start_clock_cycle(
                 self,
@@ -69,8 +69,9 @@ impl FastProcessor {
             // Execute decorators that should be executed after exiting the node
             self.execute_after_exit_decorators(current_node_id, current_forest, host)?;
         } else {
-            let err_ctx = err_ctx!(current_forest, current_node_id, host);
-            return Err(ExecutionError::not_binary_value_loop(condition, &err_ctx));
+            let ctx = ErrorContext::new(current_forest, current_node_id);
+            let op_err = OperationError::NotBinaryValueLoop { value: condition };
+            return Err(ctx.into_exec_err(host, op_err, self.clk));
         }
         Ok(())
     }
@@ -121,8 +122,9 @@ impl FastProcessor {
             self.increment_clk(tracer);
             self.execute_after_exit_decorators(current_node_id, current_forest, host)?;
         } else {
-            let err_ctx = err_ctx!(current_forest, current_node_id, host);
-            return Err(ExecutionError::not_binary_value_loop(condition, &err_ctx));
+            let ctx = ErrorContext::new(current_forest, current_node_id);
+            let op_err = OperationError::NotBinaryValueLoop { value: condition };
+            return Err(ctx.into_exec_err(host, op_err, self.clk));
         }
         Ok(())
     }
