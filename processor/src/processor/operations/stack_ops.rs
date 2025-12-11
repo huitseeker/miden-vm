@@ -1,7 +1,7 @@
 use miden_core::{Felt, ZERO};
 
 use crate::{
-    ErrorContext, ExecutionError,
+    OperationError,
     fast::Tracer,
     processor::{Processor, StackInterface},
 };
@@ -12,8 +12,11 @@ pub(super) fn op_push<P: Processor>(
     processor: &mut P,
     element: Felt,
     tracer: &mut impl Tracer,
-) -> Result<(), ExecutionError> {
-    processor.stack().increment_size(tracer)?;
+) -> Result<(), OperationError> {
+    processor
+        .stack()
+        .increment_size(tracer)
+        .map_err(|_| OperationError::StackOverflow)?;
     processor.stack().set(0, element);
     Ok(())
 }
@@ -23,8 +26,11 @@ pub(super) fn op_push<P: Processor>(
 pub(super) fn op_pad<P: Processor>(
     processor: &mut P,
     tracer: &mut impl Tracer,
-) -> Result<(), ExecutionError> {
-    processor.stack().increment_size(tracer)?;
+) -> Result<(), OperationError> {
+    processor
+        .stack()
+        .increment_size(tracer)
+        .map_err(|_| OperationError::StackOverflow)?;
     processor.stack().set(0, ZERO);
     Ok(())
 }
@@ -56,9 +62,12 @@ pub(super) fn dup_nth<P: Processor>(
     processor: &mut P,
     n: usize,
     tracer: &mut impl Tracer,
-) -> Result<(), ExecutionError> {
+) -> Result<(), OperationError> {
     let to_dup = processor.stack().get(n);
-    processor.stack().increment_size(tracer)?;
+    processor
+        .stack()
+        .increment_size(tracer)
+        .map_err(|_| OperationError::StackOverflow)?;
     processor.stack().set(0, to_dup);
 
     Ok(())
@@ -68,9 +77,8 @@ pub(super) fn dup_nth<P: Processor>(
 #[inline(always)]
 pub(super) fn op_cswap<P: Processor>(
     processor: &mut P,
-    err_ctx: &impl ErrorContext,
     tracer: &mut impl Tracer,
-) -> Result<(), ExecutionError> {
+) -> Result<(), OperationError> {
     let condition = processor.stack().get(0);
     processor.stack().decrement_size(tracer);
 
@@ -82,7 +90,7 @@ pub(super) fn op_cswap<P: Processor>(
             processor.stack().swap(0, 1);
         },
         _ => {
-            return Err(ExecutionError::not_binary_value_op(condition, err_ctx));
+            return Err(OperationError::NotBinaryValueOp { value: condition });
         },
     }
 
@@ -93,9 +101,8 @@ pub(super) fn op_cswap<P: Processor>(
 #[inline(always)]
 pub(super) fn op_cswapw<P: Processor>(
     processor: &mut P,
-    err_ctx: &impl ErrorContext,
     tracer: &mut impl Tracer,
-) -> Result<(), ExecutionError> {
+) -> Result<(), OperationError> {
     let condition = processor.stack().get(0);
     processor.stack().decrement_size(tracer);
 
@@ -110,7 +117,7 @@ pub(super) fn op_cswapw<P: Processor>(
             processor.stack().swap(3, 7);
         },
         _ => {
-            return Err(ExecutionError::not_binary_value_op(condition, err_ctx));
+            return Err(OperationError::NotBinaryValueOp { value: condition });
         },
     }
 

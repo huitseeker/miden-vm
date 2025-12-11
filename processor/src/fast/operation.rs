@@ -1,3 +1,5 @@
+use alloc::boxed::Box;
+
 use miden_air::{
     Felt, FieldElement, RowIndex,
     trace::{chiplets::hasher::HasherState, decoder::NUM_USER_OP_HELPERS},
@@ -9,7 +11,7 @@ use miden_core::{
 };
 
 use crate::{
-    AdviceProvider, ContextId, ErrorContext, ExecutionError, ProcessState,
+    AdviceProvider, ContextId, ErrorContext, ExecutionError, OperationError, ProcessState,
     chiplets::{CircuitEvaluation, MAX_NUM_ACE_WIRES, PTR_OFFSET_ELEM, PTR_OFFSET_WORD},
     errors::AceError,
     fast::{FastProcessor, STACK_BUFFER_SIZE, Tracer, memory::Memory},
@@ -91,7 +93,7 @@ impl Processor for FastProcessor {
     /// evaluation completely.
     fn op_eval_circuit(
         &mut self,
-        err_ctx: &impl ErrorContext,
+        err_ctx: &ErrorContext,
         tracer: &mut impl Tracer,
     ) -> Result<(), ExecutionError> {
         let num_eval = self.stack_get(2);
@@ -404,7 +406,7 @@ pub fn eval_circuit_fast_(
     num_vars: Felt,
     num_eval: Felt,
     mem: &mut impl MemoryInterface,
-    err_ctx: &impl ErrorContext,
+    err_ctx: &ErrorContext,
     tracer: &mut impl Tracer,
 ) -> Result<CircuitEvaluation, ExecutionError> {
     let num_vars = num_vars.as_int();
@@ -412,26 +414,24 @@ pub fn eval_circuit_fast_(
 
     let num_wires = num_vars + num_eval;
     if num_wires > MAX_NUM_ACE_WIRES as u64 {
-        return Err(ExecutionError::failed_arithmetic_evaluation(
-            err_ctx,
-            AceError::TooManyWires(num_wires),
-        ));
+        let op_err = OperationError::AceChipError { error: AceError::TooManyWires(num_wires) };
+        return Err(ExecutionError::OperationErrorNoContext { clk, err: Box::new(op_err) });
     }
 
     // Ensure vars and instructions are word-aligned and non-empty. Note that variables are
     // quadratic extension field elements while instructions are encoded as base field elements.
     // Hence we can pack 2 variables and 4 instructions per word.
     if !num_vars.is_multiple_of(2) || num_vars == 0 {
-        return Err(ExecutionError::failed_arithmetic_evaluation(
-            err_ctx,
-            AceError::NumVarIsNotWordAlignedOrIsEmpty(num_vars),
-        ));
+        let op_err = OperationError::AceChipError {
+            error: AceError::NumVarIsNotWordAlignedOrIsEmpty(num_vars),
+        };
+        return Err(ExecutionError::OperationErrorNoContext { clk, err: Box::new(op_err) });
     }
     if !num_eval.is_multiple_of(4) || num_eval == 0 {
-        return Err(ExecutionError::failed_arithmetic_evaluation(
-            err_ctx,
-            AceError::NumEvalIsNotWordAlignedOrIsEmpty(num_eval),
-        ));
+        let op_err = OperationError::AceChipError {
+            error: AceError::NumEvalIsNotWordAlignedOrIsEmpty(num_eval),
+        };
+        return Err(ExecutionError::OperationErrorNoContext { clk, err: Box::new(op_err) });
     }
 
     // Ensure instructions are word-aligned and non-empty
@@ -445,15 +445,20 @@ pub fn eval_circuit_fast_(
     // Note: we pass in a `NoopTracer`, because the parallel trace generation skips the circuit
     // evaluation completely
     for _ in 0..num_read_rows {
-        let word = mem.read_word(ctx, ptr, clk, err_ctx).map_err(ExecutionError::MemoryError)?;
+        let word = mem.read_word(ctx, ptr, clk).map_err(|err| {
+            let op_err = OperationError::MemoryError(err);
+            ExecutionError::OperationErrorNoContext { clk, err: Box::new(op_err) }
+        })?;
         tracer.record_memory_read_word(word, ptr, ctx, clk);
         evaluation_context.do_read(ptr, word)?;
         ptr += PTR_OFFSET_WORD;
     }
     // perform EVAL operations
     for _ in 0..num_eval_rows {
-        let instruction =
-            mem.read_element(ctx, ptr, err_ctx).map_err(ExecutionError::MemoryError)?;
+        let instruction = mem.read_element(ctx, ptr).map_err(|err| {
+            let op_err = OperationError::MemoryError(err);
+            ExecutionError::OperationErrorNoContext { clk, err: Box::new(op_err) }
+        })?;
         tracer.record_memory_read_element(instruction, ptr, ctx, clk);
         evaluation_context.do_eval(ptr, instruction, err_ctx)?;
         ptr += PTR_OFFSET_ELEM;
@@ -461,10 +466,8 @@ pub fn eval_circuit_fast_(
 
     // Ensure the circuit evaluated to zero.
     if !evaluation_context.output_value().is_some_and(|eval| eval == QuadFelt::ZERO) {
-        return Err(ExecutionError::failed_arithmetic_evaluation(
-            err_ctx,
-            AceError::CircuitNotEvaluateZero,
-        ));
+        let op_err = OperationError::AceChipError { error: AceError::CircuitNotEvaluateZero };
+        return Err(ExecutionError::OperationErrorNoContext { clk, err: Box::new(op_err) });
     }
 
     Ok(evaluation_context)

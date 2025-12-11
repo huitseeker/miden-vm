@@ -8,8 +8,8 @@ use miden_core::{
 };
 
 use crate::{
-    AdviceError, BaseHost, ContextId, ErrorContext, ExecutionError, MemoryError, ProcessState,
-    fast::Tracer, processor::operations::execute_sync_op,
+    AdviceError, BaseHost, ContextId, ErrorContext, ExecutionError, MemoryError,
+    OperationResultExt, ProcessState, fast::Tracer, processor::operations::execute_sync_op,
 };
 
 mod operations;
@@ -82,7 +82,7 @@ pub trait Processor: Sized {
     /// All processors need to support this operation.
     fn op_eval_circuit(
         &mut self,
-        _err_ctx: &impl ErrorContext,
+        _err_ctx: &ErrorContext,
         _tracer: &mut impl Tracer,
     ) -> Result<(), ExecutionError>;
 
@@ -100,10 +100,14 @@ pub trait Processor: Sized {
         op_idx_in_block: usize,
         current_forest: &MastForest,
         host: &mut impl BaseHost,
-        err_ctx: &impl ErrorContext,
+        err_ctx: &ErrorContext,
         tracer: &mut impl Tracer,
     ) -> Result<Option<[Felt; NUM_USER_OP_HELPERS]>, ExecutionError> {
-        execute_sync_op(self, op, op_idx_in_block, current_forest, host, err_ctx, tracer)
+        execute_sync_op(self, op, op_idx_in_block, current_forest, host, tracer).map_exec_err(
+            err_ctx,
+            host,
+            self.system().clk(),
+        )
     }
 }
 
@@ -272,21 +276,11 @@ pub trait AdviceProviderInterface {
 /// Trait representing the memory subsystem of the processor.
 pub trait MemoryInterface {
     /// Reads an element from memory at the provided address in the provided context.
-    fn read_element(
-        &mut self,
-        ctx: ContextId,
-        addr: Felt,
-        err_ctx: &impl ErrorContext,
-    ) -> Result<Felt, MemoryError>;
+    fn read_element(&mut self, ctx: ContextId, addr: Felt) -> Result<Felt, MemoryError>;
 
     /// Reads a word from memory starting at the provided address in the provided context.
-    fn read_word(
-        &mut self,
-        ctx: ContextId,
-        addr: Felt,
-        clk: RowIndex,
-        err_ctx: &impl ErrorContext,
-    ) -> Result<Word, MemoryError>;
+    fn read_word(&mut self, ctx: ContextId, addr: Felt, clk: RowIndex)
+    -> Result<Word, MemoryError>;
 
     /// Writes an element to memory at the provided address in the provided context.
     fn write_element(
@@ -294,7 +288,6 @@ pub trait MemoryInterface {
         ctx: ContextId,
         addr: Felt,
         element: Felt,
-        err_ctx: &impl ErrorContext,
     ) -> Result<(), MemoryError>;
 
     /// Writes a word to memory starting at the provided address in the provided context.
@@ -304,7 +297,6 @@ pub trait MemoryInterface {
         addr: Felt,
         clk: RowIndex,
         word: Word,
-        err_ctx: &impl ErrorContext,
     ) -> Result<(), MemoryError>;
 }
 

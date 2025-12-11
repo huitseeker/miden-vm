@@ -1,8 +1,8 @@
 use miden_core::{EventId, Felt, mast::MastForest, sys_events::SystemEvent};
 
-use super::{super::ONE, ExecutionError, Process};
+use super::{super::ONE, Process};
 use crate::{
-    SyncHost, errors::ErrorContext, operations::sys_ops::sys_event_handlers::handle_system_event,
+    SyncHost, errors::OperationError, operations::sys_ops::sys_event_handlers::handle_system_event,
 };
 
 pub(crate) mod sys_event_handlers;
@@ -20,17 +20,15 @@ impl Process {
         err_code: Felt,
         program: &MastForest,
         host: &mut H,
-        err_ctx: &impl ErrorContext,
-    ) -> Result<(), ExecutionError>
+    ) -> Result<(), OperationError>
     where
         H: SyncHost,
     {
         if self.stack.get(0) != ONE {
             let process = &mut self.state();
-            let clk = process.clk();
             let err = host.on_assert_failed(process, err_code);
             let err_msg = program.resolve_error_message(err_code);
-            return Err(ExecutionError::failed_assertion(clk, err_code, err_msg, err, err_ctx));
+            return Err(OperationError::FailedAssertion { err_code, err_msg, err });
         }
         self.stack.shift_left(1);
         Ok(())
@@ -41,7 +39,7 @@ impl Process {
 
     /// Pushes the current depth of the stack (the depth before this operation is executed) onto
     /// the stack.
-    pub(super) fn op_sdepth(&mut self) -> Result<(), ExecutionError> {
+    pub(super) fn op_sdepth(&mut self) -> Result<(), OperationError> {
         let stack_depth = self.stack.depth();
         self.stack.set(0, Felt::new(stack_depth as u64));
         self.stack.shift_right(0);
@@ -56,7 +54,7 @@ impl Process {
     ///
     /// # Errors
     /// Returns an error if the VM is not currently executing a SYSCALL block.
-    pub(super) fn op_caller(&mut self) -> Result<(), ExecutionError> {
+    pub(super) fn op_caller(&mut self) -> Result<(), OperationError> {
         let fn_hash = self.system.fn_hash();
 
         self.stack.set(0, fn_hash[3]);
@@ -75,7 +73,7 @@ impl Process {
     /// Pushes the current value of the clock cycle counter onto the stack. The clock cycle starts
     /// at 0 and is incremented with every operation executed by the VM, including control flow
     /// operations such as GRUOP, END etc.
-    pub(super) fn op_clk(&mut self) -> Result<(), ExecutionError> {
+    pub(super) fn op_clk(&mut self) -> Result<(), OperationError> {
         let clk = self.system.clk();
         self.stack.set(0, Felt::from(clk));
         self.stack.shift_right(0);
@@ -87,11 +85,7 @@ impl Process {
 
     /// Forwards the emitted event id to the host. Reads the event ID from the top of the stack
     /// without consuming it.
-    pub(super) fn op_emit<H>(
-        &mut self,
-        host: &mut H,
-        err_ctx: &impl ErrorContext,
-    ) -> Result<(), ExecutionError>
+    pub(super) fn op_emit<H>(&mut self, host: &mut H) -> Result<(), OperationError>
     where
         H: SyncHost,
     {
@@ -102,16 +96,13 @@ impl Process {
 
         // If it's a system event, handle it directly. Otherwise, forward it to the host.
         if let Some(system_event) = SystemEvent::from_event_id(event_id) {
-            handle_system_event(&mut process, system_event, err_ctx)
+            handle_system_event(&mut process, system_event)
         } else {
-            let clk = process.clk();
             let mutations = host.on_event(&process).map_err(|err| {
                 let event_name = host.resolve_event(event_id).cloned();
-                ExecutionError::event_error(err, event_id, event_name, err_ctx)
+                OperationError::EventError { event_id, event_name, error: err }
             })?;
-            self.advice
-                .apply_mutations(mutations)
-                .map_err(|err| ExecutionError::advice_error(err, clk, err_ctx))?;
+            self.advice.apply_mutations(mutations).map_err(OperationError::from)?;
             Ok(())
         }
     }

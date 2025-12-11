@@ -1,12 +1,15 @@
-use alloc::vec::Vec;
+use alloc::{boxed::Box, vec::Vec};
 
-use miden_air::trace::chiplets::bitwise::{
-    A_COL_IDX, A_COL_RANGE, B_COL_IDX, B_COL_RANGE, BITWISE_AND, BITWISE_XOR, OUTPUT_COL_IDX,
-    PREV_OUTPUT_COL_IDX, TRACE_WIDTH,
+use miden_air::{
+    RowIndex,
+    trace::chiplets::bitwise::{
+        A_COL_IDX, A_COL_RANGE, B_COL_IDX, B_COL_RANGE, BITWISE_AND, BITWISE_XOR, OUTPUT_COL_IDX,
+        PREV_OUTPUT_COL_IDX, TRACE_WIDTH,
+    },
 };
 
-use super::{ExecutionError, Felt, TraceFragment, ZERO};
-use crate::ErrorContext;
+use super::{ExecutionError, Felt, TraceFragment};
+use crate::{ErrorContext, OperationError};
 
 #[cfg(test)]
 mod tests;
@@ -88,10 +91,11 @@ impl Bitwise {
         &mut self,
         a: Felt,
         b: Felt,
-        err_ctx: &impl ErrorContext,
+        err_ctx: &ErrorContext,
+        clk: RowIndex,
     ) -> Result<Felt, ExecutionError> {
-        let a = assert_u32(a, err_ctx)?.as_int();
-        let b = assert_u32(b, err_ctx)?.as_int();
+        let a = assert_u32(a, err_ctx, clk)?.as_int();
+        let b = assert_u32(b, err_ctx, clk)?.as_int();
         let mut result = 0u64;
 
         // append 8 rows to the trace, each row computing bitwise AND in 4 bit limbs starting with
@@ -128,10 +132,11 @@ impl Bitwise {
         &mut self,
         a: Felt,
         b: Felt,
-        err_ctx: &impl ErrorContext,
+        err_ctx: &ErrorContext,
+        clk: RowIndex,
     ) -> Result<Felt, ExecutionError> {
-        let a = assert_u32(a, err_ctx)?.as_int();
-        let b = assert_u32(b, err_ctx)?.as_int();
+        let a = assert_u32(a, err_ctx, clk)?.as_int();
+        let b = assert_u32(b, err_ctx, clk)?.as_int();
         let mut result = 0u64;
 
         // append 8 rows to the trace, each row computing bitwise XOR in 4 bit limbs starting with
@@ -212,10 +217,15 @@ impl Default for Bitwise {
 // HELPER FUNCTIONS
 // --------------------------------------------------------------------------------------------
 
-pub fn assert_u32(value: Felt, err_ctx: &impl ErrorContext) -> Result<Felt, ExecutionError> {
+pub fn assert_u32(
+    value: Felt,
+    _err_ctx: &ErrorContext,
+    clk: RowIndex,
+) -> Result<Felt, ExecutionError> {
     let val_u64 = value.as_int();
     if val_u64 > u32::MAX.into() {
-        Err(ExecutionError::not_u32_value(value, ZERO, err_ctx))
+        let op_err = OperationError::NotU32StackValue { input: val_u64 };
+        Err(ExecutionError::OperationErrorNoContext { clk, err: Box::new(op_err) })
     } else {
         Ok(value)
     }

@@ -17,13 +17,16 @@ use miden_air::{
     },
 };
 use miden_core::{
-    Kernel, ONE, Operation, Word, ZERO, stack::MIN_STACK_DEPTH, utils::uninit_vector,
+    Kernel, ONE, Operation, Word, ZERO,
+    mast::{MastForest, MastNodeId},
+    stack::MIN_STACK_DEPTH,
+    utils::uninit_vector,
 };
 use rayon::prelude::*;
 use winter_prover::{crypto::RandomCoin, math::batch_inversion};
 
 use crate::{
-    ChipletsLengths, ColMatrix, ContextId, ExecutionTrace, TraceLenSummary,
+    ChipletsLengths, ColMatrix, ContextId, ErrorContext, ExecutionTrace, TraceLenSummary,
     chiplets::Chiplets,
     crypto::RpoRandomCoin,
     decoder::AuxTraceBuilder as DecoderAuxTraceBuilder,
@@ -475,18 +478,22 @@ fn initialize_chiplets(
     }
 
     // populate bitwise chiplet
+    // Create a minimal error context for bitwise operations (these should never fail during replay)
+    let dummy_forest = MastForest::new();
+    let dummy_node_id = MastNodeId::from(0);
+    let err_ctx = ErrorContext::new(&dummy_forest, dummy_node_id);
     for (bitwise_op, a, b) in bitwise {
         match bitwise_op {
             BitwiseOp::U32And => {
                 chiplets
                     .bitwise
-                    .u32and(a, b, &())
+                    .u32and(a, b, &err_ctx, 0_u32.into())
                     .expect("bitwise AND operation failed when populating chiplet");
             },
             BitwiseOp::U32Xor => {
                 chiplets
                     .bitwise
-                    .u32xor(a, b, &())
+                    .u32xor(a, b, &err_ctx, 0_u32.into())
                     .expect("bitwise XOR operation failed when populating chiplet");
             },
         }
@@ -529,25 +536,25 @@ fn initialize_chiplets(
                 MemoryAccess::ReadElement(addr, ctx, clk) => {
                     chiplets
                         .memory
-                        .read(ctx, addr, clk, &())
+                        .read(ctx, addr, clk)
                         .expect("memory read element failed when populating chiplet");
                 },
                 MemoryAccess::WriteElement(addr, element, ctx, clk) => {
                     chiplets
                         .memory
-                        .write(ctx, addr, clk, element, &())
+                        .write(ctx, addr, clk, element)
                         .expect("memory write element failed when populating chiplet");
                 },
                 MemoryAccess::ReadWord(addr, ctx, clk) => {
                     chiplets
                         .memory
-                        .read_word(ctx, addr, clk, &())
+                        .read_word(ctx, addr, clk)
                         .expect("memory read word failed when populating chiplet");
                 },
                 MemoryAccess::WriteWord(addr, word, ctx, clk) => {
                     chiplets
                         .memory
-                        .write_word(ctx, addr, clk, word, &())
+                        .write_word(ctx, addr, clk, word)
                         .expect("memory write word failed when populating chiplet");
                 },
             });
@@ -580,7 +587,7 @@ fn initialize_chiplets(
     for proc_hash in kernel_replay.into_iter() {
         chiplets
             .kernel_rom
-            .access_proc(proc_hash, &())
+            .access_proc(proc_hash, &err_ctx)
             .expect("kernel proc access failed when populating chiplet");
     }
 

@@ -1,7 +1,7 @@
 use miden_core::{Felt, ONE, mast::MastForest};
 
 use crate::{
-    BaseHost, ErrorContext, ExecutionError,
+    BaseHost, OperationError,
     fast::Tracer,
     processor::{Processor, StackInterface, SystemInterface},
 };
@@ -16,15 +16,13 @@ pub(super) fn op_assert<P: Processor>(
     err_code: Felt,
     host: &mut impl BaseHost,
     program: &MastForest,
-    err_ctx: &impl ErrorContext,
     tracer: &mut impl Tracer,
-) -> Result<(), ExecutionError> {
+) -> Result<(), OperationError> {
     if processor.stack().get(0) != ONE {
         let process = &mut processor.state();
-        let clk = process.clk();
         let err = host.on_assert_failed(process, err_code);
         let err_msg = program.resolve_error_message(err_code);
-        return Err(ExecutionError::failed_assertion(clk, err_code, err_msg, err, err_ctx));
+        return Err(OperationError::FailedAssertion { err_code, err_msg, err });
     }
     processor.stack().decrement_size(tracer);
     Ok(())
@@ -35,9 +33,12 @@ pub(super) fn op_assert<P: Processor>(
 pub(super) fn op_sdepth<P: Processor>(
     processor: &mut P,
     tracer: &mut impl Tracer,
-) -> Result<(), ExecutionError> {
+) -> Result<(), OperationError> {
     let depth = processor.stack().depth();
-    processor.stack().increment_size(tracer)?;
+    processor
+        .stack()
+        .increment_size(tracer)
+        .map_err(|_| OperationError::StackOverflow)?;
     processor.stack().set(0, depth.into());
 
     Ok(())
@@ -45,7 +46,7 @@ pub(super) fn op_sdepth<P: Processor>(
 
 /// Analogous to `Process::op_caller`.
 #[inline(always)]
-pub(super) fn op_caller<P: Processor>(processor: &mut P) -> Result<(), ExecutionError> {
+pub(super) fn op_caller<P: Processor>(processor: &mut P) -> Result<(), OperationError> {
     let caller_hash = processor.system().caller_hash();
     processor.stack().set_word(0, &caller_hash);
 
@@ -57,9 +58,12 @@ pub(super) fn op_caller<P: Processor>(processor: &mut P) -> Result<(), Execution
 pub(super) fn op_clk<P: Processor>(
     processor: &mut P,
     tracer: &mut impl Tracer,
-) -> Result<(), ExecutionError> {
+) -> Result<(), OperationError> {
     let clk: Felt = processor.system().clk().into();
-    processor.stack().increment_size(tracer)?;
+    processor
+        .stack()
+        .increment_size(tracer)
+        .map_err(|_| OperationError::StackOverflow)?;
     processor.stack().set(0, clk);
 
     Ok(())

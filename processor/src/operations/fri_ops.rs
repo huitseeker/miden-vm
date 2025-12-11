@@ -1,6 +1,9 @@
+use alloc::boxed::Box;
+
 use miden_core::{ExtensionOf, FieldElement, ONE, QuadFelt, StarkField, ZERO};
 
 use super::{ExecutionError, Felt, Operation, Process};
+use crate::OperationError;
 
 // CONSTANTS
 // ================================================================================================
@@ -64,12 +67,20 @@ impl Process {
 
         // --- make sure the previous folding was done correctly --------------
         if d_seg > 3 {
-            return Err(ExecutionError::InvalidFriDomainSegment(d_seg));
+            let op_err = OperationError::InvalidFriDomainSegment(d_seg);
+            return Err(ExecutionError::OperationErrorNoContext {
+                clk: self.system.clk(),
+                err: Box::new(op_err),
+            });
         }
 
         let d_seg = d_seg as usize;
         if query_values[d_seg] != prev_value {
-            return Err(ExecutionError::InvalidFriLayerFolding(prev_value, query_values[d_seg]));
+            let op_err = OperationError::InvalidFriLayerFolding(prev_value, query_values[d_seg]);
+            return Err(ExecutionError::OperationErrorNoContext {
+                clk: self.system.clk(),
+                err: Box::new(op_err),
+            });
         }
 
         // --- fold query values ----------------------------------------------

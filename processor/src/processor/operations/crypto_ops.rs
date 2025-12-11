@@ -1,3 +1,5 @@
+use alloc::boxed::Box;
+
 use miden_air::trace::{
     decoder::NUM_USER_OP_HELPERS,
     log_precompile::{STATE_CAP_RANGE, STATE_RATE_0_RANGE, STATE_RATE_1_RANGE},
@@ -9,7 +11,7 @@ use miden_core::{
 
 use super::{DOUBLE_WORD_SIZE, WORD_SIZE_FELT};
 use crate::{
-    ErrorContext, ExecutionError, ONE,
+    ExecutionError, ONE, OperationError,
     fast::Tracer,
     operations::utils::validate_dual_word_stream_addrs,
     processor::{
@@ -51,11 +53,8 @@ pub(super) fn op_mpverify<P: Processor>(
     processor: &mut P,
     err_code: Felt,
     program: &MastForest,
-    err_ctx: &impl ErrorContext,
     tracer: &mut impl Tracer,
-) -> Result<[Felt; NUM_USER_OP_HELPERS], ExecutionError> {
-    let clk = processor.system().clk();
-
+) -> Result<[Felt; NUM_USER_OP_HELPERS], OperationError> {
     // read node value, depth, index and root value from the stack
     let node = processor.stack().get_word(0);
     let depth = processor.stack().get(4);
@@ -66,19 +65,36 @@ pub(super) fn op_mpverify<P: Processor>(
     let path = processor
         .advice_provider()
         .get_merkle_path(root, depth, index)
-        .map_err(|err| ExecutionError::advice_error(err, clk, err_ctx))?;
+        .map_err(OperationError::from)?;
 
     tracer.record_hasher_build_merkle_root(node, path.as_ref(), index, root);
 
     // verify the path
-    let addr = processor.hasher().verify_merkle_root(root, node, path.as_ref(), index, || {
-        // If the hasher doesn't compute the same root (using the same path),
-        // then it means that `node` is not the value currently in the tree at `index`
-        let err_msg = program.resolve_error_message(err_code);
-        ExecutionError::merkle_path_verification_failed(
-            node, index, root, err_code, err_msg, err_ctx,
-        )
-    })?;
+    let clk = processor.system().clk();
+    let addr = processor
+        .hasher()
+        .verify_merkle_root(root, node, path.as_ref(), index, || {
+            // If the hasher doesn't compute the same root (using the same path),
+            // then it means that `node` is not the value currently in the tree at `index`
+            let err_msg = program.resolve_error_message(err_code);
+            let op_err = OperationError::MerklePathVerificationFailed {
+                value: node,
+                index,
+                root,
+                err_code,
+                err_msg,
+            };
+            ExecutionError::OperationErrorNoContext { clk, err: Box::new(op_err) }
+        })
+        .map_err(|exec_err| {
+            // Extract the OperationError from ExecutionError if possible, otherwise create a
+            // generic one
+            match exec_err {
+                ExecutionError::OperationErrorNoContext { err, .. } => *err,
+                ExecutionError::OperationError { err, .. } => *err,
+                _ => unreachable!("verify_merkle_root should only return OperationError variants"),
+            }
+        })?;
 
     Ok(P::HelperRegisters::op_merkle_path_registers(addr))
 }
@@ -86,11 +102,8 @@ pub(super) fn op_mpverify<P: Processor>(
 #[inline(always)]
 pub(super) fn op_mrupdate<P: Processor>(
     processor: &mut P,
-    err_ctx: &impl ErrorContext,
     tracer: &mut impl Tracer,
-) -> Result<[Felt; NUM_USER_OP_HELPERS], ExecutionError> {
-    let clk = processor.system().clk();
-
+) -> Result<[Felt; NUM_USER_OP_HELPERS], OperationError> {
     // read old node value, depth, index, tree root and new node values from the stack
     let old_value = processor.stack().get_word(0);
     let depth = processor.stack().get(4);
@@ -105,31 +118,36 @@ pub(super) fn op_mrupdate<P: Processor>(
     let path = processor
         .advice_provider()
         .update_merkle_node(claimed_old_root, depth, index, new_value)
-        .map_err(|err| ExecutionError::advice_error(err, clk, err_ctx))?;
+        .map_err(OperationError::from)?;
 
     if let Some(path) = &path
         && path.len() != depth.as_int() as usize
     {
-        return Err(ExecutionError::invalid_crypto_input(clk, path.len(), depth, err_ctx));
+        // The path length doesn't match the expected depth
+        return Err(OperationError::InvalidCryptoInput { path_len: path.len(), depth });
     }
 
-    let (addr, new_root) = processor.hasher().update_merkle_root(
-        claimed_old_root,
-        old_value,
-        new_value,
-        path.as_ref(),
-        index,
-        || {
-            ExecutionError::merkle_path_verification_failed(
-                old_value,
+    let clk = processor.system().clk();
+    let (addr, new_root) = processor
+        .hasher()
+        .update_merkle_root(claimed_old_root, old_value, new_value, path.as_ref(), index, || {
+            let op_err = OperationError::MerklePathVerificationFailed {
+                value: old_value,
                 index,
-                claimed_old_root,
-                ZERO,
-                None,
-                err_ctx,
-            )
-        },
-    )?;
+                root: claimed_old_root,
+                err_code: ZERO,
+                err_msg: None,
+            };
+            ExecutionError::OperationErrorNoContext { clk, err: Box::new(op_err) }
+        })
+        .map_err(|exec_err| {
+            // Extract the OperationError from ExecutionError if possible
+            match exec_err {
+                ExecutionError::OperationErrorNoContext { err, .. } => *err,
+                ExecutionError::OperationError { err, .. } => *err,
+                _ => unreachable!("update_merkle_root should only return OperationError variants"),
+            }
+        })?;
     tracer.record_hasher_update_merkle_root(
         old_value,
         new_value,
@@ -154,9 +172,8 @@ pub(super) fn op_mrupdate<P: Processor>(
 #[inline(always)]
 pub(super) fn op_horner_eval_base<P: Processor>(
     processor: &mut P,
-    err_ctx: &impl ErrorContext,
     tracer: &mut impl Tracer,
-) -> Result<[Felt; NUM_USER_OP_HELPERS], ExecutionError> {
+) -> Result<[Felt; NUM_USER_OP_HELPERS], OperationError> {
     // Constants from the original implementation
     const ALPHA_ADDR_INDEX: usize = 13;
     const ACC_HIGH_INDEX: usize = 14;
@@ -168,14 +185,10 @@ pub(super) fn op_horner_eval_base<P: Processor>(
     // Read the evaluation point alpha from memory
     let alpha = {
         let addr = processor.stack().get(ALPHA_ADDR_INDEX);
-        let eval_point_0 = processor
-            .memory()
-            .read_element(ctx, addr, err_ctx)
-            .map_err(ExecutionError::MemoryError)?;
-        let eval_point_1 = processor
-            .memory()
-            .read_element(ctx, addr + ONE, err_ctx)
-            .map_err(ExecutionError::MemoryError)?;
+        let eval_point_0 =
+            processor.memory().read_element(ctx, addr).map_err(OperationError::from)?;
+        let eval_point_1 =
+            processor.memory().read_element(ctx, addr + ONE).map_err(OperationError::from)?;
 
         tracer.record_memory_read_element(eval_point_0, addr, ctx, clk);
 
@@ -226,9 +239,8 @@ pub(super) fn op_horner_eval_base<P: Processor>(
 #[inline(always)]
 pub(super) fn op_horner_eval_ext<P: Processor>(
     processor: &mut P,
-    err_ctx: &impl ErrorContext,
     tracer: &mut impl Tracer,
-) -> Result<[Felt; NUM_USER_OP_HELPERS], ExecutionError> {
+) -> Result<[Felt; NUM_USER_OP_HELPERS], OperationError> {
     // Constants from the original implementation
     const ALPHA_ADDR_INDEX: usize = 13;
     const ACC_HIGH_INDEX: usize = 14;
@@ -249,10 +261,7 @@ pub(super) fn op_horner_eval_ext<P: Processor>(
     // Read the evaluation point alpha from memory
     let (alpha, k0, k1) = {
         let addr = processor.stack().get(ALPHA_ADDR_INDEX);
-        let word = processor
-            .memory()
-            .read_word(ctx, addr, clk, err_ctx)
-            .map_err(ExecutionError::MemoryError)?;
+        let word = processor.memory().read_word(ctx, addr, clk).map_err(OperationError::from)?;
         tracer.record_memory_read_word(
             word,
             addr,
@@ -356,9 +365,8 @@ pub(super) fn op_log_precompile<P: Processor>(
 #[inline(always)]
 pub(super) fn op_crypto_stream<P: Processor>(
     processor: &mut P,
-    err_ctx: &impl ErrorContext,
     tracer: &mut impl Tracer,
-) -> Result<(), ExecutionError> {
+) -> Result<(), OperationError> {
     // Stack layout: [rate(8), capacity(4), src_ptr, dst_ptr, ...]
     const SRC_PTR_IDX: usize = 12;
     const DST_PTR_IDX: usize = 13;
@@ -371,20 +379,18 @@ pub(super) fn op_crypto_stream<P: Processor>(
     let dst_addr = processor.stack().get(DST_PTR_IDX);
 
     // Validate address ranges and check for overlap using half-open intervals.
-    validate_dual_word_stream_addrs(src_addr, dst_addr, ctx, clk, err_ctx)?;
+    validate_dual_word_stream_addrs(src_addr, dst_addr, ctx, clk)?;
 
     // Load plaintext from source memory (2 words = 8 elements)
     let src_addr_word2 = src_addr + WORD_SIZE_FELT;
-    let plaintext_word1 = processor
-        .memory()
-        .read_word(ctx, src_addr, clk, err_ctx)
-        .map_err(ExecutionError::MemoryError)?;
+    let plaintext_word1 =
+        processor.memory().read_word(ctx, src_addr, clk).map_err(OperationError::from)?;
     tracer.record_memory_read_word(plaintext_word1, src_addr, ctx, clk);
 
     let plaintext_word2 = processor
         .memory()
-        .read_word(ctx, src_addr_word2, clk, err_ctx)
-        .map_err(ExecutionError::MemoryError)?;
+        .read_word(ctx, src_addr_word2, clk)
+        .map_err(OperationError::from)?;
     tracer.record_memory_read_word(plaintext_word2, src_addr_word2, ctx, clk);
 
     // Get rate (keystream) from stack[0..7] in stack order
@@ -419,14 +425,14 @@ pub(super) fn op_crypto_stream<P: Processor>(
     let dst_addr_word2 = dst_addr + WORD_SIZE_FELT;
     processor
         .memory()
-        .write_word(ctx, dst_addr, clk, ciphertext_word1, err_ctx)
-        .map_err(ExecutionError::MemoryError)?;
+        .write_word(ctx, dst_addr, clk, ciphertext_word1)
+        .map_err(OperationError::from)?;
     tracer.record_memory_write_word(ciphertext_word1, dst_addr, ctx, clk);
 
     processor
         .memory()
-        .write_word(ctx, dst_addr_word2, clk, ciphertext_word2, err_ctx)
-        .map_err(ExecutionError::MemoryError)?;
+        .write_word(ctx, dst_addr_word2, clk, ciphertext_word2)
+        .map_err(OperationError::from)?;
     tracer.record_memory_write_word(ciphertext_word2, dst_addr_word2, ctx, clk);
 
     // Update stack[0..7] with ciphertext (becomes new rate for next hperm)

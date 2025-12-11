@@ -7,9 +7,8 @@ use miden_core::{
 };
 
 use crate::{
-    AsyncHost, ErrorContext, ExecutionError,
+    AsyncHost, ErrorContext, ExecutionError, OperationError, OperationResultExt,
     continuation_stack::ContinuationStack,
-    err_ctx,
     fast::{FastProcessor, Tracer, trace_state::NodeExecutionState},
     operations::sys_ops::sys_event_handlers::handle_system_event,
     processor::Processor,
@@ -165,12 +164,13 @@ impl FastProcessor {
             // whereas all the other operations are synchronous (resulting in a significant
             // performance improvement).
             {
-                let err_ctx = err_ctx!(program, node_id, host, op_idx_in_block);
+                let ctx = ErrorContext::with_op(program, node_id, op_idx_in_block);
                 match op {
-                    Operation::Emit => self.op_emit(host, &err_ctx).await?,
+                    Operation::Emit => self.op_emit(host, &ctx).await?,
+                    Operation::EvalCircuit => self.op_eval_circuit(&ctx, tracer)?,
                     _ => {
-                        // if the operation is not an Emit, we execute it normally
-                        self.execute_sync_op(op, op_idx_in_block, program, host, &err_ctx, tracer)?;
+                        // if the operation is not an Emit or EvalCircuit, we execute it normally
+                        self.execute_sync_op(op, op_idx_in_block, program, host, &ctx, tracer)?;
                     },
                 }
             }
@@ -199,23 +199,25 @@ impl FastProcessor {
     async fn op_emit(
         &mut self,
         host: &mut impl AsyncHost,
-        err_ctx: &impl ErrorContext,
+        err_ctx: &ErrorContext<'_>,
     ) -> Result<(), ExecutionError> {
         let mut process = self.state();
         let event_id = EventId::from_felt(process.get_stack_item(0));
 
         // If it's a system event, handle it directly. Otherwise, forward it to the host.
         if let Some(system_event) = SystemEvent::from_event_id(event_id) {
-            handle_system_event(&mut process, system_event, err_ctx)
+            handle_system_event(&mut process, system_event).map_exec_err(err_ctx, host, self.clk)
         } else {
             let clk = process.clk();
             let mutations = host.on_event(&process).await.map_err(|err| {
                 let event_name = host.resolve_event(event_id).cloned();
-                ExecutionError::event_error(err, event_id, event_name, err_ctx)
+                let op_err = OperationError::EventError { event_id, event_name, error: err };
+                err_ctx.into_exec_err(host, op_err, clk)
             })?;
-            self.advice
-                .apply_mutations(mutations)
-                .map_err(|err| ExecutionError::advice_error(err, clk, err_ctx))?;
+            self.advice.apply_mutations(mutations).map_err(|err| {
+                let op_err = OperationError::AdviceError(err);
+                err_ctx.into_exec_err(host, op_err, clk)
+            })?;
             Ok(())
         }
     }

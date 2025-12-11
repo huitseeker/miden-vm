@@ -1,6 +1,6 @@
 use miden_core::{Felt, FieldElement, ONE, Operation, QuadFelt};
 
-use crate::{ExecutionError, Process, errors::ErrorContext};
+use crate::{OperationError, Process};
 
 // CONSTANTS
 // ================================================================================================
@@ -61,10 +61,7 @@ impl Process {
     /// - h₀, h₁: evaluation point α = (α₀, α₁)
     /// - h₂, h₃: Level 2 intermediate result tmp1
     /// - h₄, h₅: Level 1 intermediate result tmp0
-    pub(super) fn op_horner_eval_base(
-        &mut self,
-        err_ctx: &impl ErrorContext,
-    ) -> Result<(), ExecutionError> {
+    pub(super) fn op_horner_eval_base(&mut self) -> Result<(), OperationError> {
         // read the values of the coefficients, over the base field, from the stack
         let coef = self.get_coeff_as_base_elements();
         let c7 = QuadFelt::from(coef[0]);
@@ -77,7 +74,7 @@ impl Process {
         let c0 = QuadFelt::from(coef[7]);
 
         // read the evaluation point alpha from memory
-        let alpha = self.get_evaluation_point_elements(err_ctx)?;
+        let alpha = self.get_evaluation_point_elements()?;
 
         // read the current accumulator
         let acc = self.get_accumulator();
@@ -162,16 +159,13 @@ impl Process {
     /// alpha = (alpha0, alpha1) during the course of its execution.
     /// The helper registers are also used in order to hold the second half of the memory word
     /// containing (alpha0, alpha1), as well as the temporary values acc_tmp.
-    pub(super) fn op_horner_eval_ext(
-        &mut self,
-        err_ctx: &impl ErrorContext,
-    ) -> Result<(), ExecutionError> {
+    pub(super) fn op_horner_eval_ext(&mut self) -> Result<(), OperationError> {
         // read the values of the coefficients, over the extension field, from the stack
         let coef = self.get_coeff_as_quad_ext_elements();
 
         // read the evaluation point from memory
         // we also read the second half of the memory word containing alpha
-        let (alpha, k0, k1) = self.get_evaluation_point(err_ctx)?;
+        let (alpha, k0, k1) = self.get_evaluation_point()?;
 
         // compute the temporary and updated accumulator values
         let acc_old = self.get_accumulator();
@@ -236,22 +230,19 @@ impl Process {
     }
 
     /// Returns the evaluation point.
-    fn get_evaluation_point_elements(
-        &mut self,
-        err_ctx: &impl ErrorContext,
-    ) -> Result<QuadFelt, ExecutionError> {
+    fn get_evaluation_point_elements(&mut self) -> Result<QuadFelt, OperationError> {
         let ctx = self.system.ctx();
         let addr = self.stack.get(ALPHA_ADDR_INDEX);
         let alpha_0 = self
             .chiplets
             .memory
-            .read(ctx, addr, self.system.clk(), err_ctx)
-            .map_err(ExecutionError::MemoryError)?;
+            .read(ctx, addr, self.system.clk())
+            .map_err(OperationError::from)?;
         let alpha_1 = self
             .chiplets
             .memory
-            .read(ctx, addr + ONE, self.system.clk(), err_ctx)
-            .map_err(ExecutionError::MemoryError)?;
+            .read(ctx, addr + ONE, self.system.clk())
+            .map_err(OperationError::from)?;
 
         Ok(QuadFelt::new(alpha_0, alpha_1))
     }
@@ -259,17 +250,14 @@ impl Process {
     /// Returns the evaluation point.
     /// Also returns the second half, i.e., two field elements, that are stored next to
     /// the evaluation point.
-    fn get_evaluation_point(
-        &mut self,
-        err_ctx: &impl ErrorContext,
-    ) -> Result<(QuadFelt, Felt, Felt), ExecutionError> {
+    fn get_evaluation_point(&mut self) -> Result<(QuadFelt, Felt, Felt), OperationError> {
         let ctx = self.system.ctx();
         let addr = self.stack.get(ALPHA_ADDR_INDEX);
         let word = self
             .chiplets
             .memory
-            .read_word(ctx, addr, self.system.clk(), err_ctx)
-            .map_err(ExecutionError::MemoryError)?;
+            .read_word(ctx, addr, self.system.clk())
+            .map_err(OperationError::from)?;
         let alpha_0 = word[0];
         let alpha_1 = word[1];
 
@@ -326,13 +314,7 @@ mod tests {
         process
             .chiplets
             .memory
-            .write_word(
-                ctx,
-                inputs[2].as_int().try_into().expect("Shouldn't fail by construction"),
-                process.system.clk(),
-                alpha_mem_word.into(),
-                &(),
-            )
+            .write_word(ctx, inputs[2], process.system.clk(), alpha_mem_word.into())
             .unwrap();
         process.execute_op(Operation::Noop, program, &mut host).unwrap();
 
@@ -423,13 +405,7 @@ mod tests {
         process
             .chiplets
             .memory
-            .write_word(
-                ctx,
-                inputs[2].as_int().try_into().expect("Shouldn't fail by construction"),
-                process.system.clk(),
-                alpha_mem_word.into(),
-                &(),
-            )
+            .write_word(ctx, inputs[2], process.system.clk(), alpha_mem_word.into())
             .unwrap();
         process.execute_op(Operation::Noop, program, &mut host).unwrap();
 

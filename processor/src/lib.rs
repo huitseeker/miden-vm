@@ -6,7 +6,7 @@ extern crate alloc;
 #[cfg(feature = "std")]
 extern crate std;
 
-use alloc::{sync::Arc, vec::Vec};
+use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::fmt::{Display, LowerHex};
 
 use miden_air::trace::{
@@ -28,7 +28,6 @@ use miden_core::{
     Decorator, FieldElement,
     mast::{BasicBlockNode, ExternalNode, OpBatch},
 };
-use miden_debug_types::SourceSpan;
 pub use winter_prover::matrix::ColMatrix;
 
 pub(crate) mod continuation_stack;
@@ -79,7 +78,7 @@ use trace::TraceFragment;
 pub use trace::{ChipletsLengths, ExecutionTrace, NUM_RAND_ROWS, TraceLenSummary};
 
 mod errors;
-pub use errors::{ErrorContext, ErrorContextImpl, ExecutionError};
+pub use errors::{ErrorContext, ExecutionError, OperationError, OperationResultExt};
 
 pub mod utils;
 
@@ -319,9 +318,13 @@ impl Process {
             return Err(ExecutionError::ProgramAlreadyExecuted);
         }
 
-        self.advice
-            .extend_map(program.mast_forest().advice_map())
-            .map_err(|err| ExecutionError::advice_error(err, RowIndex::from(0), &()))?;
+        self.advice.extend_map(program.mast_forest().advice_map()).map_err(|err| {
+            let op_err = OperationError::AdviceError(err);
+            ExecutionError::OperationErrorNoContext {
+                clk: RowIndex::from(0),
+                err: Box::new(op_err),
+            }
+        })?;
 
         self.execute_mast_node(program.entrypoint(), &program.mast_forest().clone(), host)?;
 
@@ -337,9 +340,13 @@ impl Process {
         program: &MastForest,
         host: &mut impl SyncHost,
     ) -> Result<(), ExecutionError> {
-        let node = program
-            .get_node_by_id(node_id)
-            .ok_or(ExecutionError::MastNodeNotFoundInForest { node_id })?;
+        let node = program.get_node_by_id(node_id).ok_or_else(|| {
+            let op_err = OperationError::MastNodeNotFoundInForest { node_id };
+            ExecutionError::OperationErrorNoContext {
+                clk: self.system.clk(),
+                err: Box::new(op_err),
+            }
+        })?;
 
         for &decorator_id in node.before_enter(program) {
             self.execute_decorator(&program[decorator_id], host)?;
@@ -351,17 +358,19 @@ impl Process {
             MastNode::Split(_) => self.execute_split_node(node_id, program, host)?,
             MastNode::Loop(_) => self.execute_loop_node(node_id, program, host)?,
             MastNode::Call(_) => {
-                let err_ctx = err_ctx!(program, node_id, host);
+                let ctx = ErrorContext::new(program, node_id);
                 add_error_ctx_to_external_error(
                     self.execute_call_node(node_id, program, host),
-                    err_ctx,
+                    &ctx,
+                    host,
                 )?
             },
             MastNode::Dyn(_) => {
-                let err_ctx = err_ctx!(program, node_id, host);
+                let ctx = ErrorContext::new(program, node_id);
                 add_error_ctx_to_external_error(
                     self.execute_dyn_node(node_id, program, host),
-                    err_ctx,
+                    &ctx,
+                    host,
                 )?
             },
             MastNode::External(external_node) => {
@@ -386,11 +395,19 @@ impl Process {
         program: &MastForest,
         host: &mut impl SyncHost,
     ) -> Result<(), ExecutionError> {
-        let node = program
-            .get_node_by_id(node_id)
-            .ok_or(ExecutionError::MastNodeNotFoundInForest { node_id })?;
+        let node = program.get_node_by_id(node_id).ok_or_else(|| {
+            let op_err = OperationError::MastNodeNotFoundInForest { node_id };
+            ExecutionError::OperationErrorNoContext {
+                clk: self.system.clk(),
+                err: Box::new(op_err),
+            }
+        })?;
         let MastNode::Join(node) = node else {
-            return Err(ExecutionError::MastNodeNotFoundInForest { node_id });
+            let op_err = OperationError::MastNodeNotFoundInForest { node_id };
+            return Err(ExecutionError::OperationErrorNoContext {
+                clk: self.system.clk(),
+                err: Box::new(op_err),
+            });
         };
 
         self.start_join_node(node, program, host)?;
@@ -410,11 +427,19 @@ impl Process {
         program: &MastForest,
         host: &mut impl SyncHost,
     ) -> Result<(), ExecutionError> {
-        let node = program
-            .get_node_by_id(node_id)
-            .ok_or(ExecutionError::MastNodeNotFoundInForest { node_id })?;
+        let node = program.get_node_by_id(node_id).ok_or_else(|| {
+            let op_err = OperationError::MastNodeNotFoundInForest { node_id };
+            ExecutionError::OperationErrorNoContext {
+                clk: self.system.clk(),
+                err: Box::new(op_err),
+            }
+        })?;
         let MastNode::Split(node) = node else {
-            return Err(ExecutionError::MastNodeNotFoundInForest { node_id });
+            let op_err = OperationError::MastNodeNotFoundInForest { node_id };
+            return Err(ExecutionError::OperationErrorNoContext {
+                clk: self.system.clk(),
+                err: Box::new(op_err),
+            });
         };
 
         // start the SPLIT block; this also pops the stack and returns the popped element
@@ -426,8 +451,9 @@ impl Process {
         } else if condition == ZERO {
             self.execute_mast_node(node.on_false(), program, host)?;
         } else {
-            let err_ctx = err_ctx!(program, node_id, host);
-            return Err(ExecutionError::not_binary_value_if(condition, &err_ctx));
+            let ctx = ErrorContext::new(program, node_id);
+            let op_err = OperationError::NotBinaryValueIf { value: condition };
+            return Err(ctx.into_exec_err(host, op_err, self.system.clk()));
         }
 
         self.end_split_node(node, program, host)
@@ -441,11 +467,19 @@ impl Process {
         program: &MastForest,
         host: &mut impl SyncHost,
     ) -> Result<(), ExecutionError> {
-        let node = program
-            .get_node_by_id(node_id)
-            .ok_or(ExecutionError::MastNodeNotFoundInForest { node_id })?;
+        let node = program.get_node_by_id(node_id).ok_or_else(|| {
+            let op_err = OperationError::MastNodeNotFoundInForest { node_id };
+            ExecutionError::OperationErrorNoContext {
+                clk: self.system.clk(),
+                err: Box::new(op_err),
+            }
+        })?;
         let MastNode::Loop(node) = node else {
-            return Err(ExecutionError::MastNodeNotFoundInForest { node_id });
+            let op_err = OperationError::MastNodeNotFoundInForest { node_id };
+            return Err(ExecutionError::OperationErrorNoContext {
+                clk: self.system.clk(),
+                err: Box::new(op_err),
+            });
         };
 
         // start the LOOP block; this also pops the stack and returns the popped element
@@ -466,8 +500,9 @@ impl Process {
             }
 
             if self.stack.peek() != ZERO {
-                let err_ctx = err_ctx!(program, node_id, host);
-                return Err(ExecutionError::not_binary_value_loop(self.stack.peek(), &err_ctx));
+                let ctx = ErrorContext::new(program, node_id);
+                let op_err = OperationError::NotBinaryValueLoop { value: self.stack.peek() };
+                return Err(ctx.into_exec_err(host, op_err, self.system.clk()));
             }
 
             // end the LOOP block and drop the condition from the stack
@@ -477,8 +512,9 @@ impl Process {
             // already dropped when we started the LOOP block
             self.end_loop_node(node, false, program, host)
         } else {
-            let err_ctx = err_ctx!(program, node_id, host);
-            Err(ExecutionError::not_binary_value_loop(condition, &err_ctx))
+            let ctx = ErrorContext::new(program, node_id);
+            let op_err = OperationError::NotBinaryValueLoop { value: condition };
+            Err(ctx.into_exec_err(host, op_err, self.system.clk()))
         }
     }
 
@@ -490,26 +526,39 @@ impl Process {
         program: &MastForest,
         host: &mut impl SyncHost,
     ) -> Result<(), ExecutionError> {
-        let node = program
-            .get_node_by_id(node_id)
-            .ok_or(ExecutionError::MastNodeNotFoundInForest { node_id })?;
+        let node = program.get_node_by_id(node_id).ok_or_else(|| {
+            let op_err = OperationError::MastNodeNotFoundInForest { node_id };
+            ExecutionError::OperationErrorNoContext {
+                clk: self.system.clk(),
+                err: Box::new(op_err),
+            }
+        })?;
         let MastNode::Call(call_node) = node else {
-            return Err(ExecutionError::MastNodeNotFoundInForest { node_id });
+            let op_err = OperationError::MastNodeNotFoundInForest { node_id };
+            return Err(ExecutionError::OperationErrorNoContext {
+                clk: self.system.clk(),
+                err: Box::new(op_err),
+            });
         };
 
         // if this is a syscall, make sure the call target exists in the kernel
         if call_node.is_syscall() {
             let callee = program.get_node_by_id(call_node.callee()).ok_or_else(|| {
-                ExecutionError::MastNodeNotFoundInForest { node_id: call_node.callee() }
+                let op_err =
+                    OperationError::MastNodeNotFoundInForest { node_id: call_node.callee() };
+                ExecutionError::OperationErrorNoContext {
+                    clk: self.system.clk(),
+                    err: Box::new(op_err),
+                }
             })?;
-            let err_ctx = err_ctx!(program, node_id, host);
-            self.chiplets.kernel_rom.access_proc(callee.digest(), &err_ctx)?;
+            let ctx = ErrorContext::new(program, node_id);
+            self.chiplets.kernel_rom.access_proc(callee.digest(), &ctx)?;
         }
-        let err_ctx = err_ctx!(program, node_id, host);
+        let ctx = ErrorContext::new(program, node_id);
 
-        self.start_call_node(call_node, program, host, &err_ctx)?;
+        self.start_call_node(call_node, program, host, &ctx)?;
         self.execute_mast_node(call_node.callee(), program, host)?;
-        self.end_call_node(call_node, program, host, &err_ctx)
+        self.end_call_node(call_node, program, host, &ctx)
     }
 
     /// Executes the specified [miden_core::mast::DynNode].
@@ -523,19 +572,27 @@ impl Process {
         program: &MastForest,
         host: &mut impl SyncHost,
     ) -> Result<(), ExecutionError> {
-        let node = program
-            .get_node_by_id(node_id)
-            .ok_or(ExecutionError::MastNodeNotFoundInForest { node_id })?;
+        let node = program.get_node_by_id(node_id).ok_or_else(|| {
+            let op_err = OperationError::MastNodeNotFoundInForest { node_id };
+            ExecutionError::OperationErrorNoContext {
+                clk: self.system.clk(),
+                err: Box::new(op_err),
+            }
+        })?;
         let MastNode::Dyn(node) = node else {
-            return Err(ExecutionError::MastNodeNotFoundInForest { node_id });
+            let op_err = OperationError::MastNodeNotFoundInForest { node_id };
+            return Err(ExecutionError::OperationErrorNoContext {
+                clk: self.system.clk(),
+                err: Box::new(op_err),
+            });
         };
 
-        let err_ctx = err_ctx!(program, node_id, host);
+        let ctx = ErrorContext::new(program, node_id);
 
         let callee_hash = if node.is_dyncall() {
-            self.start_dyncall_node(node, &err_ctx)?
+            self.start_dyncall_node(node, &ctx)?
         } else {
-            self.start_dyn_node(node, program, host, &err_ctx)?
+            self.start_dyn_node(node, program, host, &ctx)?
         };
 
         // if the callee is not in the program's MAST forest, try to find a MAST forest for it in
@@ -544,31 +601,41 @@ impl Process {
         match program.find_procedure_root(callee_hash) {
             Some(callee_id) => self.execute_mast_node(callee_id, program, host)?,
             None => {
-                let mast_forest = host
-                    .get_mast_forest(&callee_hash)
-                    .ok_or_else(|| ExecutionError::dynamic_node_not_found(callee_hash, &err_ctx))?;
+                let mast_forest = host.get_mast_forest(&callee_hash).ok_or_else(|| {
+                    let op_err = OperationError::DynamicNodeNotFound { digest: callee_hash };
+                    ctx.into_exec_err(host, op_err, self.system.clk())
+                })?;
 
                 // We limit the parts of the program that can be called externally to procedure
                 // roots, even though MAST doesn't have that restriction.
-                let root_id = mast_forest
-                    .find_procedure_root(callee_hash)
-                    .ok_or(ExecutionError::malfored_mast_forest_in_host(callee_hash, &()))?;
+                let root_id = mast_forest.find_procedure_root(callee_hash).ok_or_else(|| {
+                    let op_err =
+                        OperationError::MalformedMastForestInHost { root_digest: callee_hash };
+                    ExecutionError::OperationErrorNoContext {
+                        clk: self.system.clk(),
+                        err: Box::new(op_err),
+                    }
+                })?;
 
                 // Merge the advice map of this forest into the advice provider.
                 // Note that the map may be merged multiple times if a different procedure from the
                 // same forest is called.
                 // For now, only compiled libraries contain non-empty advice maps, so for most
                 // cases, this call will be cheap.
-                self.advice
-                    .extend_map(mast_forest.advice_map())
-                    .map_err(|err| ExecutionError::advice_error(err, self.system.clk(), &()))?;
+                self.advice.extend_map(mast_forest.advice_map()).map_err(|err| {
+                    let op_err = OperationError::AdviceError(err);
+                    ExecutionError::OperationErrorNoContext {
+                        clk: self.system.clk(),
+                        err: Box::new(op_err),
+                    }
+                })?;
 
                 self.execute_mast_node(root_id, &mast_forest, host)?
             },
         }
 
         if node.is_dyncall() {
-            self.end_dyncall_node(node, program, host, &err_ctx)
+            self.end_dyncall_node(node, program, host, &ctx)
         } else {
             self.end_dyn_node(node, program, host)
         }
@@ -657,9 +724,9 @@ impl Process {
             }
 
             // decode and execute the operation
-            let err_ctx = err_ctx!(program, node_id, host, i + op_offset);
+            let ctx = ErrorContext::with_op(program, node_id, i + op_offset);
             self.decoder.execute_user_op(op, op_idx);
-            self.execute_op_with_error_ctx(op, program, host, &err_ctx)?;
+            self.execute_op_with_error_ctx(op, program, host, &ctx)?;
 
             // if the operation carries an immediate value, the value is stored at the next group
             // pointer; so, we advance the pointer to the following group
@@ -733,20 +800,32 @@ impl Process {
     ) -> Result<(MastNodeId, Arc<MastForest>), ExecutionError> {
         let node_digest = external_node.digest();
 
-        let mast_forest = host
-            .get_mast_forest(&node_digest)
-            .ok_or(ExecutionError::no_mast_forest_with_procedure(node_digest, &()))?;
+        let mast_forest = host.get_mast_forest(&node_digest).ok_or_else(|| {
+            let op_err = OperationError::NoMastForestWithProcedure { root_digest: node_digest };
+            ExecutionError::OperationErrorNoContext {
+                clk: self.system.clk(),
+                err: Box::new(op_err),
+            }
+        })?;
 
         // We limit the parts of the program that can be called externally to procedure
         // roots, even though MAST doesn't have that restriction.
-        let root_id = mast_forest
-            .find_procedure_root(node_digest)
-            .ok_or(ExecutionError::malfored_mast_forest_in_host(node_digest, &()))?;
+        let root_id = mast_forest.find_procedure_root(node_digest).ok_or_else(|| {
+            let op_err = OperationError::MalformedMastForestInHost { root_digest: node_digest };
+            ExecutionError::OperationErrorNoContext {
+                clk: self.system.clk(),
+                err: Box::new(op_err),
+            }
+        })?;
 
         // if the node that we got by looking up an external reference is also an External
         // node, we are about to enter into an infinite loop - so, return an error
         if mast_forest[root_id].is_external() {
-            return Err(ExecutionError::CircularExternalNode(node_digest));
+            let op_err = OperationError::CircularExternalNode(node_digest);
+            return Err(ExecutionError::OperationErrorNoContext {
+                clk: self.system.clk(),
+                err: Box::new(op_err),
+            });
         }
 
         // Merge the advice map of this forest into the advice provider.
@@ -754,9 +833,13 @@ impl Process {
         // forest is called.
         // For now, only compiled libraries contain non-empty advice maps, so for most cases,
         // this call will be cheap.
-        self.advice
-            .extend_map(mast_forest.advice_map())
-            .map_err(|err| ExecutionError::advice_error(err, self.system.clk(), &()))?;
+        self.advice.extend_map(mast_forest.advice_map()).map_err(|err| {
+            let op_err = OperationError::AdviceError(err);
+            ExecutionError::OperationErrorNoContext {
+                clk: self.system.clk(),
+                err: Box::new(op_err),
+            }
+        })?;
 
         Ok((root_id, mast_forest))
     }
@@ -955,9 +1038,7 @@ impl<'a> ProcessState<'a> {
     pub fn get_mem_word(&self, ctx: ContextId, addr: u32) -> Result<Option<Word>, MemoryError> {
         match self {
             ProcessState::Slow(state) => state.chiplets.memory.get_word(ctx, addr),
-            ProcessState::Fast(state) => {
-                state.processor.memory.read_word_impl(ctx, addr, None, &())
-            },
+            ProcessState::Fast(state) => state.processor.memory.read_word_impl(ctx, addr, None),
             ProcessState::Noop(()) => panic!("attempted to access Noop process state"),
         }
     }
@@ -973,10 +1054,10 @@ impl<'a> ProcessState<'a> {
         let end_addr = self.get_stack_item(end_idx).as_int();
 
         if start_addr > u32::MAX as u64 {
-            return Err(MemoryError::address_out_of_bounds(start_addr, &()));
+            return Err(MemoryError::AddressOutOfBounds { addr: start_addr });
         }
         if end_addr > u32::MAX as u64 {
-            return Err(MemoryError::address_out_of_bounds(end_addr, &()));
+            return Err(MemoryError::AddressOutOfBounds { addr: end_addr });
         }
 
         if start_addr > end_addr {
@@ -1016,28 +1097,20 @@ impl<'a> From<&'a mut Process> for ProcessState<'a> {
 /// proper error context.
 pub(crate) fn add_error_ctx_to_external_error(
     result: Result<(), ExecutionError>,
-    err_ctx: impl ErrorContext,
+    err_ctx: &ErrorContext,
+    host: &impl SyncHost,
 ) -> Result<(), ExecutionError> {
     match result {
         Ok(_) => Ok(()),
         // Add context information to any errors coming from executing an `ExternalNode`
         Err(err) => match err {
-            ExecutionError::NoMastForestWithProcedure { label, source_file: _, root_digest }
-            | ExecutionError::MalformedMastForestInHost { label, source_file: _, root_digest } => {
-                if label == SourceSpan::UNKNOWN {
-                    let err_with_ctx =
-                        ExecutionError::no_mast_forest_with_procedure(root_digest, &err_ctx);
-                    Err(err_with_ctx)
-                } else {
-                    // If the source span was already populated, just return the error as-is. This
-                    // would occur when a call deeper down the call stack was responsible for the
-                    // error.
-                    Err(err)
-                }
+            ExecutionError::OperationErrorNoContext { clk, err: op_err } => {
+                // Wrap the operation error with context
+                Err(err_ctx.into_exec_err(host, *op_err, clk))
             },
 
             _ => {
-                // do nothing
+                // For other errors, just propagate as-is
                 Err(err)
             },
         },

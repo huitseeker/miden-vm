@@ -12,7 +12,8 @@ use miden_core::{
 };
 
 use crate::{
-    AdviceInputs, AdviceProvider, AsyncHost, ContextId, ErrorContext, ExecutionError, ProcessState,
+    AdviceInputs, AdviceProvider, AsyncHost, ContextId, ErrorContext, ExecutionError,
+    OperationError, ProcessState,
     chiplets::Ace,
     continuation_stack::{Continuation, ContinuationStack},
     fast::execution_tracer::{ExecutionTracer, TraceGenerationContext},
@@ -358,9 +359,10 @@ impl FastProcessor {
         let mut current_forest = program.mast_forest().clone();
 
         // Merge the program's advice map into the advice provider
-        self.advice
-            .extend_map(current_forest.advice_map())
-            .map_err(|err| ExecutionError::advice_error(err, self.clk, &()))?;
+        self.advice.extend_map(current_forest.advice_map()).map_err(|err| {
+            let op_err = OperationError::AdviceError(err);
+            ExecutionError::OperationErrorNoContext { clk: self.clk, err: Box::new(op_err) }
+        })?;
 
         while let Some(continuation) = continuation_stack.pop_continuation() {
             match continuation {
@@ -577,16 +579,13 @@ impl FastProcessor {
         tracer.increment_clk();
     }
 
-    async fn load_mast_forest<E>(
+    async fn load_mast_forest(
         &mut self,
         node_digest: Word,
         host: &mut impl AsyncHost,
-        get_mast_forest_failed: impl Fn(Word, &E) -> ExecutionError,
-        err_ctx: &E,
-    ) -> Result<(MastNodeId, Arc<MastForest>), ExecutionError>
-    where
-        E: ErrorContext,
-    {
+        get_mast_forest_failed: impl Fn(Word, &ErrorContext<'_>) -> ExecutionError,
+        err_ctx: &ErrorContext<'_>,
+    ) -> Result<(MastNodeId, Arc<MastForest>), ExecutionError> {
         let mast_forest = host
             .get_mast_forest(&node_digest)
             .await
@@ -594,18 +593,20 @@ impl FastProcessor {
 
         // We limit the parts of the program that can be called externally to procedure
         // roots, even though MAST doesn't have that restriction.
-        let root_id = mast_forest
-            .find_procedure_root(node_digest)
-            .ok_or(ExecutionError::malfored_mast_forest_in_host(node_digest, err_ctx))?;
+        let root_id = mast_forest.find_procedure_root(node_digest).ok_or_else(|| {
+            let op_err = OperationError::MalformedMastForestInHost { root_digest: node_digest };
+            ExecutionError::OperationErrorNoContext { clk: self.clk, err: Box::new(op_err) }
+        })?;
 
         // Merge the advice map of this forest into the advice provider.
         // Note that the map may be merged multiple times if a different procedure from the same
         // forest is called.
         // For now, only compiled libraries contain non-empty advice maps, so for most cases,
         // this call will be cheap.
-        self.advice
-            .extend_map(mast_forest.advice_map())
-            .map_err(|err| ExecutionError::advice_error(err, self.clk, err_ctx))?;
+        self.advice.extend_map(mast_forest.advice_map()).map_err(|err| {
+            let op_err = OperationError::AdviceError(err);
+            ExecutionError::OperationErrorNoContext { clk: self.clk, err: Box::new(op_err) }
+        })?;
 
         Ok((root_id, mast_forest))
     }

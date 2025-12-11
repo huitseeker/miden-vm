@@ -10,7 +10,7 @@ use miden_air::{
         V_2_0_IDX, V_2_1_IDX,
     },
 };
-use miden_core::{Felt, QuadFelt, WORD_SIZE, Word, ZERO};
+use miden_core::{Felt, QuadFelt, WORD_SIZE, Word, ZERO, mast::MastForest};
 
 use crate::{
     ContextId,
@@ -49,7 +49,8 @@ fn test_var_plus_one() {
     }
 
     let valid_input = &[-QuadFelt::ONE, QuadFelt::ZERO];
-    let err_ctx = ();
+    let program = MastForest::default();
+    let err_ctx = ErrorContext::new(&program, 0.into());
     let encoded_circuit = verify_encoded_circuit_eval(&circuit, valid_input, &err_ctx);
     verify_eval_circuit(&encoded_circuit, valid_input);
 }
@@ -81,7 +82,8 @@ fn test_bool_check() {
             [x, result]
         })
         .collect();
-    let err_ctx = ();
+    let program = MastForest::default();
+    let err_ctx = ErrorContext::new(&program, 0.into());
     for input in &inputs {
         verify_circuit_eval(&circuit, input, |_| QuadFelt::ZERO);
         let encoded_circuit = verify_encoded_circuit_eval(&circuit, input, &err_ctx);
@@ -191,7 +193,7 @@ fn verify_circuit_eval(
 fn verify_encoded_circuit_eval(
     circuit: &Circuit,
     inputs: &[QuadFelt],
-    err_ctx: &impl ErrorContext,
+    err_ctx: &ErrorContext,
 ) -> EncodedCircuit {
     let encoded_circuit = EncodedCircuit::try_from_circuit(circuit).expect("cannot encode");
 
@@ -234,13 +236,14 @@ fn verify_eval_circuit(circuit: &EncodedCircuit, inputs: &[QuadFelt]) {
     let ptr = Felt::ZERO;
     let clk = RowIndex::from(0);
     let mut mem = Memory::default();
-    let err_ctx = ();
+    let program = MastForest::default();
+    let err_ctx = ErrorContext::new(&program, 0.into());
 
     let circuit_mem = generate_memory(circuit, inputs);
 
     let mut ptr_curr = ptr;
     for word in circuit_mem {
-        mem.write_word(ctx, ptr_curr, clk, word, &err_ctx).unwrap();
+        mem.write_word(ctx, ptr_curr, clk, word).unwrap();
         ptr_curr += Felt::from(4u8);
     }
 

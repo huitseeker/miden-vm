@@ -19,7 +19,7 @@ impl Process {
     ///
     /// Stack transition:
     /// [ptr, num_read, num_eval, ...] -> [ptr, num_read, num_eval, ...]
-    pub fn op_eval_circuit(&mut self, err_ctx: &impl ErrorContext) -> Result<(), ExecutionError> {
+    pub fn op_eval_circuit(&mut self, err_ctx: &ErrorContext) -> Result<(), ExecutionError> {
         let num_eval = self.stack.get(2);
         let num_read = self.stack.get(1);
         let ptr = self.stack.get(0);

@@ -1,4 +1,4 @@
-use alloc::vec::Vec;
+use alloc::{boxed::Box, vec::Vec};
 
 use miden_air::{
     RowIndex,
@@ -24,7 +24,11 @@ use miden_core::{
 use super::{
     EMPTY_WORD, ExecutionError, Felt, MIN_TRACE_LEN, ONE, OpBatch, Operation, Process, Word, ZERO,
 };
-use crate::{SyncHost, errors::ErrorContext, utils::HASH_CYCLE_LEN_FELT};
+use crate::{
+    OperationError, SyncHost,
+    errors::{ErrorContext, OperationResultExt},
+    utils::HASH_CYCLE_LEN_FELT,
+};
 
 mod trace;
 use trace::DecoderTrace;
@@ -61,11 +65,23 @@ impl Process {
         // row addr + 7.
         let child1_hash = program
             .get_node_by_id(node.first())
-            .ok_or(ExecutionError::MastNodeNotFoundInForest { node_id: node.first() })?
+            .ok_or_else(|| {
+                let op_err = OperationError::MastNodeNotFoundInForest { node_id: node.first() };
+                ExecutionError::OperationErrorNoContext {
+                    clk: self.system.clk(),
+                    err: Box::new(op_err),
+                }
+            })?
             .digest();
         let child2_hash = program
             .get_node_by_id(node.second())
-            .ok_or(ExecutionError::MastNodeNotFoundInForest { node_id: node.second() })?
+            .ok_or_else(|| {
+                let op_err = OperationError::MastNodeNotFoundInForest { node_id: node.second() };
+                ExecutionError::OperationErrorNoContext {
+                    clk: self.system.clk(),
+                    err: Box::new(op_err),
+                }
+            })?
             .digest();
 
         let (addr, hashed_block) = self.chiplets.hasher.hash_control_block(
@@ -115,11 +131,23 @@ impl Process {
         // row addr + 7.
         let child1_hash = program
             .get_node_by_id(node.on_true())
-            .ok_or(ExecutionError::MastNodeNotFoundInForest { node_id: node.on_true() })?
+            .ok_or_else(|| {
+                let op_err = OperationError::MastNodeNotFoundInForest { node_id: node.on_true() };
+                ExecutionError::OperationErrorNoContext {
+                    clk: self.system.clk(),
+                    err: Box::new(op_err),
+                }
+            })?
             .digest();
         let child2_hash = program
             .get_node_by_id(node.on_false())
-            .ok_or(ExecutionError::MastNodeNotFoundInForest { node_id: node.on_false() })?
+            .ok_or_else(|| {
+                let op_err = OperationError::MastNodeNotFoundInForest { node_id: node.on_false() };
+                ExecutionError::OperationErrorNoContext {
+                    clk: self.system.clk(),
+                    err: Box::new(op_err),
+                }
+            })?
             .digest();
         let (addr, hashed_block) = self.chiplets.hasher.hash_control_block(
             child1_hash,
@@ -170,7 +198,13 @@ impl Process {
         // row addr + 7.
         let body_hash = program
             .get_node_by_id(node.body())
-            .ok_or(ExecutionError::MastNodeNotFoundInForest { node_id: node.body() })?
+            .ok_or_else(|| {
+                let op_err = OperationError::MastNodeNotFoundInForest { node_id: node.body() };
+                ExecutionError::OperationErrorNoContext {
+                    clk: self.system.clk(),
+                    err: Box::new(op_err),
+                }
+            })?
             .digest();
 
         let (addr, hashed_block) = self.chiplets.hasher.hash_control_block(
@@ -228,14 +262,20 @@ impl Process {
         node: &CallNode,
         program: &MastForest,
         host: &mut H,
-        err_ctx: &impl ErrorContext,
+        _err_ctx: &ErrorContext,
     ) -> Result<(), ExecutionError> {
         // use the hasher to compute the hash of the CALL or SYSCALL block; the row address
         // returned by the hasher is used as the ID of the block; the result of the hash is
         // expected to be in row addr + 7.
         let callee_hash = program
             .get_node_by_id(node.callee())
-            .ok_or(ExecutionError::MastNodeNotFoundInForest { node_id: node.callee() })?
+            .ok_or_else(|| {
+                let op_err = OperationError::MastNodeNotFoundInForest { node_id: node.callee() };
+                ExecutionError::OperationErrorNoContext {
+                    clk: self.system.clk(),
+                    err: Box::new(op_err),
+                }
+            })?
             .digest();
 
         let (addr, hashed_block) = self.chiplets.hasher.hash_control_block(
@@ -273,14 +313,9 @@ impl Process {
             // Initialize the fmp for the new context in memory.
             self.chiplets
                 .memory
-                .write(
-                    self.system.get_next_ctx_id(),
-                    FMP_ADDR,
-                    self.system.clk(),
-                    FMP_INIT_VALUE,
-                    err_ctx,
-                )
-                .map_err(ExecutionError::MemoryError)?;
+                .write(self.system.get_next_ctx_id(), FMP_ADDR, self.system.clk(), FMP_INIT_VALUE)
+                .map_err(OperationError::from)
+                .map_exec_err(_err_ctx, host, self.system.clk())?;
         }
 
         // the rest of the VM state does not change
@@ -293,12 +328,13 @@ impl Process {
         node: &CallNode,
         program: &MastForest,
         host: &mut H,
-        err_ctx: &impl ErrorContext,
+        _err_ctx: &ErrorContext,
     ) -> Result<(), ExecutionError> {
         // when a CALL block ends, stack depth must be exactly 16
         let stack_depth = self.stack.depth();
         if stack_depth > MIN_STACK_DEPTH {
-            return Err(ExecutionError::invalid_stack_depth_on_return(stack_depth, err_ctx));
+            let op_err = OperationError::InvalidStackDepthOnReturn { depth: stack_depth };
+            return Err(_err_ctx.into_exec_err(host, op_err, self.system.clk()));
         }
 
         // this appends a row with END operation to the decoder trace; the returned value contains
@@ -326,7 +362,7 @@ impl Process {
         dyn_node: &DynNode,
         program: &MastForest,
         host: &mut H,
-        err_ctx: &impl ErrorContext,
+        _err_ctx: &ErrorContext,
     ) -> Result<Word, ExecutionError> {
         debug_assert!(!dyn_node.is_dyncall());
 
@@ -336,8 +372,9 @@ impl Process {
         let callee_hash = self
             .chiplets
             .memory
-            .read_word(self.system.ctx(), mem_addr, self.system.clk(), err_ctx)
-            .map_err(ExecutionError::MemoryError)?;
+            .read_word(self.system.ctx(), mem_addr, self.system.clk())
+            .map_err(OperationError::from)
+            .map_exec_err(_err_ctx, host, self.system.clk())?;
 
         let (addr, hashed_block) = self.chiplets.hasher.hash_control_block(
             EMPTY_WORD,
@@ -364,7 +401,7 @@ impl Process {
     pub(super) fn start_dyncall_node(
         &mut self,
         dyn_node: &DynNode,
-        err_ctx: &impl ErrorContext,
+        _err_ctx: &ErrorContext,
     ) -> Result<Word, ExecutionError> {
         debug_assert!(dyn_node.is_dyncall());
 
@@ -374,20 +411,16 @@ impl Process {
         let callee_hash = self
             .chiplets
             .memory
-            .read_word(self.system.ctx(), mem_addr, self.system.clk(), err_ctx)
-            .map_err(ExecutionError::MemoryError)?;
+            .read_word(self.system.ctx(), mem_addr, self.system.clk())
+            .map_err(OperationError::from)
+            .map_exec_err_no_ctx(self.system.clk())?;
 
         // Initialize the fmp for the new context in memory.
         self.chiplets
             .memory
-            .write(
-                self.system.get_next_ctx_id(),
-                FMP_ADDR,
-                self.system.clk(),
-                FMP_INIT_VALUE,
-                err_ctx,
-            )
-            .map_err(ExecutionError::MemoryError)?;
+            .write(self.system.get_next_ctx_id(), FMP_ADDR, self.system.clk(), FMP_INIT_VALUE)
+            .map_err(OperationError::from)
+            .map_exec_err_no_ctx(self.system.clk())?;
 
         // Note: other functions end in "executing a Noop", which
         // 1. ensures trace capacity,
@@ -446,12 +479,13 @@ impl Process {
         dyn_node: &DynNode,
         program: &MastForest,
         host: &mut H,
-        err_ctx: &impl ErrorContext,
+        _err_ctx: &ErrorContext,
     ) -> Result<(), ExecutionError> {
         // when a DYNCALL block ends, stack depth must be exactly 16
         let stack_depth = self.stack.depth();
         if stack_depth > MIN_STACK_DEPTH {
-            return Err(ExecutionError::invalid_stack_depth_on_return(stack_depth, err_ctx));
+            let op_err = OperationError::InvalidStackDepthOnReturn { depth: stack_depth };
+            return Err(_err_ctx.into_exec_err(host, op_err, self.system.clk()));
         }
 
         // this appends a row with END operation to the decoder trace. when the END operation is

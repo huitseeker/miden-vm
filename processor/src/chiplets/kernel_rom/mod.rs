@@ -1,8 +1,8 @@
-use alloc::collections::BTreeMap;
+use alloc::{boxed::Box, collections::BTreeMap};
 
 use miden_air::{RowIndex, trace::chiplets::kernel_rom::TRACE_WIDTH};
 
-use super::{ExecutionError, Felt, Kernel, TraceFragment, Word as Digest};
+use super::{ExecutionError, Felt, Kernel, OperationError, TraceFragment, Word as Digest};
 use crate::ErrorContext;
 
 #[cfg(test)]
@@ -76,13 +76,14 @@ impl KernelRom {
     pub fn access_proc(
         &mut self,
         proc_hash: Digest,
-        err_ctx: &impl ErrorContext,
+        _err_ctx: &ErrorContext,
     ) -> Result<(), ExecutionError> {
         let proc_hash_bytes: ProcHashBytes = proc_hash.into();
-        let access_info = self
-            .access_map
-            .get_mut(&proc_hash_bytes)
-            .ok_or(ExecutionError::syscall_target_not_in_kernel(proc_hash, err_ctx))?;
+        let access_info = self.access_map.get_mut(&proc_hash_bytes).ok_or_else(|| {
+            let op_err = OperationError::SyscallTargetNotInKernel { proc_root: proc_hash };
+            // We don't have clk here, so create a no-context error
+            ExecutionError::OperationErrorNoContext { clk: 0_u32.into(), err: Box::new(op_err) }
+        })?;
 
         self.trace_len += 1;
         access_info.num_accesses += 1;

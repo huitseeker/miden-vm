@@ -1,13 +1,17 @@
 use alloc::vec::Vec;
 
-use miden_air::trace::chiplets::bitwise::{
-    A_COL_IDX, A_COL_RANGE, B_COL_IDX, B_COL_RANGE, BITWISE_AND, BITWISE_XOR, OP_CYCLE_LEN,
-    OUTPUT_COL_IDX, PREV_OUTPUT_COL_IDX, TRACE_WIDTH,
+use miden_air::{
+    RowIndex,
+    trace::chiplets::bitwise::{
+        A_COL_IDX, A_COL_RANGE, B_COL_IDX, B_COL_RANGE, BITWISE_AND, BITWISE_XOR, OP_CYCLE_LEN,
+        OUTPUT_COL_IDX, PREV_OUTPUT_COL_IDX, TRACE_WIDTH,
+    },
 };
-use miden_core::ZERO;
+use miden_core::{ZERO, mast::MastForest};
 use miden_utils_testing::rand::rand_value;
 
 use super::{Bitwise, Felt, TraceFragment};
+use crate::ErrorContext;
 
 #[test]
 fn bitwise_init() {
@@ -19,11 +23,13 @@ fn bitwise_init() {
 #[expect(clippy::needless_range_loop)]
 fn bitwise_and() {
     let mut bitwise = Bitwise::new();
+    let program = MastForest::default();
+    let err_ctx = ErrorContext::new(&program, 0.into());
 
     let a = rand_u32();
     let b = rand_u32();
 
-    let result = bitwise.u32and(a, b, &()).unwrap();
+    let result = bitwise.u32and(a, b, &err_ctx, RowIndex::from(0)).unwrap();
     assert_eq!(a.as_int() & b.as_int(), result.as_int());
 
     // --- check generated trace ----------------------------------------------
@@ -63,11 +69,13 @@ fn bitwise_and() {
 #[expect(clippy::needless_range_loop)]
 fn bitwise_xor() {
     let mut bitwise = Bitwise::new();
+    let program = MastForest::default();
+    let err_ctx = ErrorContext::new(&program, 0.into());
 
     let a = rand_u32();
     let b = rand_u32();
 
-    let result = bitwise.u32xor(a, b, &()).unwrap();
+    let result = bitwise.u32xor(a, b, &err_ctx, RowIndex::from(0)).unwrap();
     assert_eq!(a.as_int() ^ b.as_int(), result.as_int());
 
     // --- check generated trace ----------------------------------------------
@@ -107,20 +115,22 @@ fn bitwise_xor() {
 #[expect(clippy::needless_range_loop)]
 fn bitwise_multiple() {
     let mut bitwise = Bitwise::new();
+    let program = MastForest::default();
+    let err_ctx = ErrorContext::new(&program, 0.into());
 
     let a = [rand_u32(), rand_u32(), rand_u32()];
     let b = [rand_u32(), rand_u32(), rand_u32()];
 
     // first operation: AND
-    let result0 = bitwise.u32and(a[0], b[0], &()).unwrap();
+    let result0 = bitwise.u32and(a[0], b[0], &err_ctx, RowIndex::from(0)).unwrap();
     assert_eq!(a[0].as_int() & b[0].as_int(), result0.as_int());
 
     // second operation: XOR
-    let result1 = bitwise.u32xor(a[1], b[1], &()).unwrap();
+    let result1 = bitwise.u32xor(a[1], b[1], &err_ctx, RowIndex::from(0)).unwrap();
     assert_eq!(a[1].as_int() ^ b[1].as_int(), result1.as_int());
 
     // third operation: AND
-    let result2 = bitwise.u32and(a[2], b[2], &()).unwrap();
+    let result2 = bitwise.u32and(a[2], b[2], &err_ctx, RowIndex::from(0)).unwrap();
     assert_eq!(a[2].as_int() & b[2].as_int(), result2.as_int());
 
     // --- check generated trace ----------------------------------------------

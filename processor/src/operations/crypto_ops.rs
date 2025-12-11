@@ -4,8 +4,8 @@ use miden_air::trace::{
 };
 use miden_core::mast::MastForest;
 
-use super::{ExecutionError, Operation, Process};
-use crate::{ErrorContext, Felt, Word, operations::utils::validate_dual_word_stream_addrs};
+use super::{Operation, Process};
+use crate::{Felt, OperationError, Word, operations::utils::validate_dual_word_stream_addrs};
 
 // CRYPTOGRAPHIC OPERATIONS
 // ================================================================================================
@@ -19,7 +19,7 @@ impl Process {
     ///
     /// Stack transition:
     /// [C, B, A, ...] -> [F, E, D, ...]
-    pub(super) fn op_hperm(&mut self) -> Result<(), ExecutionError> {
+    pub(super) fn op_hperm(&mut self) -> Result<(), OperationError> {
         let input_state = [
             self.stack.get(11),
             self.stack.get(10),
@@ -73,8 +73,7 @@ impl Process {
         &mut self,
         err_code: Felt,
         program: &MastForest,
-        err_ctx: &impl ErrorContext,
-    ) -> Result<(), ExecutionError> {
+    ) -> Result<(), OperationError> {
         // read node value, depth, index and root value from the stack
         let node =
             [self.stack.get(3), self.stack.get(2), self.stack.get(1), self.stack.get(0)].into();
@@ -85,10 +84,7 @@ impl Process {
 
         // get a Merkle path from the advice provider for the specified root and node index.
         // the path is expected to be of the specified depth.
-        let path = self
-            .advice
-            .get_merkle_path(root, depth, index)
-            .map_err(|err| ExecutionError::advice_error(err, self.system.clk(), err_ctx))?;
+        let path = self.advice.get_merkle_path(root, depth, index).map_err(OperationError::from)?;
 
         // use hasher to compute the Merkle root of the path
         let (addr, computed_root) = self.chiplets.hasher.build_merkle_root(node, &path, index);
@@ -101,9 +97,13 @@ impl Process {
             // If the hasher chiplet doesn't compute the same root (using the same path),
             // then it means that `node` is not the value currently in the tree at `index`
             let err_msg = program.resolve_error_message(err_code);
-            return Err(ExecutionError::merkle_path_verification_failed(
-                node, index, root, err_code, err_msg, err_ctx,
-            ));
+            return Err(OperationError::MerklePathVerificationFailed {
+                value: node,
+                index,
+                root,
+                err_code,
+                err_msg,
+            });
         }
 
         // The same state is copied over to the next clock cycle with no changes.
@@ -144,10 +144,7 @@ impl Process {
     ///
     /// # Panics
     /// Panics if the computed old root does not match the input root provided via the stack.
-    pub(super) fn op_mrupdate(
-        &mut self,
-        err_ctx: &impl ErrorContext,
-    ) -> Result<(), ExecutionError> {
+    pub(super) fn op_mrupdate(&mut self) -> Result<(), OperationError> {
         // read old node value, depth, index, tree root and new node values from the stack
         let old_node =
             [self.stack.get(3), self.stack.get(2), self.stack.get(1), self.stack.get(0)].into();
@@ -165,7 +162,7 @@ impl Process {
         let (path, _) = self
             .advice
             .update_merkle_node(old_root, depth, index, new_node)
-            .map_err(|err| ExecutionError::advice_error(err, self.system.clk(), err_ctx))?;
+            .map_err(OperationError::from)?;
 
         assert_eq!(path.len(), depth.as_int() as usize);
 
@@ -207,10 +204,7 @@ impl Process {
     /// Stack transition:
     /// [rate(8), cap(4), src_ptr, dst_ptr, ...] -> [ciphertext(8), cap(4), src_ptr+8, dst_ptr+8,
     /// ...]
-    pub(super) fn op_crypto_stream(
-        &mut self,
-        err_ctx: &impl ErrorContext,
-    ) -> Result<(), ExecutionError> {
+    pub(super) fn op_crypto_stream(&mut self) -> Result<(), OperationError> {
         const WORD_SIZE_FELT: Felt = Felt::new(4);
         const DOUBLE_WORD_SIZE: Felt = Felt::new(8);
 
@@ -226,20 +220,20 @@ impl Process {
         let dst_addr = self.stack.get(DST_PTR_IDX);
 
         // Validate address ranges and check for overlap
-        validate_dual_word_stream_addrs(src_addr, dst_addr, ctx, clk, err_ctx)?;
+        validate_dual_word_stream_addrs(src_addr, dst_addr, ctx, clk)?;
 
         // Load plaintext from source memory (2 words = 8 elements)
         let src_addr_word2 = src_addr + WORD_SIZE_FELT;
         let plaintext_word1 = self
             .chiplets
             .memory
-            .read_word(ctx, src_addr, clk, err_ctx)
-            .map_err(ExecutionError::MemoryError)?;
+            .read_word(ctx, src_addr, clk)
+            .map_err(OperationError::from)?;
         let plaintext_word2 = self
             .chiplets
             .memory
-            .read_word(ctx, src_addr_word2, clk, err_ctx)
-            .map_err(ExecutionError::MemoryError)?;
+            .read_word(ctx, src_addr_word2, clk)
+            .map_err(OperationError::from)?;
 
         // Get rate (keystream) from stack[0..7]
         let rate = [
@@ -271,12 +265,12 @@ impl Process {
         let dst_addr_word2 = dst_addr + WORD_SIZE_FELT;
         self.chiplets
             .memory
-            .write_word(ctx, dst_addr, clk, ciphertext_word1.into(), err_ctx)
-            .map_err(ExecutionError::MemoryError)?;
+            .write_word(ctx, dst_addr, clk, ciphertext_word1.into())
+            .map_err(OperationError::from)?;
         self.chiplets
             .memory
-            .write_word(ctx, dst_addr_word2, clk, ciphertext_word2.into(), err_ctx)
-            .map_err(ExecutionError::MemoryError)?;
+            .write_word(ctx, dst_addr_word2, clk, ciphertext_word2.into())
+            .map_err(OperationError::from)?;
 
         // Update stack[0..7] with ciphertext (becomes new rate for next hperm)
         // Stack order is reversed: stack[0] = top
@@ -319,7 +313,7 @@ impl Process {
     ///   registers.
     /// - The VM stack stores each 4-element word in reverse element order, so the top of the stack
     ///   exposes the elements of `R1` first, followed by the elements of `R0`, then `CAP_NEXT`.
-    pub(super) fn op_log_precompile(&mut self) -> Result<(), ExecutionError> {
+    pub(super) fn op_log_precompile(&mut self) -> Result<(), OperationError> {
         // Read TAG and COMM from stack, and CAP_PREV from the processor state
         let comm = self.stack.get_word(0);
         let tag = self.stack.get_word(4);

@@ -2,10 +2,9 @@ use miden_air::trace::decoder::NUM_USER_OP_HELPERS;
 use miden_core::{Felt, FieldElement, ONE, ZERO};
 
 use crate::{
-    ErrorContext, ExecutionError,
+    OperationError,
     fast::Tracer,
-    operations::utils::assert_binary,
-    processor::{OperationHelperRegisters, Processor, StackInterface, SystemInterface},
+    processor::{OperationHelperRegisters, Processor, StackInterface},
 };
 
 /// Pops two elements off the stack, adds them together, and pushes the result back onto the
@@ -36,13 +35,10 @@ pub(super) fn op_mul<P: Processor>(processor: &mut P, tracer: &mut impl Tracer) 
 /// # Errors
 /// Returns an error if the value on the top of the stack is ZERO.
 #[inline(always)]
-pub(super) fn op_inv<P: Processor>(
-    processor: &mut P,
-    err_ctx: &impl ErrorContext,
-) -> Result<(), ExecutionError> {
+pub(super) fn op_inv<P: Processor>(processor: &mut P) -> Result<(), OperationError> {
     let top = processor.stack().get_mut(0);
     if (*top) == ZERO {
-        return Err(ExecutionError::divide_by_zero(processor.system().clk(), err_ctx));
+        return Err(OperationError::DivideByZero);
     }
     *top = top.inv();
     Ok(())
@@ -63,14 +59,17 @@ pub(super) fn op_incr<P: Processor>(processor: &mut P) {
 #[inline(always)]
 pub(super) fn op_and<P: Processor>(
     processor: &mut P,
-    err_ctx: &impl ErrorContext,
     tracer: &mut impl Tracer,
-) -> Result<(), ExecutionError> {
+) -> Result<(), OperationError> {
     pop2_applyfn_push(
         processor,
         |a, b| {
-            assert_binary(b, err_ctx)?;
-            assert_binary(a, err_ctx)?;
+            if b != ZERO && b != ONE {
+                return Err(OperationError::NotBinaryValueOp { value: b });
+            }
+            if a != ZERO && a != ONE {
+                return Err(OperationError::NotBinaryValueOp { value: a });
+            }
 
             if a == ONE && b == ONE { Ok(ONE) } else { Ok(ZERO) }
         },
@@ -87,14 +86,17 @@ pub(super) fn op_and<P: Processor>(
 #[inline(always)]
 pub(super) fn op_or<P: Processor>(
     processor: &mut P,
-    err_ctx: &impl ErrorContext,
     tracer: &mut impl Tracer,
-) -> Result<(), ExecutionError> {
+) -> Result<(), OperationError> {
     pop2_applyfn_push(
         processor,
         |a, b| {
-            assert_binary(b, err_ctx)?;
-            assert_binary(a, err_ctx)?;
+            if b != ZERO && b != ONE {
+                return Err(OperationError::NotBinaryValueOp { value: b });
+            }
+            if a != ZERO && a != ONE {
+                return Err(OperationError::NotBinaryValueOp { value: a });
+            }
 
             if a == ONE || b == ONE { Ok(ONE) } else { Ok(ZERO) }
         },
@@ -108,17 +110,14 @@ pub(super) fn op_or<P: Processor>(
 /// # Errors
 /// Returns an error if the value on the top of the stack is not a binary value.
 #[inline(always)]
-pub(super) fn op_not<P: Processor>(
-    processor: &mut P,
-    err_ctx: &impl ErrorContext,
-) -> Result<(), ExecutionError> {
+pub(super) fn op_not<P: Processor>(processor: &mut P) -> Result<(), OperationError> {
     let top = processor.stack().get_mut(0);
     if *top == ZERO {
         *top = ONE;
     } else if *top == ONE {
         *top = ZERO;
     } else {
-        return Err(ExecutionError::not_binary_value_op(*top, err_ctx));
+        return Err(OperationError::NotBinaryValueOp { value: *top });
     }
     Ok(())
 }
@@ -129,7 +128,7 @@ pub(super) fn op_not<P: Processor>(
 pub(super) fn op_eq<P: Processor>(
     processor: &mut P,
     tracer: &mut impl Tracer,
-) -> Result<[Felt; NUM_USER_OP_HELPERS], ExecutionError> {
+) -> Result<[Felt; NUM_USER_OP_HELPERS], OperationError> {
     let b = processor.stack().get(0);
     let a = processor.stack().get(1);
 
@@ -236,9 +235,9 @@ pub(super) fn op_ext2mul<P: Processor>(processor: &mut P) {
 #[inline(always)]
 fn pop2_applyfn_push<P: Processor>(
     processor: &mut P,
-    f: impl FnOnce(Felt, Felt) -> Result<Felt, ExecutionError>,
+    f: impl FnOnce(Felt, Felt) -> Result<Felt, OperationError>,
     tracer: &mut impl Tracer,
-) -> Result<(), ExecutionError> {
+) -> Result<(), OperationError> {
     let b = processor.stack().get(0);
     let a = processor.stack().get(1);
 

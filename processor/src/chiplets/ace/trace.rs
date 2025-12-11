@@ -1,4 +1,4 @@
-use alloc::vec::Vec;
+use alloc::{boxed::Box, vec::Vec};
 use core::ops::Range;
 
 use miden_air::{
@@ -12,7 +12,7 @@ use miden_air::{
 use miden_core::{Felt, FieldElement, QuadFelt, Word};
 
 use crate::{
-    ContextId, ExecutionError,
+    ContextId, ExecutionError, OperationError,
     chiplets::ace::{
         MAX_NUM_ACE_WIRES,
         instruction::{Op, decode_instruction},
@@ -118,23 +118,26 @@ impl CircuitEvaluation {
         &mut self,
         ptr: Felt,
         instruction: Felt,
-        err_ctx: &impl ErrorContext,
+        _err_ctx: &ErrorContext,
     ) -> Result<(), ExecutionError> {
         // Decode instruction, ensuring it is valid
         let (id_l, id_r, op) = decode_instruction(instruction).ok_or_else(|| {
-            ExecutionError::failed_arithmetic_evaluation(err_ctx, AceError::FailedDecodeInstruction)
+            let op_err = OperationError::AceChipError { error: AceError::FailedDecodeInstruction };
+            ExecutionError::OperationErrorNoContext { clk: self.clk, err: Box::new(op_err) }
         })?;
 
         // Read value of id_l from wire bus, increasing its multiplicity
         let v_l = self.wire_bus.read_value(id_l).ok_or_else(|| {
-            ExecutionError::failed_arithmetic_evaluation(err_ctx, AceError::FailedWireBusRead)
+            let op_err = OperationError::AceChipError { error: AceError::FailedWireBusRead };
+            ExecutionError::OperationErrorNoContext { clk: self.clk, err: Box::new(op_err) }
         })?;
         let id_l = Felt::from(id_l);
         self.col_wire_left.push(id_l, v_l);
 
         // Read value of id_r from wire bus, increasing its multiplicity
         let v_r = self.wire_bus.read_value(id_r).ok_or_else(|| {
-            ExecutionError::failed_arithmetic_evaluation(err_ctx, AceError::FailedWireBusRead)
+            let op_err = OperationError::AceChipError { error: AceError::FailedWireBusRead };
+            ExecutionError::OperationErrorNoContext { clk: self.clk, err: Box::new(op_err) }
         })?;
         let id_r = Felt::from(id_r);
         self.col_wire_right.push(id_r, v_r);

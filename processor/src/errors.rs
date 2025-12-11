@@ -1,7 +1,61 @@
 // Allow unused assignments - required by miette::Diagnostic derive macro
 #![allow(unused_assignments)]
 
-use alloc::{string::String, sync::Arc, vec::Vec};
+//! # Error Architecture
+//!
+//! This module implements a two-tier error boundary pattern that separates "what went wrong"
+//! (logical error semantics) from "where it went wrong" (diagnostic source context).
+//!
+//! ## Error Types
+//!
+//! - **[`OperationError`]**: Context-free errors from operations. Contains runtime data (clock
+//!   cycles, values, addresses) but NO source locations. Returned by all operation implementations.
+//!
+//! - **[`ExecutionError`]**: User-facing errors with source spans and file references. Either wraps
+//!   an `OperationError` with source context via the `OperationError` variant, or represents
+//!   program-level errors (e.g., `CycleLimitExceeded`, `ProgramAlreadyExecuted`).
+//!
+//! ## Design Principles
+//!
+//! 1. **Operations return `OperationError`** - No error context threading through signatures. Each
+//!    operation implementation is context-free and focuses purely on the error condition.
+//!
+//! 2. **Boundaries wrap with context** - Error context is added at boundaries where it's available
+//!    (decoders, fast processor, basic block executors) using the `ErrorContext` struct and
+//!    `OperationResultExt` trait.
+//!
+//! 3. **Errors propagate naturally** - No intermediate rewrapping. When a dyncall or call fails
+//!    during callee execution, the error bubbles up with its original source context preserved,
+//!    pointing to the actual failing instruction, not the call site.
+//!
+//! 4. **Subsystem errors appear in `OperationError` only** - Errors from chiplets ([`MemoryError`],
+//!    [`AceError`]) are wrapped in `OperationError` at chiplet boundaries, then wrapped again in
+//!    `ExecutionError` at operation boundaries. This creates a consistent error chain without
+//!    ambiguity.
+//!
+//! ## Example Flow
+//!
+//! ```text
+//! // 1. Operation (context-free)
+//! fn op_u32add(&mut self) -> Result<(), OperationError> {
+//!     if !is_valid {
+//!         return Err(OperationError::NotU32Values { values, err_code });
+//!     }
+//!     Ok(())
+//! }
+//!
+//! // 2. Boundary (adds context)
+//! let ctx = ErrorContext::with_op(program, node_id, op_idx);
+//! self.execute_op(op)
+//!     .map_exec_err(&ctx, host, self.clk)?;
+//! ```
+//!
+//! ## Error Context Feature Flag
+//!
+//! The `no_err_ctx` feature flag allows compile-time elimination of error context for
+//! performance-critical builds. When enabled, error context operations become no-ops.
+
+use alloc::{boxed::Box, sync::Arc, vec::Vec};
 
 use miden_air::RowIndex;
 use miden_core::{
@@ -24,24 +78,24 @@ use crate::{
 
 #[derive(Debug, thiserror::Error, Diagnostic)]
 pub enum ExecutionError {
-    #[error("advice provider error at clock cycle {clk}")]
-    #[diagnostic()]
-    AdviceError {
-        #[label]
-        label: SourceSpan,
-        #[source_code]
-        source_file: Option<Arc<SourceFile>>,
-        clk: RowIndex,
-        #[source]
-        #[diagnostic_source]
-        err: AdviceError,
-    },
-    #[error("external node with mast root {0} resolved to an external node")]
-    CircularExternalNode(Word),
     #[error("exceeded the allowed number of max cycles {0}")]
     CycleLimitExceeded(u32),
-    #[error("decorator id {decorator_id} does not exist in MAST forest")]
-    DecoratorNotFoundInForest { decorator_id: DecoratorId },
+    #[error("attempted to add event handler for '{event}' (already registered)")]
+    DuplicateEventHandler { event: EventName },
+    #[error("attempted to add event handler for '{event}' (reserved system event)")]
+    ReservedEventNamespace { event: EventName },
+    #[error("failed to execute the program for internal reason: {0}")]
+    FailedToExecuteProgram(&'static str),
+    #[error("stack should have at most {MIN_STACK_DEPTH} elements at the end of program execution, but had {} elements", MIN_STACK_DEPTH + .0)]
+    OutputStackOverflow(usize),
+    #[error("a program has already been executed in this process")]
+    ProgramAlreadyExecuted,
+    #[error("failed to initialize the program")]
+    ProgramInitializationFailed,
+    #[error("proof generation failed")]
+    ProverError(#[source] ProverError),
+    #[error("execution yielded unexpected precompiles")]
+    UnexpectedPrecompiles,
     #[error("debug handler error at clock cycle {clk}: {err}")]
     DebugHandlerError {
         clk: RowIndex,
@@ -55,125 +109,96 @@ pub enum ExecutionError {
         #[source]
         err: TraceError,
     },
-    #[error("division by zero at clock cycle {clk}")]
+    #[error("operation error at clock cycle {clk}")]
     #[diagnostic()]
-    DivideByZero {
+    OperationError {
+        clk: RowIndex,
         #[label]
         label: SourceSpan,
         #[source_code]
         source_file: Option<Arc<SourceFile>>,
-        clk: RowIndex,
+        #[source]
+        err: Box<OperationError>,
     },
+    #[error("operation error at clock cycle {clk} (source location unavailable)")]
+    #[diagnostic(help(
+        "this error occurred during execution, but source location information is not available. This typically happens when loading external MAST forests without debug information"
+    ))]
+    OperationErrorNoContext {
+        clk: RowIndex,
+        #[source]
+        err: Box<OperationError>,
+    },
+}
+
+impl AsRef<dyn Diagnostic> for ExecutionError {
+    fn as_ref(&self) -> &(dyn Diagnostic + 'static) {
+        self
+    }
+}
+
+// OPERATION ERROR
+// ================================================================================================
+
+#[derive(Debug, thiserror::Error, Diagnostic)]
+pub enum OperationError {
+    #[error("advice provider error")]
+    #[diagnostic(transparent)]
+    AdviceError(
+        #[from]
+        #[source]
+        #[diagnostic_source]
+        AdviceError,
+    ),
+    #[error("failed to execute the program for internal reason: {0}")]
+    FailedToExecuteProgram(&'static str),
+    #[error("division by zero")]
+    #[diagnostic()]
+    DivideByZero,
     #[error("failed to execute the dynamic code block provided by the stack with root {hex}; the block could not be found",
       hex = .digest.to_hex()
     )]
     #[diagnostic()]
-    DynamicNodeNotFound {
-        #[label]
-        label: SourceSpan,
-        #[source_code]
-        source_file: Option<Arc<SourceFile>>,
-        digest: Word,
-    },
+    DynamicNodeNotFound { digest: Word },
     #[error("error during processing of event {}", match event_name {
         Some(name) => format!("'{}' (ID: {})", name, event_id),
         None => format!("with ID: {}", event_id),
     })]
     #[diagnostic()]
     EventError {
-        #[label]
-        label: SourceSpan,
-        #[source_code]
-        source_file: Option<Arc<SourceFile>>,
         event_id: EventId,
         event_name: Option<EventName>,
         #[source]
         error: EventError,
     },
-    #[error("attempted to add event handler for '{event}' (already registered)")]
-    DuplicateEventHandler { event: EventName },
-    #[error("attempted to add event handler for '{event}' (reserved system event)")]
-    ReservedEventNamespace { event: EventName },
-    #[error("assertion failed at clock cycle {clk} with error {}{}",
+    #[error("assertion failed with error {}{}",
       match err_msg {
         Some(msg) => format!("message: {msg}"),
         None => format!("code: {err_code}"),
       },
       match err {
         Some(err) => format!(" (host error: {err})"),
-        None => String::new(),
+        None => alloc::string::String::new(),
       }
     )]
     #[diagnostic()]
     FailedAssertion {
-        #[label]
-        label: SourceSpan,
-        #[source_code]
-        source_file: Option<Arc<SourceFile>>,
-        clk: RowIndex,
         err_code: Felt,
         err_msg: Option<Arc<str>>,
         #[source]
         err: Option<AssertError>,
     },
-    #[error("failed to execute the program for internal reason: {0}")]
-    FailedToExecuteProgram(&'static str),
-    #[error("FRI domain segment value cannot exceed 3, but was {0}")]
-    InvalidFriDomainSegment(u64),
-    #[error("degree-respecting projection is inconsistent: expected {0} but was {1}")]
-    InvalidFriLayerFolding(QuadFelt, QuadFelt),
     #[error(
         "when returning from a call or dyncall, stack depth must be {MIN_STACK_DEPTH}, but was {depth}"
     )]
     #[diagnostic()]
-    InvalidStackDepthOnReturn {
-        #[label("when returning from this call site")]
-        label: SourceSpan,
-        #[source_code]
-        source_file: Option<Arc<SourceFile>>,
-        depth: usize,
-    },
-    #[error("attempted to calculate integer logarithm with zero argument at clock cycle {clk}")]
+    InvalidStackDepthOnReturn { depth: usize },
+    #[error("attempted to calculate integer logarithm with zero argument")]
     #[diagnostic()]
-    LogArgumentZero {
-        #[label]
-        label: SourceSpan,
-        #[source_code]
-        source_file: Option<Arc<SourceFile>>,
-        clk: RowIndex,
-    },
+    LogArgumentZero,
     #[error("malformed signature key: {key_type}")]
     #[diagnostic(help("the secret key associated with the provided public key is malformed"))]
-    MalformedSignatureKey {
-        #[label]
-        label: SourceSpan,
-        #[source_code]
-        source_file: Option<Arc<SourceFile>>,
-        key_type: &'static str,
-    },
-    #[error(
-        "MAST forest in host indexed by procedure root {root_digest} doesn't contain that root"
-    )]
-    MalformedMastForestInHost {
-        #[label]
-        label: SourceSpan,
-        #[source_code]
-        source_file: Option<Arc<SourceFile>>,
-        root_digest: Word,
-    },
-    #[error("node id {node_id} does not exist in MAST forest")]
-    MastNodeNotFoundInForest { node_id: MastNodeId },
-    #[error(transparent)]
-    #[diagnostic(transparent)]
-    MemoryError(MemoryError),
-    #[error("no MAST forest contains the procedure with root digest {root_digest}")]
-    NoMastForestWithProcedure {
-        #[label]
-        label: SourceSpan,
-        #[source_code]
-        source_file: Option<Arc<SourceFile>>,
-        root_digest: Word,
-    },
+    MalformedSignatureKey { key_type: &'static str },
     #[error("merkle path verification failed for value {value} at index {index} in the Merkle tree with root {root} (error {err})",
       value = to_hex(value.as_bytes()),
       root = to_hex(root.as_bytes()),
@@ -183,10 +208,6 @@ pub enum ExecutionError {
       }
     )]
     MerklePathVerificationFailed {
-        #[label]
-        label: SourceSpan,
-        #[source_code]
-        source_file: Option<Arc<SourceFile>>,
         value: Word,
         index: Felt,
         root: Word,
@@ -195,292 +216,69 @@ pub enum ExecutionError {
     },
     #[error("if statement expected a binary value on top of the stack, but got {value}")]
     #[diagnostic()]
-    NotBinaryValueIf {
-        #[label]
-        label: SourceSpan,
-        #[source_code]
-        source_file: Option<Arc<SourceFile>>,
-        value: Felt,
-    },
+    NotBinaryValueIf { value: Felt },
     #[error("operation expected a binary value, but got {value}")]
     #[diagnostic()]
-    NotBinaryValueOp {
-        #[label]
-        label: SourceSpan,
-        #[source_code]
-        source_file: Option<Arc<SourceFile>>,
-        value: Felt,
-    },
+    NotBinaryValueOp { value: Felt },
     #[error("loop condition must be a binary value, but got {value}")]
     #[diagnostic(help(
         "this could happen either when first entering the loop, or any subsequent iteration"
     ))]
-    NotBinaryValueLoop {
-        #[label]
-        label: SourceSpan,
-        #[source_code]
-        source_file: Option<Arc<SourceFile>>,
-        value: Felt,
-    },
+    NotBinaryValueLoop { value: Felt },
     #[error("operation expected u32 values, but got values: {values:?} (error code: {err_code})")]
-    NotU32Values {
-        #[label]
-        label: SourceSpan,
-        #[source_code]
-        source_file: Option<Arc<SourceFile>>,
-        values: Vec<Felt>,
-        err_code: Felt,
-    },
-    #[error(
-        "Operand stack input is {input} but it is expected to fit in a u32 at clock cycle {clk}"
-    )]
+    NotU32Values { values: Vec<Felt>, err_code: Felt },
+    #[error("Operand stack input is {input} but it is expected to fit in a u32")]
     #[diagnostic()]
-    NotU32StackValue {
-        #[label]
-        label: SourceSpan,
-        #[source_code]
-        source_file: Option<Arc<SourceFile>>,
-        clk: RowIndex,
-        input: u64,
-    },
-    #[error("stack should have at most {MIN_STACK_DEPTH} elements at the end of program execution, but had {} elements", MIN_STACK_DEPTH + .0)]
-    OutputStackOverflow(usize),
-    #[error("a program has already been executed in this process")]
-    ProgramAlreadyExecuted,
-    #[error("proof generation failed")]
-    ProverError(#[source] ProverError),
+    NotU32StackValue { input: u64 },
     #[error("smt node {node_hex} not found", node_hex = to_hex(node.as_bytes()))]
-    SmtNodeNotFound {
-        #[label]
-        label: SourceSpan,
-        #[source_code]
-        source_file: Option<Arc<SourceFile>>,
-        node: Word,
-    },
+    SmtNodeNotFound { node: Word },
     #[error("expected pre-image length of node {node_hex} to be a multiple of 8 but was {preimage_len}",
       node_hex = to_hex(node.as_bytes()),
     )]
-    SmtNodePreImageNotValid {
-        #[label]
-        label: SourceSpan,
-        #[source_code]
-        source_file: Option<Arc<SourceFile>>,
-        node: Word,
-        preimage_len: usize,
-    },
+    SmtNodePreImageNotValid { node: Word, preimage_len: usize },
+    #[error("stack overflow")]
+    #[diagnostic()]
+    StackOverflow,
     #[error("syscall failed: procedure with root {hex} was not found in the kernel",
       hex = to_hex(proc_root.as_bytes())
     )]
-    SyscallTargetNotInKernel {
-        #[label]
-        label: SourceSpan,
-        #[source_code]
-        source_file: Option<Arc<SourceFile>>,
-        proc_root: Word,
-    },
+    SyscallTargetNotInKernel { proc_root: Word },
     #[error("failed to execute arithmetic circuit evaluation operation: {error}")]
     #[diagnostic()]
-    AceChipError {
-        #[label("this call failed")]
-        label: SourceSpan,
-        #[source_code]
-        source_file: Option<Arc<SourceFile>>,
-        error: AceError,
-    },
-    #[error("execution yielded unexpected precompiles")]
-    UnexpectedPrecompiles,
+    AceChipError { error: AceError },
+    #[error(transparent)]
+    #[diagnostic(transparent)]
+    MemoryError(#[from] MemoryError),
     #[error(
-        "invalid crypto operation: Merkle path length {path_len} does not match expected depth {depth} at clock cycle {clk}"
+        "invalid crypto operation: Merkle path length {path_len} does not match expected depth {depth}"
     )]
     #[diagnostic()]
-    InvalidCryptoInput {
-        #[label]
-        label: SourceSpan,
-        #[source_code]
-        source_file: Option<Arc<SourceFile>>,
-        clk: RowIndex,
-        path_len: usize,
-        depth: Felt,
-    },
-}
-
-impl ExecutionError {
-    pub fn advice_error(
-        err: AdviceError,
-        clk: RowIndex,
-        err_ctx: &impl ErrorContext,
-    ) -> ExecutionError {
-        let (label, source_file) = err_ctx.label_and_source_file();
-        ExecutionError::AdviceError { label, source_file, err, clk }
-    }
-
-    pub fn divide_by_zero(clk: RowIndex, err_ctx: &impl ErrorContext) -> Self {
-        let (label, source_file) = err_ctx.label_and_source_file();
-        Self::DivideByZero { clk, label, source_file }
-    }
-
-    pub fn input_not_u32(clk: RowIndex, input: u64, err_ctx: &impl ErrorContext) -> Self {
-        let (label, source_file) = err_ctx.label_and_source_file();
-        Self::NotU32StackValue { clk, input, label, source_file }
-    }
-
-    pub fn dynamic_node_not_found(digest: Word, err_ctx: &impl ErrorContext) -> Self {
-        let (label, source_file) = err_ctx.label_and_source_file();
-
-        Self::DynamicNodeNotFound { label, source_file, digest }
-    }
-
-    pub fn event_error(
-        error: EventError,
-        event_id: EventId,
-        event_name: Option<EventName>,
-        err_ctx: &impl ErrorContext,
-    ) -> Self {
-        let (label, source_file) = err_ctx.label_and_source_file();
-
-        Self::EventError {
-            label,
-            source_file,
-            event_id,
-            event_name,
-            error,
-        }
-    }
-
-    pub fn failed_assertion(
-        clk: RowIndex,
-        err_code: Felt,
-        err_msg: Option<Arc<str>>,
-        err: Option<AssertError>,
-        err_ctx: &impl ErrorContext,
-    ) -> Self {
-        let (label, source_file) = err_ctx.label_and_source_file();
-
-        Self::FailedAssertion {
-            label,
-            source_file,
-            clk,
-            err_code,
-            err_msg,
-            err,
-        }
-    }
-
-    pub fn invalid_stack_depth_on_return(depth: usize, err_ctx: &impl ErrorContext) -> Self {
-        let (label, source_file) = err_ctx.label_and_source_file();
-        Self::InvalidStackDepthOnReturn { label, source_file, depth }
-    }
-
-    pub fn log_argument_zero(clk: RowIndex, err_ctx: &impl ErrorContext) -> Self {
-        let (label, source_file) = err_ctx.label_and_source_file();
-        Self::LogArgumentZero { label, source_file, clk }
-    }
-
-    pub fn malfored_mast_forest_in_host(root_digest: Word, err_ctx: &impl ErrorContext) -> Self {
-        let (label, source_file) = err_ctx.label_and_source_file();
-        Self::MalformedMastForestInHost { label, source_file, root_digest }
-    }
-
-    pub fn malformed_signature_key(key_type: &'static str, err_ctx: &impl ErrorContext) -> Self {
-        let (label, source_file) = err_ctx.label_and_source_file();
-        Self::MalformedSignatureKey { label, source_file, key_type }
-    }
-
-    pub fn merkle_path_verification_failed(
-        value: Word,
-        index: Felt,
-        root: Word,
-        err_code: Felt,
-        err_msg: Option<Arc<str>>,
-        err_ctx: &impl ErrorContext,
-    ) -> Self {
-        let (label, source_file) = err_ctx.label_and_source_file();
-
-        Self::MerklePathVerificationFailed {
-            label,
-            source_file,
-            value,
-            index,
-            root,
-            err_code,
-            err_msg,
-        }
-    }
-
-    pub fn no_mast_forest_with_procedure(root_digest: Word, err_ctx: &impl ErrorContext) -> Self {
-        let (label, source_file) = err_ctx.label_and_source_file();
-        Self::NoMastForestWithProcedure { label, source_file, root_digest }
-    }
-
-    pub fn not_binary_value_if(value: Felt, err_ctx: &impl ErrorContext) -> Self {
-        let (label, source_file) = err_ctx.label_and_source_file();
-        Self::NotBinaryValueIf { label, source_file, value }
-    }
-
-    pub fn not_binary_value_op(value: Felt, err_ctx: &impl ErrorContext) -> Self {
-        let (label, source_file) = err_ctx.label_and_source_file();
-        Self::NotBinaryValueOp { label, source_file, value }
-    }
-
-    pub fn not_binary_value_loop(value: Felt, err_ctx: &impl ErrorContext) -> Self {
-        let (label, source_file) = err_ctx.label_and_source_file();
-        Self::NotBinaryValueLoop { label, source_file, value }
-    }
-
-    pub fn not_u32_value(value: Felt, err_code: Felt, err_ctx: &impl ErrorContext) -> Self {
-        let (label, source_file) = err_ctx.label_and_source_file();
-        Self::NotU32Values {
-            label,
-            source_file,
-            values: vec![value],
-            err_code,
-        }
-    }
-
-    pub fn not_u32_values(values: Vec<Felt>, err_code: Felt, err_ctx: &impl ErrorContext) -> Self {
-        let (label, source_file) = err_ctx.label_and_source_file();
-        Self::NotU32Values { label, source_file, values, err_code }
-    }
-
-    pub fn smt_node_not_found(node: Word, err_ctx: &impl ErrorContext) -> Self {
-        let (label, source_file) = err_ctx.label_and_source_file();
-        Self::SmtNodeNotFound { label, source_file, node }
-    }
-
-    pub fn smt_node_preimage_not_valid(
-        node: Word,
-        preimage_len: usize,
-        err_ctx: &impl ErrorContext,
-    ) -> Self {
-        let (label, source_file) = err_ctx.label_and_source_file();
-        Self::SmtNodePreImageNotValid { label, source_file, node, preimage_len }
-    }
-
-    pub fn syscall_target_not_in_kernel(proc_root: Word, err_ctx: &impl ErrorContext) -> Self {
-        let (label, source_file) = err_ctx.label_and_source_file();
-        Self::SyscallTargetNotInKernel { label, source_file, proc_root }
-    }
-
-    pub fn failed_arithmetic_evaluation(err_ctx: &impl ErrorContext, error: AceError) -> Self {
-        let (label, source_file) = err_ctx.label_and_source_file();
-        Self::AceChipError { label, source_file, error }
-    }
-
-    pub fn invalid_crypto_input(
-        clk: RowIndex,
-        path_len: usize,
-        depth: Felt,
-        err_ctx: &impl ErrorContext,
-    ) -> Self {
-        let (label, source_file) = err_ctx.label_and_source_file();
-        Self::InvalidCryptoInput { label, source_file, clk, path_len, depth }
-    }
-}
-
-impl AsRef<dyn Diagnostic> for ExecutionError {
-    fn as_ref(&self) -> &(dyn Diagnostic + 'static) {
-        self
-    }
+    InvalidCryptoInput { path_len: usize, depth: Felt },
+    #[error("FRI domain segment value cannot exceed 3, but was {0}")]
+    InvalidFriDomainSegment(u64),
+    #[error("degree-respecting projection is inconsistent: expected {0} but was {1}")]
+    InvalidFriLayerFolding(QuadFelt, QuadFelt),
+    #[error("external node with mast root {0} resolved to an external node")]
+    CircularExternalNode(Word),
+    #[error("decorator id {decorator_id} does not exist in MAST forest")]
+    DecoratorNotFoundInForest { decorator_id: DecoratorId },
+    #[error("node id {node_id} does not exist in MAST forest")]
+    MastNodeNotFoundInForest { node_id: MastNodeId },
+    #[error("no MAST forest contains the procedure with root digest {root_digest}")]
+    NoMastForestWithProcedure { root_digest: Word },
+    #[error(
+        "MAST forest in host indexed by procedure root {root_digest} doesn't contain that root"
+    )]
+    MalformedMastForestInHost { root_digest: Word },
+    #[error("exceeded the allowed number of max cycles {max_cycles}")]
+    CycleLimitExceeded { max_cycles: u32 },
+    #[error("decorator execution error")]
+    #[diagnostic(transparent)]
+    DecoErr(
+        #[source]
+        #[diagnostic_source]
+        Box<ExecutionError>,
+    ),
 }
 
 // ACE ERROR
@@ -507,105 +305,177 @@ pub enum AceError {
 // ERROR CONTEXT
 // ===============================================================================================
 
-/// Constructs an error context for the given node in the MAST forest.
+/// Lightweight error context handle for lazy source location resolution.
 ///
-/// When the `no_err_ctx` feature is disabled, this macro returns a proper error context; otherwise,
-/// it returns `()`. That is, this macro is designed to be zero-cost when the `no_err_ctx` feature
-/// is enabled.
+/// This struct stores only references and scalars needed to resolve error context later (in the
+/// error path). This avoids the cost of MAST traversal and host lookups on the hot success path.
 ///
-/// Usage:
-/// - `err_ctx!(mast_forest, node, source_manager)` - creates basic error context
-/// - `err_ctx!(mast_forest, node, source_manager, op_idx)` - creates error context with operation
-///   index
+/// # Performance
+///
+/// - **Construction**: Nearly free - just stores pointers and scalars (no MAST walk, no host calls)
+/// - **Resolution**: Only happens inside `.map_err()` closure when error actually occurs
+///
+/// # Feature Flags
+///
+/// When `no_err_ctx` is enabled, this struct collapses to zero-cost.
 #[cfg(not(feature = "no_err_ctx"))]
-#[macro_export]
-macro_rules! err_ctx {
-    ($mast_forest:expr, $node:expr, $host:expr) => {
-        $crate::errors::ErrorContextImpl::new($mast_forest, $node, $host)
-    };
-    ($mast_forest:expr, $node:expr, $host:expr, $op_idx:expr) => {
-        $crate::errors::ErrorContextImpl::new_with_op_idx($mast_forest, $node, $host, $op_idx)
-    };
+pub struct ErrorContext<'a> {
+    program: &'a MastForest,
+    node_id: MastNodeId,
+    op_idx: Option<usize>,
 }
 
-/// Constructs an error context for the given node in the MAST forest.
-///
-/// When the `no_err_ctx` feature is disabled, this macro returns a proper error context; otherwise,
-/// it returns `()`. That is, this macro is designed to be zero-cost when the `no_err_ctx` feature
-/// is enabled.
-///
-/// Usage:
-/// - `err_ctx!(mast_forest, node, source_manager)` - creates basic error context
-/// - `err_ctx!(mast_forest, node, source_manager, op_idx)` - creates error context with operation
-///   index
 #[cfg(feature = "no_err_ctx")]
-#[macro_export]
-macro_rules! err_ctx {
-    ($mast_forest:expr, $node:expr, $host:expr) => {{ () }};
-    ($mast_forest:expr, $node:expr, $host:expr, $op_idx:expr) => {{ () }};
+pub struct ErrorContext<'a> {
+    _phantom: core::marker::PhantomData<&'a ()>,
 }
 
-/// Trait defining the interface for error context providers.
-///
-/// This trait contains the same methods as `ErrorContext` to provide a common
-/// interface for error context functionality.
-pub trait ErrorContext {
-    /// Returns the label and source file associated with the error context, if any.
+#[cfg(not(feature = "no_err_ctx"))]
+impl<'a> ErrorContext<'a> {
+    /// Creates a new error context for a MAST node without a specific operation index.
+    pub fn new(program: &'a MastForest, node_id: MastNodeId) -> Self {
+        Self { program, node_id, op_idx: None }
+    }
+
+    /// Creates a new error context for a specific operation within a MAST node.
+    pub fn with_op(program: &'a MastForest, node_id: MastNodeId, op_idx: usize) -> Self {
+        Self { program, node_id, op_idx: Some(op_idx) }
+    }
+
+    /// Resolves the error context to a source span and file, if available.
     ///
-    /// Note that `SourceSpan::UNKNOWN` will be returned to indicate an empty span.
-    fn label_and_source_file(&self) -> (SourceSpan, Option<Arc<SourceFile>>);
-}
+    /// This is where the actual MAST traversal and host lookup happens.
+    pub fn resolve(&self, host: &impl BaseHost) -> Option<(SourceSpan, Option<Arc<SourceFile>>)> {
+        // Check if node_id is valid before calling get_assembly_op (which panics on invalid index)
+        let node_idx = u32::from(self.node_id) as usize;
+        if node_idx >= self.program.nodes().len() {
+            return None;
+        }
 
-/// Context information to be used when reporting errors.
-pub struct ErrorContextImpl {
-    label: SourceSpan,
-    source_file: Option<Arc<SourceFile>>,
-}
-
-impl ErrorContextImpl {
-    pub fn new(mast_forest: &MastForest, node_id: MastNodeId, host: &impl BaseHost) -> Self {
-        let (label, source_file) =
-            Self::precalc_label_and_source_file(None, mast_forest, node_id, host);
-        Self { label, source_file }
-    }
-
-    pub fn new_with_op_idx(
-        mast_forest: &MastForest,
-        node_id: MastNodeId,
-        host: &impl BaseHost,
-        op_idx: usize,
-    ) -> Self {
-        let op_idx = op_idx.into();
-        let (label, source_file) =
-            Self::precalc_label_and_source_file(op_idx, mast_forest, node_id, host);
-        Self { label, source_file }
-    }
-
-    fn precalc_label_and_source_file(
-        op_idx: Option<usize>,
-        mast_forest: &MastForest,
-        node_id: MastNodeId,
-        host: &impl BaseHost,
-    ) -> (SourceSpan, Option<Arc<SourceFile>>) {
-        mast_forest
-            .get_assembly_op(node_id, op_idx)
+        self.program
+            .get_assembly_op(self.node_id, self.op_idx)
             .and_then(|assembly_op| assembly_op.location())
-            .map_or_else(
-                || (SourceSpan::UNKNOWN, None),
-                |location| host.get_label_and_source_file(location),
-            )
+            .map(|location| host.get_label_and_source_file(location))
+    }
+
+    /// Converts an `OperationError` into an `ExecutionError` with source context.
+    pub fn into_exec_err(
+        &self,
+        host: &impl BaseHost,
+        err: OperationError,
+        clk: RowIndex,
+    ) -> ExecutionError {
+        match self.resolve(host) {
+            Some((label, source_file)) => ExecutionError::OperationError {
+                clk,
+                label,
+                source_file,
+                err: Box::new(err),
+            },
+            None => ExecutionError::OperationErrorNoContext { clk, err: Box::new(err) },
+        }
+    }
+
+    /// Enriches an existing `ExecutionError` with source context if it doesn't have any.
+    ///
+    /// This is used when an error propagates from a nested call and we want to preserve
+    /// the original error's context, or add context if it was missing.
+    pub fn enrich_exec_err(&self, host: &impl BaseHost, err: ExecutionError) -> ExecutionError {
+        // If the error already has context, return it unchanged
+        match err {
+            ExecutionError::OperationError { .. } => err,
+            ExecutionError::OperationErrorNoContext { clk, err: op_err } => {
+                // Try to add context if we can resolve it
+                match self.resolve(host) {
+                    Some((label, source_file)) => {
+                        ExecutionError::OperationError { clk, label, source_file, err: op_err }
+                    },
+                    None => ExecutionError::OperationErrorNoContext { clk, err: op_err },
+                }
+            },
+            // For all other error types, return unchanged
+            _ => err,
+        }
     }
 }
 
-impl ErrorContext for ErrorContextImpl {
-    fn label_and_source_file(&self) -> (SourceSpan, Option<Arc<SourceFile>>) {
-        (self.label, self.source_file.clone())
+#[cfg(feature = "no_err_ctx")]
+impl<'a> ErrorContext<'a> {
+    /// Creates a new error context (no-op when `no_err_ctx` is enabled).
+    pub fn new(_program: &'a MastForest, _node_id: MastNodeId) -> Self {
+        Self { _phantom: core::marker::PhantomData }
+    }
+
+    /// Creates a new error context with operation index (no-op when `no_err_ctx` is enabled).
+    pub fn with_op(_program: &'a MastForest, _node_id: MastNodeId, _op_idx: usize) -> Self {
+        Self { _phantom: core::marker::PhantomData }
+    }
+
+    /// Resolves the error context (returns None when `no_err_ctx` is enabled).
+    pub fn resolve(&self, _host: &impl BaseHost) -> Option<(SourceSpan, Option<Arc<SourceFile>>)> {
+        None
+    }
+
+    /// Converts an `OperationError` into an `ExecutionError` without context.
+    pub fn into_exec_err(
+        &self,
+        _host: &impl BaseHost,
+        err: OperationError,
+        clk: RowIndex,
+    ) -> ExecutionError {
+        ExecutionError::OperationErrorNoContext { clk, err: Box::new(err) }
+    }
+
+    /// Enriches an existing `ExecutionError` (no-op when `no_err_ctx` is enabled).
+    pub fn enrich_exec_err(&self, _host: &impl BaseHost, err: ExecutionError) -> ExecutionError {
+        err
     }
 }
 
-impl ErrorContext for () {
-    fn label_and_source_file(&self) -> (SourceSpan, Option<Arc<SourceFile>>) {
-        (SourceSpan::UNKNOWN, None)
+// OPERATION RESULT EXTENSION
+// ===============================================================================================
+
+/// Extension trait for `Result<T, OperationError>` to simplify conversion to `ExecutionError`.
+pub trait OperationResultExt<T> {
+    /// Converts `Result<T, OperationError>` to `Result<T, ExecutionError>` without context.
+    fn map_exec_err_no_ctx(self, clk: RowIndex) -> Result<T, ExecutionError>;
+
+    /// Converts `Result<T, OperationError>` to `Result<T, ExecutionError>` with context.
+    fn map_exec_err(
+        self,
+        err_ctx: &ErrorContext,
+        host: &impl BaseHost,
+        clk: RowIndex,
+    ) -> Result<T, ExecutionError>;
+}
+
+impl<T> OperationResultExt<T> for Result<T, OperationError> {
+    fn map_exec_err_no_ctx(self, clk: RowIndex) -> Result<T, ExecutionError> {
+        self.map_err(|err| ExecutionError::OperationErrorNoContext { clk, err: Box::new(err) })
+    }
+
+    fn map_exec_err(
+        self,
+        err_ctx: &ErrorContext,
+        host: &impl BaseHost,
+        clk: RowIndex,
+    ) -> Result<T, ExecutionError> {
+        self.map_err(|err| err_ctx.into_exec_err(host, err, clk))
+    }
+}
+
+impl OperationResultExt<()> for OperationError {
+    fn map_exec_err_no_ctx(self, clk: RowIndex) -> Result<(), ExecutionError> {
+        Err(ExecutionError::OperationErrorNoContext { clk, err: Box::new(self) })
+    }
+
+    fn map_exec_err(
+        self,
+        err_ctx: &ErrorContext,
+        host: &impl BaseHost,
+        clk: RowIndex,
+    ) -> Result<(), ExecutionError> {
+        Err(err_ctx.into_exec_err(host, self, clk))
     }
 }
 
@@ -620,6 +490,10 @@ mod error_assertions {
     fn _assert_error_is_send_sync_static<E: core::error::Error + Send + Sync + 'static>(_: E) {}
 
     fn _assert_execution_error_bounds(err: ExecutionError) {
+        _assert_error_is_send_sync_static(err);
+    }
+
+    fn _assert_operation_error_bounds(err: OperationError) {
         _assert_error_is_send_sync_static(err);
     }
 }
