@@ -265,8 +265,8 @@ fn test_decorator_storage_after_strip_decorators() {
     forest.strip_decorators();
 
     // Verify decorators are cleared from storage
-    assert!(forest.debug_info.op_decorator_storage().is_empty());
-    assert_eq!(forest.debug_info.op_decorator_storage().num_nodes(), 0);
+    // Note: CSR structure maintains node count but has no decorators
+    assert_eq!(forest.debug_info.op_decorator_storage().num_nodes(), 1);
     assert_eq!(forest.debug_info.op_decorator_storage().num_decorator_ids(), 0);
 
     // Verify block also has no decorators after stripping
@@ -1215,6 +1215,50 @@ fn test_commitment_caching() {
     let commitment7 = forest.commitment();
     // Since we didn't actually remove anything, commitment should still be the same
     assert_eq!(commitment3, commitment7);
+}
+
+#[test]
+fn test_strip_decorators_maintains_valid_structure() {
+    // Create a simple MastForest with decorators
+    let mut forest = MastForest::new();
+
+    // Create decorators
+    let deco1 = forest.add_decorator(Decorator::Trace(1)).unwrap();
+    let deco2 = forest.add_decorator(Decorator::Trace(2)).unwrap();
+
+    // Create operations
+    let operations =
+        vec![Operation::Push(Felt::new(1)), Operation::Add, Operation::Push(Felt::new(2))];
+
+    // Create decorators for specific operations
+    let decorators = vec![
+        (0, deco1), // Decorator at operation index 0
+        (2, deco2), // Decorator at operation index 2
+    ];
+
+    // Add block to forest
+    let block_id = BasicBlockNodeBuilder::new(operations, decorators)
+        .add_to_forest(&mut forest)
+        .unwrap();
+
+    // Verify decorators exist initially
+    let decorator_count_before = forest.debug_info.num_decorators();
+    assert!(decorator_count_before > 0, "Should have decorators before stripping");
+
+    // Strip decorators
+    forest.strip_decorators();
+
+    // Verify decorators were removed
+    let decorator_count_after = forest.debug_info.num_decorators();
+    assert_eq!(decorator_count_after, 0, "Should have no decorators after stripping");
+
+    // Access decorator links - should not panic, should return empty
+    let links: Vec<_> = forest.decorator_links_for_node(block_id).unwrap().into_iter().collect();
+    assert!(links.is_empty(), "Should have no decorator links after stripping");
+
+    // Also verify get_assembly_op doesn't panic
+    let assembly_op = forest.get_assembly_op(block_id, Some(0));
+    assert!(assembly_op.is_none(), "Should have no assembly op after stripping");
 }
 
 // HELPER FUNCTIONS

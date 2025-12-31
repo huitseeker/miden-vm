@@ -179,8 +179,8 @@ impl MastForest {
     /// forest.strip_decorators(); // forest is now stripped
     /// ```
     pub fn strip_decorators(&mut self) {
-        // Clear all debug info (decorators and error codes)
-        self.debug_info.clear();
+        // Replace debug info with empty but valid structure for current node count
+        self.debug_info = DebugInfo::empty_for_nodes(self.nodes.len());
     }
 
     /// Compacts the forest by merging duplicate nodes.
