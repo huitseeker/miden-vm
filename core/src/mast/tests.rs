@@ -243,39 +243,31 @@ fn test_decorator_storage_consistency_with_multiple_blocks() {
 fn test_decorator_storage_after_strip_decorators() {
     let mut forest = MastForest::new();
 
-    // Create decorators
     let deco1 = forest.add_decorator(Decorator::Trace(1)).unwrap();
     let deco2 = forest.add_decorator(Decorator::Trace(2)).unwrap();
 
-    // Create operations and decorators
     let operations = vec![Operation::Push(Felt::new(1)), Operation::Add];
     let decorators = vec![(0, deco1), (1, deco2)];
 
-    // Add block to forest
     let block_id = BasicBlockNodeBuilder::new(operations, decorators)
         .add_to_forest(&mut forest)
         .unwrap();
 
-    // Verify decorators exist initially
     assert!(!forest.debug_info.op_decorator_storage().is_empty());
     assert_eq!(forest.debug_info.op_decorator_storage().num_nodes(), 1);
     assert_eq!(forest.debug_info.op_decorator_storage().num_decorator_ids(), 2);
     assert_eq!(forest.debug_info.num_decorators(), 2);
 
-    // Strip decorators
     forest.strip_decorators();
 
-    // Verify CSR structure maintains node count but has no decorators
     assert_eq!(forest.debug_info.op_decorator_storage().num_nodes(), 1);
     assert_eq!(forest.debug_info.op_decorator_storage().num_decorator_ids(), 0);
     assert_eq!(forest.debug_info.num_decorators(), 0);
 
-    // Verify decorator access methods don't panic and return empty results
     let links: Vec<_> = forest.decorator_links_for_node(block_id).unwrap().into_iter().collect();
     assert!(links.is_empty());
     assert!(forest.get_assembly_op(block_id, Some(0)).is_none());
 
-    // Verify block iterator returns no decorators
     let block = if let crate::mast::MastNode::Block(block) = &forest[block_id] {
         block
     } else {
@@ -287,11 +279,8 @@ fn test_decorator_storage_after_strip_decorators() {
 #[test]
 fn test_strip_decorators_empty_forest() {
     let mut forest = MastForest::new();
-
-    // Strip decorators on empty forest should not panic
     forest.strip_decorators();
 
-    // Verify structure is valid
     assert_eq!(forest.debug_info.num_decorators(), 0);
     assert_eq!(forest.debug_info.op_decorator_storage().num_nodes(), 0);
 }
@@ -300,23 +289,17 @@ fn test_strip_decorators_empty_forest() {
 fn test_strip_decorators_idempotent() {
     let mut forest = MastForest::new();
 
-    // Create a block without decorators
     let operations = vec![Operation::Push(Felt::new(1)), Operation::Add];
     let block_id = BasicBlockNodeBuilder::new(operations, vec![])
         .add_to_forest(&mut forest)
         .unwrap();
 
-    // Strip decorators when none exist
+    forest.strip_decorators();
     forest.strip_decorators();
 
-    // Double strip should be safe
-    forest.strip_decorators();
-
-    // Verify structure remains valid
     assert_eq!(forest.debug_info.num_decorators(), 0);
     assert_eq!(forest.debug_info.op_decorator_storage().num_nodes(), 1);
 
-    // Verify accessor methods still work
     let links: Vec<_> = forest.decorator_links_for_node(block_id).unwrap().into_iter().collect();
     assert!(links.is_empty());
 }
@@ -325,37 +308,26 @@ fn test_strip_decorators_idempotent() {
 fn test_strip_decorators_multiple_node_types() {
     let mut forest = MastForest::new();
 
-    // Create decorators
     let deco1 = forest.add_decorator(Decorator::Trace(1)).unwrap();
     let _deco2 = forest.add_decorator(Decorator::Trace(2)).unwrap();
 
-    // Create a basic block with decorators
     let operations = vec![Operation::Push(Felt::new(1)), Operation::Add];
     let decorators = vec![(0, deco1)];
     let block_id = BasicBlockNodeBuilder::new(operations, decorators)
         .add_to_forest(&mut forest)
         .unwrap();
 
-    // Create a Join node
     let _join_id = JoinNodeBuilder::new([block_id, block_id]).add_to_forest(&mut forest).unwrap();
-
-    // Create a Split node
     let _split_id = SplitNodeBuilder::new([block_id, block_id]).add_to_forest(&mut forest).unwrap();
 
-    // Verify decorators exist (we have 2 decorators but only used 1)
     assert_eq!(forest.debug_info.num_decorators(), 2);
-    // Only the block node has operation decorators (Join/Split don't have operations)
     assert_eq!(forest.debug_info.op_decorator_storage().num_nodes(), 1);
 
-    // Strip decorators
     forest.strip_decorators();
 
-    // Verify all nodes maintain valid CSR structure
     assert_eq!(forest.debug_info.num_decorators(), 0);
-    // After stripping, CSR structure is sized for all nodes in forest (3 total)
     assert_eq!(forest.debug_info.op_decorator_storage().num_nodes(), 3);
 
-    // Verify block node can be accessed without panic
     assert!(
         forest
             .decorator_links_for_node(block_id)
@@ -364,9 +336,6 @@ fn test_strip_decorators_multiple_node_types() {
             .collect::<Vec<_>>()
             .is_empty()
     );
-
-    // Join and Split nodes don't have operations, so decorator_links_for_node would fail for them
-    // The important thing is that strip_decorators didn't break the forest structure
 }
 
 #[test]

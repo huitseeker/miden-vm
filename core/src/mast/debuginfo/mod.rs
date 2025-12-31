@@ -109,28 +109,19 @@ impl DebugInfo {
         }
     }
 
-    /// Creates an empty [DebugInfo] with valid CSR structures for the given number of nodes.
+    /// Creates an empty [DebugInfo] with valid CSR structures for N nodes.
     ///
-    /// This is useful when stripping decorators from a forest while maintaining valid CSR
-    /// structure invariants. The resulting DebugInfo will have no decorators but will have
-    /// properly initialized CSR arrays that represent "no decorators" for each node.
-    ///
-    /// # Arguments
-    /// * `num_nodes` - The number of nodes in the forest
+    /// Used when stripping decorators while keeping CSR structure valid.
     pub fn empty_for_nodes(num_nodes: usize) -> Self {
-        // Create empty CSR structure for OpToDecoratorIds with all zeros
-        // For N nodes, we need N+1 entries in node_indptr_for_op_idx, all set to 0
+        // For N nodes, CSR needs N+1 zero entries
         let mut node_indptr_for_op_idx = IndexVec::new();
         for _ in 0..=num_nodes {
             let _ = node_indptr_for_op_idx.push(0);
         }
 
-        let op_decorator_storage = OpToDecoratorIds::from_components(
-            Vec::new(),             // empty decorator_ids
-            Vec::new(),             // empty op_indptr_for_dec_ids
-            node_indptr_for_op_idx, // all zeros for num_nodes+1 entries
-        )
-        .expect("Empty CSR structure should be valid");
+        let op_decorator_storage =
+            OpToDecoratorIds::from_components(Vec::new(), Vec::new(), node_indptr_for_op_idx)
+                .expect("Empty CSR structure should be valid");
 
         Self {
             decorators: IndexVec::new(),
