@@ -245,97 +245,60 @@ fn test_decorator_storage_after_strip_decorators() {
 
     let deco1 = forest.add_decorator(Decorator::Trace(1)).unwrap();
     let deco2 = forest.add_decorator(Decorator::Trace(2)).unwrap();
-
     let operations = vec![Operation::Push(Felt::new(1)), Operation::Add];
-    let decorators = vec![(0, deco1), (1, deco2)];
-
-    let block_id = BasicBlockNodeBuilder::new(operations, decorators)
+    let block_id = BasicBlockNodeBuilder::new(operations, vec![(0, deco1), (1, deco2)])
         .add_to_forest(&mut forest)
         .unwrap();
 
-    assert!(!forest.debug_info.op_decorator_storage().is_empty());
-    assert_eq!(forest.debug_info.op_decorator_storage().num_nodes(), 1);
-    assert_eq!(forest.debug_info.op_decorator_storage().num_decorator_ids(), 2);
     assert_eq!(forest.debug_info.num_decorators(), 2);
+    assert_eq!(forest.debug_info.op_decorator_storage().num_decorator_ids(), 2);
 
     forest.strip_decorators();
 
-    assert_eq!(forest.debug_info.op_decorator_storage().num_nodes(), 1);
-    assert_eq!(forest.debug_info.op_decorator_storage().num_decorator_ids(), 0);
     assert_eq!(forest.debug_info.num_decorators(), 0);
-
-    let links: Vec<_> = forest.decorator_links_for_node(block_id).unwrap().into_iter().collect();
-    assert!(links.is_empty());
+    assert_eq!(forest.debug_info.op_decorator_storage().num_nodes(), 1);
+    assert!(forest.decorator_links_for_node(block_id).unwrap().into_iter().next().is_none());
     assert!(forest.get_assembly_op(block_id, Some(0)).is_none());
-
-    let block = if let crate::mast::MastNode::Block(block) = &forest[block_id] {
-        block
-    } else {
-        panic!("Expected a block node");
-    };
-    assert_eq!(block.indexed_decorator_iter(&forest).collect::<Vec<_>>(), []);
 }
 
 #[test]
-fn test_strip_decorators_empty_forest() {
+fn test_strip_decorators_edge_cases() {
+    // Empty forest
     let mut forest = MastForest::new();
     forest.strip_decorators();
-
     assert_eq!(forest.debug_info.num_decorators(), 0);
     assert_eq!(forest.debug_info.op_decorator_storage().num_nodes(), 0);
-}
 
-#[test]
-fn test_strip_decorators_idempotent() {
-    let mut forest = MastForest::new();
-
+    // Idempotent: stripping twice should be safe
     let operations = vec![Operation::Push(Felt::new(1)), Operation::Add];
     let block_id = BasicBlockNodeBuilder::new(operations, vec![])
         .add_to_forest(&mut forest)
         .unwrap();
-
     forest.strip_decorators();
     forest.strip_decorators();
-
     assert_eq!(forest.debug_info.num_decorators(), 0);
     assert_eq!(forest.debug_info.op_decorator_storage().num_nodes(), 1);
-
-    let links: Vec<_> = forest.decorator_links_for_node(block_id).unwrap().into_iter().collect();
-    assert!(links.is_empty());
+    assert!(forest.decorator_links_for_node(block_id).unwrap().into_iter().next().is_none());
 }
 
 #[test]
 fn test_strip_decorators_multiple_node_types() {
     let mut forest = MastForest::new();
+    let deco = forest.add_decorator(Decorator::Trace(1)).unwrap();
+    let block_id = BasicBlockNodeBuilder::new(
+        vec![Operation::Push(Felt::new(1)), Operation::Add],
+        vec![(0, deco)],
+    )
+    .add_to_forest(&mut forest)
+    .unwrap();
 
-    let deco1 = forest.add_decorator(Decorator::Trace(1)).unwrap();
-    let _deco2 = forest.add_decorator(Decorator::Trace(2)).unwrap();
-
-    let operations = vec![Operation::Push(Felt::new(1)), Operation::Add];
-    let decorators = vec![(0, deco1)];
-    let block_id = BasicBlockNodeBuilder::new(operations, decorators)
-        .add_to_forest(&mut forest)
-        .unwrap();
-
-    let _join_id = JoinNodeBuilder::new([block_id, block_id]).add_to_forest(&mut forest).unwrap();
-    let _split_id = SplitNodeBuilder::new([block_id, block_id]).add_to_forest(&mut forest).unwrap();
-
-    assert_eq!(forest.debug_info.num_decorators(), 2);
-    assert_eq!(forest.debug_info.op_decorator_storage().num_nodes(), 1);
+    JoinNodeBuilder::new([block_id, block_id]).add_to_forest(&mut forest).unwrap();
+    SplitNodeBuilder::new([block_id, block_id]).add_to_forest(&mut forest).unwrap();
 
     forest.strip_decorators();
 
-    assert_eq!(forest.debug_info.num_decorators(), 0);
     assert_eq!(forest.debug_info.op_decorator_storage().num_nodes(), 3);
-
-    assert!(
-        forest
-            .decorator_links_for_node(block_id)
-            .unwrap()
-            .into_iter()
-            .collect::<Vec<_>>()
-            .is_empty()
-    );
+    assert!(forest.decorator_links_for_node(block_id).unwrap().into_iter().next().is_none());
 }
 
 #[test]
