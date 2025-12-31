@@ -75,6 +75,16 @@ impl Program {
             ..self
         }
     }
+
+    /// Produces a new program with decorators stripped from the MAST forest.
+    pub fn with_stripped_decorators(self) -> Self {
+        let mut mast_forest = (*self.mast_forest).clone();
+        mast_forest.strip_decorators();
+        Self {
+            mast_forest: Arc::new(mast_forest),
+            ..self
+        }
+    }
 }
 
 // ------------------------------------------------------------------------------------------------
