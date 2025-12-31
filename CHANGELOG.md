@@ -16,6 +16,7 @@
 - Moved `bytes_to_packed_u32_elements` to `miden-core::utils` and added `packed_u32_elements_to_bytes` inverse function ([#2458](https://github.com/0xMiden/miden-vm/pull/2458)).
 - [BREAKING] Removed `Process`, `VmStateIterator` and `miden_processor::execute_iter()` ([#2483](https://github.com/0xMiden/miden-vm/pull/2483)).
 - [BREAKING] Removed `miden debug`, `miden analyze` and `miden repl` ([#2483](https://github.com/0xMiden/miden-vm/pull/2483)).
+- Fix issue where calling `strip_decorators()` would panic on further decorator access ([#2524](https://github.com/0xMiden/miden-vm/pull/2524)).
 
 ## 0.20.1 (2025-12-14)
 
