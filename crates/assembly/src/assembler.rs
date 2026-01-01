@@ -85,6 +85,8 @@ pub struct Assembler {
     linker: Linker,
     /// Whether to treat warning diagnostics as errors
     warnings_as_errors: bool,
+    /// Whether the assembler enables extra debugging information.
+    in_debug_mode: bool,
 }
 
 impl Default for Assembler {
@@ -95,6 +97,7 @@ impl Default for Assembler {
             source_manager,
             linker,
             warnings_as_errors: false,
+            in_debug_mode: false,
         }
     }
 }
@@ -109,6 +112,7 @@ impl Assembler {
             source_manager,
             linker,
             warnings_as_errors: false,
+            in_debug_mode: false,
         }
     }
 
@@ -129,6 +133,17 @@ impl Assembler {
     pub fn with_warnings_as_errors(mut self, yes: bool) -> Self {
         self.warnings_as_errors = yes;
         self
+    }
+
+    /// Puts the assembler into the debug mode.
+    pub fn with_debug_mode(mut self, yes: bool) -> Self {
+        self.in_debug_mode = yes;
+        self
+    }
+
+    /// Sets the debug mode flag of the assembler
+    pub fn set_debug_mode(&mut self, yes: bool) {
+        self.in_debug_mode = yes;
     }
 }
 
@@ -308,6 +323,11 @@ impl Assembler {
     /// Returns true if this assembler promotes warning diagnostics as errors by default.
     pub fn warnings_as_errors(&self) -> bool {
         self.warnings_as_errors
+    }
+
+    /// Returns true if this assembler was instantiated in debug mode.
+    pub fn in_debug_mode(&self) -> bool {
+        self.in_debug_mode
     }
 
     /// Returns a reference to the kernel for this assembler.
@@ -948,12 +968,14 @@ impl Assembler {
                         split_builder.append_before_enter(decorator_ids);
                     }
 
-                    // Add an assembly operation decorator to the if node.
-                    let op = self.create_asmop_decorator(span, "if.true", proc_ctx);
-                    let decorator_id = block_builder
-                        .mast_forest_builder_mut()
-                        .ensure_decorator(Decorator::AsmOp(op))?;
-                    split_builder.append_before_enter([decorator_id]);
+                    // Add an assembly operation decorator to the if node in debug mode.
+                    if self.in_debug_mode() {
+                        let op = self.create_asmop_decorator(span, "if.true", proc_ctx);
+                        let decorator_id = block_builder
+                            .mast_forest_builder_mut()
+                            .ensure_decorator(Decorator::AsmOp(op))?;
+                        split_builder.append_before_enter([decorator_id]);
+                    }
 
                     let split_node_id =
                         block_builder.mast_forest_builder_mut().ensure_node(split_builder)?;
@@ -1011,12 +1033,14 @@ impl Assembler {
                         loop_builder.append_before_enter(decorator_ids);
                     }
 
-                    // Add an assembly operation decorator to the loop node.
-                    let op = self.create_asmop_decorator(span, "while.true", proc_ctx);
-                    let decorator_id = block_builder
-                        .mast_forest_builder_mut()
-                        .ensure_decorator(Decorator::AsmOp(op))?;
-                    loop_builder.append_before_enter([decorator_id]);
+                    // Add an assembly operation decorator to the loop node in debug mode.
+                    if self.in_debug_mode() {
+                        let op = self.create_asmop_decorator(span, "while.true", proc_ctx);
+                        let decorator_id = block_builder
+                            .mast_forest_builder_mut()
+                            .ensure_decorator(Decorator::AsmOp(op))?;
+                        loop_builder.append_before_enter([decorator_id]);
+                    }
 
                     let loop_node_id =
                         block_builder.mast_forest_builder_mut().ensure_node(loop_builder)?;

@@ -32,8 +32,8 @@ impl CompileCmd {
         let libraries = Libraries::new(&self.library_paths)?;
 
         // compile the program
-        // Note: assembler debug mode is always enabled (issue #1821)
-        let compiled_program = program.compile(&libraries.libraries)?;
+        // Note: assembler debug mode is always enabled for compile command
+        let compiled_program = program.compile(true, &libraries.libraries)?;
 
         // report program hash to user
         let program_hash: [u8; 32] = compiled_program.hash().into();

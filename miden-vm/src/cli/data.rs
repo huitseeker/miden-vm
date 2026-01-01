@@ -124,12 +124,13 @@ where
 
     /// Compiles this program file into a [Program].
     #[instrument(name = "compile_program", skip_all)]
-    pub fn compile<'a, I>(&self, libraries: I) -> Result<Program, Report>
+    pub fn compile<'a, I>(&self, debug_on: bool, libraries: I) -> Result<Program, Report>
     where
         I: IntoIterator<Item = &'a Library>,
     {
         // compile program
-        let mut assembler = Assembler::new(self.source_manager.clone());
+        let mut assembler = Assembler::new(self.source_manager.clone())
+            .with_debug_mode(debug_on);
         assembler
             .link_dynamic_library(CoreLibrary::default())
             .wrap_err("Failed to load core library")?;

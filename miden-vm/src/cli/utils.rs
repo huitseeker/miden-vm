@@ -30,10 +30,9 @@ pub fn get_masp_program(path: &Path) -> Result<miden_core::Program, Report> {
 pub fn get_masm_program(
     path: &Path,
     libraries: &Libraries,
-    _debug_on: bool,
+    debug_on: bool,
     kernel_file: Option<&Path>,
 ) -> Result<(miden_core::Program, Arc<DefaultSourceManager>), Report> {
-    // Assembler debug mode is always enabled (issue #1821)
     let program_file = ProgramFile::read(path)?;
     let source_manager = program_file.source_manager().clone();
 
@@ -74,10 +73,12 @@ pub fn get_masm_program(
             },
             "masm" => {
                 // Compile kernel from assembly source
-                // Assembler debug mode is always enabled (issue #1821)
-                Assembler::default().assemble_kernel(kernel_path).wrap_err_with(|| {
-                    format!("Failed to compile kernel from `{}`", kernel_path.display())
-                })?
+                Assembler::default()
+                    .with_debug_mode(debug_on)
+                    .assemble_kernel(kernel_path)
+                    .wrap_err_with(|| {
+                        format!("Failed to compile kernel from `{}`", kernel_path.display())
+                    })?
             },
             _ => {
                 return Err(Report::msg(format!(
@@ -88,8 +89,8 @@ pub fn get_masm_program(
         };
 
         // Create assembler with kernel
-        // Assembler debug mode is always enabled (issue #1821)
-        let mut assembler = Assembler::with_kernel(source_manager.clone(), kernel_lib);
+        let mut assembler = Assembler::with_kernel(source_manager.clone(), kernel_lib)
+            .with_debug_mode(debug_on);
 
         // Link standard library
         assembler
@@ -107,7 +108,7 @@ pub fn get_masm_program(
             .wrap_err("Failed to compile program")?
     } else {
         // No kernel, use the standard compilation path
-        program_file.compile(&libraries.libraries)?
+        program_file.compile(debug_on, &libraries.libraries)?
     };
 
     Ok((program, source_manager))
