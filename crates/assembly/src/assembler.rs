@@ -97,7 +97,7 @@ impl Default for Assembler {
             source_manager,
             linker,
             warnings_as_errors: false,
-            in_debug_mode: true,
+            in_debug_mode: false,
         }
     }
 }
@@ -112,7 +112,7 @@ impl Assembler {
             source_manager,
             linker,
             warnings_as_errors: false,
-            in_debug_mode: true,
+            in_debug_mode: false,
         }
     }
 
