@@ -50,6 +50,13 @@ impl SymbolResolutionContext {
         matches!(self.kind, Some(InvokeKind::SysCall))
     }
 
+    /// Creates a new context derived from this one with a different span and module,
+    /// preserving the invoke kind.
+    #[inline]
+    pub fn derive(&self, span: SourceSpan, module: ModuleIndex) -> Self {
+        Self { span, module, kind: self.kind }
+    }
+
     fn display_kind(&self) -> impl core::fmt::Display {
         struct Kind(Option<InvokeKind>);
         impl core::fmt::Display for Kind {
@@ -238,12 +245,7 @@ impl<'a> SymbolResolver<'a> {
 
                     let span = path.span();
                     let path = module_path.join(subpath);
-                    let new_context = match context.kind {
-                        Some(kind) => {
-                            SymbolResolutionContext::with_kind(module_path.span(), id, kind)
-                        },
-                        None => SymbolResolutionContext::new(module_path.span(), id),
-                    };
+                    let new_context = context.derive(module_path.span(), id);
                     self.resolve_path(&new_context, Span::new(span, path.as_path()))
                 },
                 SymbolResolution::Local(_) | SymbolResolution::External(_) => unreachable!(),
@@ -489,12 +491,7 @@ impl<'a> SymbolResolver<'a> {
             log::debug!(target: "name-resolver::find", "resolved '{resolving_parent}' to module {module_index} ({})", self.module_path(module_index));
 
             log::debug!(target: "name-resolver::find", "resolving {resolving_symbol} in module {resolving_parent}");
-            let context = match current_context.kind {
-                Some(kind) => {
-                    SymbolResolutionContext::with_kind(current_context.span, module_index, kind)
-                },
-                None => SymbolResolutionContext::new(current_context.span, module_index),
-            };
+            let context = current_context.derive(current_context.span, module_index);
             match self.find_local(
                 &context,
                 resolving_symbol,
@@ -553,12 +550,7 @@ impl<'a> SymbolResolver<'a> {
                                     ].into(),
                                 }))
                 } else {
-                    let new_context = match context.kind {
-                        Some(kind) => {
-                            SymbolResolutionContext::with_kind(fqn.span(), context.module, kind)
-                        },
-                        None => SymbolResolutionContext::new(fqn.span(), context.module),
-                    };
+                    let new_context = context.derive(fqn.span(), context.module);
                     ControlFlow::Continue(LocalFindResult { context: new_context, resolving: fqn })
                 }
             },
