@@ -1179,7 +1179,7 @@ impl Assembler {
                 )?;
                 Ok(Some(ResolvedProcedure { node, signature: None }))
             },
-            SymbolResolution::Exact { gid, .. } => {
+            SymbolResolution::Exact { gid, path: _ } => {
                 match mast_forest_builder.get_procedure(gid) {
                     Some(proc) => Ok(Some(ResolvedProcedure {
                         node: proc.body_node_id(),
@@ -1208,6 +1208,71 @@ impl Assembler {
                         },
                     },
                 }
+            },
+            SymbolResolution::Module { .. }
+            | SymbolResolution::External(_)
+            | SymbolResolution::Local(_) => unreachable!(),
+        }
+    }
+
+    /// Resolves a target to a procedure, returning an error if the target is not a procedure.
+    ///
+    /// This is a convenience wrapper around `resolve_target` that converts `Ok(None)` into a
+    /// proper `InvalidInvokeTarget` error.
+    pub(super) fn resolve_target_as_procedure(
+        &self,
+        kind: InvokeKind,
+        target: &InvocationTarget,
+        caller_id: GlobalItemIndex,
+        mast_forest_builder: &mut MastForestBuilder,
+    ) -> Result<ResolvedProcedure, Report> {
+        let caller = SymbolResolutionContext {
+            span: target.span(),
+            module: caller_id.module,
+            kind: Some(kind),
+        };
+        let resolved = self.linker.resolve_invoke_target(&caller, target)?;
+        match resolved {
+            SymbolResolution::MastRoot(mast_root) => {
+                let node = self.ensure_valid_procedure_mast_root(
+                    kind,
+                    target.span(),
+                    mast_root.into_inner(),
+                    mast_forest_builder,
+                )?;
+                Ok(ResolvedProcedure { node, signature: None })
+            },
+            SymbolResolution::Exact { gid, path } => match mast_forest_builder.get_procedure(gid) {
+                Some(proc) => Ok(ResolvedProcedure {
+                    node: proc.body_node_id(),
+                    signature: proc.signature(),
+                }),
+                None => match self.linker[gid].item() {
+                    SymbolItem::Compiled(ItemInfo::Procedure(p)) => {
+                        let node = self.ensure_valid_procedure_mast_root(
+                            kind,
+                            target.span(),
+                            p.digest,
+                            mast_forest_builder,
+                        )?;
+                        Ok(ResolvedProcedure { node, signature: p.signature.clone() })
+                    },
+                    SymbolItem::Procedure(_) => panic!(
+                        "AST procedure {gid:?} exists in the linker, but not in the MastForestBuilder"
+                    ),
+                    SymbolItem::Alias { .. } => {
+                        unreachable!("unexpected reference to ast alias item from {gid:?}")
+                    },
+                    SymbolItem::Compiled(_) | SymbolItem::Type(_) | SymbolItem::Constant(_) => {
+                        let source_file = self.source_manager.get(target.span().source_id()).ok();
+                        Err(LinkerError::InvalidInvokeTarget {
+                            span: target.span(),
+                            source_file,
+                            path: path.into_inner(),
+                        }
+                        .into())
+                    },
+                },
             },
             SymbolResolution::Module { .. }
             | SymbolResolution::External(_)
