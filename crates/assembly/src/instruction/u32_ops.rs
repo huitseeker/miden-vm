@@ -767,7 +767,8 @@ fn verify_cto(block_builder: &mut BasicBlockBuilder) {
 /// - 3 cycles without immediate value.
 /// - 4 cycles with immediate value.
 pub fn u32lt(block_builder: &mut BasicBlockBuilder) {
-    compute_lt(block_builder);
+    // a < b: just compute lt directly
+    u32_compare(block_builder, false, false);
 }
 
 /// Translates u32lte assembly instruction to VM operations.
@@ -776,12 +777,8 @@ pub fn u32lt(block_builder: &mut BasicBlockBuilder) {
 /// - 5 cycles without immediate value.
 /// - 6 cycles with immediate value.
 pub fn u32lte(block_builder: &mut BasicBlockBuilder) {
-    // Compute the lt with reversed number to get a gt check
-    block_builder.push_op(Swap);
-    compute_lt(block_builder);
-
-    // Flip the final results to get the lte results.
-    block_builder.push_op(Not);
+    // a <= b is equivalent to !(b < a), so swap then invert
+    u32_compare(block_builder, true, true);
 }
 
 /// Translates u32gt assembly instruction to VM operations.
@@ -790,10 +787,8 @@ pub fn u32lte(block_builder: &mut BasicBlockBuilder) {
 /// - 4 cycles without immediate value.
 /// - 5 cycles with immediate value.
 pub fn u32gt(block_builder: &mut BasicBlockBuilder) {
-    // Reverse the numbers so we can get a gt check.
-    block_builder.push_op(Swap);
-
-    compute_lt(block_builder);
+    // a > b is equivalent to b < a, so just swap
+    u32_compare(block_builder, true, false);
 }
 
 /// Translates u32gte assembly instruction to VM operations.
@@ -802,10 +797,8 @@ pub fn u32gt(block_builder: &mut BasicBlockBuilder) {
 /// - 4 cycles without immediate value.
 /// - 5 cycles with immediate value.
 pub fn u32gte(block_builder: &mut BasicBlockBuilder) {
-    compute_lt(block_builder);
-
-    // Flip the final results to get the gte results.
-    block_builder.push_op(Not);
+    // a >= b is equivalent to !(a < b), so just invert
+    u32_compare(block_builder, false, true);
 }
 
 /// Translates u32min assembly instruction to VM operations.
@@ -843,12 +836,27 @@ pub fn u32max(block_builder: &mut BasicBlockBuilder) {
 // COMPARISON OPERATIONS - HELPERS
 // ================================================================================================
 
-/// Inserts the VM operations to check if the second element is less than
-/// the top element. This takes 3 cycles.
-fn compute_lt(block_builder: &mut BasicBlockBuilder) {
-    block_builder.push_ops([
-        U32sub, Swap, Drop, // Perform the operations
-    ])
+/// Unified helper for u32 comparison operations.
+///
+/// All four comparison operations (lt, lte, gt, gte) are derived from the same
+/// underlying less-than check by optionally swapping operands and/or inverting
+/// the result:
+///
+/// | Operation | swap_first | invert_result | Derivation       |
+/// |-----------|------------|---------------|------------------|
+/// | a < b     | false      | false         | a < b            |
+/// | a <= b    | true       | true          | !(b < a)         |
+/// | a > b     | true       | false         | b < a            |
+/// | a >= b    | false      | true          | !(a < b)         |
+fn u32_compare(block_builder: &mut BasicBlockBuilder, swap_first: bool, invert_result: bool) {
+    if swap_first {
+        block_builder.push_op(Swap);
+    }
+    // Core less-than check: U32sub sets underflow flag when a < b
+    block_builder.push_ops([U32sub, Swap, Drop]);
+    if invert_result {
+        block_builder.push_op(Not);
+    }
 }
 
 /// Duplicate the top two elements in the stack and determine the min and max between them.
