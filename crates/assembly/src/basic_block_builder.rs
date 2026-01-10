@@ -41,21 +41,14 @@ impl<'a> BasicBlockBuilder<'a> {
         wrapper: Option<BodyWrapper>,
         mast_forest_builder: &'a mut MastForestBuilder,
     ) -> Self {
-        match wrapper {
-            Some(wrapper) => Self {
-                ops: wrapper.prologue,
-                decorators: Vec::new(),
-                epilogue: wrapper.epilogue,
-                last_asmop_pos: 0,
-                mast_forest_builder,
-            },
-            None => Self {
-                ops: Default::default(),
-                decorators: Default::default(),
-                epilogue: Default::default(),
-                last_asmop_pos: 0,
-                mast_forest_builder,
-            },
+        let (ops, epilogue) = wrapper.map(|w| (w.prologue, w.epilogue)).unwrap_or_default();
+
+        Self {
+            ops,
+            decorators: Vec::new(),
+            epilogue,
+            last_asmop_pos: 0,
+            mast_forest_builder,
         }
     }
 }
