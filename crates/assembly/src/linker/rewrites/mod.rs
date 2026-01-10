@@ -51,7 +51,7 @@ pub fn rewrite_symbol(
                     let (span, path) = path.into_parts();
                     return Err(LinkerError::UndefinedSymbol {
                         span,
-                        source_file: resolver.source_manager().get(span.source_id()).ok(),
+                        source_file: resolver.source_file_for(span),
                         path,
                     });
                 },

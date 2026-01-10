@@ -191,7 +191,7 @@ impl<'a, 'b: 'a> ConstEnvironment for ModuleRewriter<'a, 'b> {
     type Error = LinkerError;
 
     fn get_source_file_for(&self, span: SourceSpan) -> Option<Arc<SourceFile>> {
-        self.resolver.source_manager().get(span.source_id()).ok()
+        self.resolver.source_file_for(span)
     }
 
     fn get(&self, name: &ast::Ident) -> Result<Option<CachedConstantValue<'_>>, Self::Error> {
