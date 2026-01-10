@@ -99,11 +99,9 @@ impl CallGraph {
             return Ok(vec![]);
         }
 
-        let mut output = Vec::with_capacity(self.nodes.len());
         let mut graph = self.clone();
 
-        // Build the set of roots by finding all nodes
-        // that have no predecessors
+        // Build the set of roots by finding all nodes that have no predecessors
         let mut has_preds = BTreeSet::default();
         for (_node, out_edges) in graph.nodes.iter() {
             for succ in out_edges.iter() {
@@ -122,24 +120,16 @@ impl CallGraph {
             roots.extend(graph.nodes.keys().next());
         }
 
-        let mut successors = Vec::with_capacity(4);
-        while let Some(id) = roots.pop_front() {
-            output.push(id);
-            successors.clear();
-            successors.extend(graph.nodes[&id].iter().copied());
-            for mid in successors.drain(..) {
-                graph.remove_edge(id, mid);
-                if graph.num_predecessors(mid) == 0 {
-                    roots.push_back(mid);
-                }
-            }
-        }
-
-        if let Some(err) = graph.detect_cycle(&output) {
-            Err(err)
-        } else {
-            assert!(!expect_cycle, "we expected a cycle to be found, but one was not identified");
-            Ok(output)
+        let (output, cycle_err) = graph.kahn_sort(roots);
+        match cycle_err {
+            Some(err) => Err(err),
+            None => {
+                assert!(
+                    !expect_cycle,
+                    "we expected a cycle to be found, but one was not identified"
+                );
+                Ok(output)
+            },
         }
     }
 
@@ -163,6 +153,31 @@ impl CallGraph {
         } else {
             None
         }
+    }
+
+    /// Core Kahn's algorithm: processes nodes starting from initial roots, building output order.
+    /// Returns the topologically sorted output and any cycle error detected.
+    fn kahn_sort(
+        &mut self,
+        mut roots: VecDeque<GlobalItemIndex>,
+    ) -> (Vec<GlobalItemIndex>, Option<CycleError>) {
+        let mut output = Vec::with_capacity(self.nodes.len());
+        let mut successors = Vec::with_capacity(4);
+
+        while let Some(id) = roots.pop_front() {
+            output.push(id);
+            successors.clear();
+            successors.extend(self.nodes[&id].iter().copied());
+            for mid in successors.drain(..) {
+                self.remove_edge(id, mid);
+                if self.num_predecessors(mid) == 0 {
+                    roots.push_back(mid);
+                }
+            }
+        }
+
+        let cycle_err = self.detect_cycle(&output);
+        (output, cycle_err)
     }
 
     /// Gets a new graph which is a subgraph of `self` containing all of the nodes reachable from
@@ -195,8 +210,6 @@ impl CallGraph {
         &self,
         caller: GlobalItemIndex,
     ) -> Result<Vec<GlobalItemIndex>, CycleError> {
-        let mut output = Vec::with_capacity(self.nodes.len());
-
         // Build a subgraph of `self` containing only those nodes reachable from `caller`
         let mut graph = self.subgraph(caller);
 
@@ -205,25 +218,9 @@ impl CallGraph {
             out_edges.retain(|n| *n != caller);
         });
 
-        let mut roots = VecDeque::from_iter([caller]);
-        let mut successors = Vec::with_capacity(4);
-        while let Some(id) = roots.pop_front() {
-            output.push(id);
-            successors.clear();
-            successors.extend(graph.nodes[&id].iter().copied());
-            for mid in successors.drain(..) {
-                graph.remove_edge(id, mid);
-                if graph.num_predecessors(mid) == 0 {
-                    roots.push_back(mid);
-                }
-            }
-        }
-
-        if let Some(err) = graph.detect_cycle(&output) {
-            Err(err)
-        } else {
-            Ok(output)
-        }
+        let roots = VecDeque::from_iter([caller]);
+        let (output, cycle_err) = graph.kahn_sort(roots);
+        cycle_err.map_or(Ok(output), Err)
     }
 }
 
