@@ -526,72 +526,7 @@ impl Linker {
             }
 
             let module_index = ModuleIndex::new(module_index);
-
-            for (symbol_idx, symbol) in module.symbols().enumerate() {
-                assert!(
-                    symbol.is_unlinked(),
-                    "an unlinked module should only have unlinked symbols"
-                );
-
-                let gid = module_index + ItemIndex::new(symbol_idx);
-
-                // Perform any applicable rewrites to this item
-                rewrites::rewrite_symbol(gid, symbol, &resolver, &mut cache)?;
-
-                // Update the linker graph
-                match symbol.item() {
-                    SymbolItem::Compiled(_) | SymbolItem::Type(_) | SymbolItem::Constant(_) => (),
-                    SymbolItem::Alias { alias, resolved } => {
-                        if let Some(resolved) = resolved.get() {
-                            log::debug!(target: "linker", "  | resolved alias {} to item {resolved}", alias.target());
-                            if self[resolved].is_procedure() {
-                                edges.push((gid, resolved));
-                            }
-                        } else {
-                            log::debug!(target: "linker", "  | resolving alias {}..", alias.target());
-
-                            let context =
-                                SymbolResolutionContext::new(alias.target().span(), module_index);
-                            if let Some(callee) = resolver
-                                .resolve_alias_target(&context, alias.target())?
-                                .into_global_id()
-                            {
-                                log::debug!(
-                                    target: "linker",
-                                    "  | resolved alias to gid {:?}:{:?}",
-                                    callee.module,
-                                    callee.index
-                                );
-                                edges.push((gid, callee));
-                                resolved.set(Some(callee));
-                            }
-                        }
-                    },
-                    SymbolItem::Procedure(proc) => {
-                        // Add edges to all transitive dependencies of this item due to calls/symbol
-                        // refs
-                        let proc = proc.borrow();
-                        for invoke in proc.invoked() {
-                            log::debug!(target: "linker", "  | recording {} dependency on {}", invoke.kind, &invoke.target);
-
-                            let context = SymbolResolutionContext::new(invoke.span(), module_index);
-                            if let Some(callee) = resolver
-                                .resolve_invoke_target(&context, &invoke.target)?
-                                .into_global_id()
-                            {
-                                log::debug!(
-                                    target: "linker",
-                                    "  | resolved dependency to gid {}:{}",
-                                    callee.module.as_usize(),
-                                    callee.index.as_usize()
-                                );
-                                edges.push((gid, callee));
-                            }
-                        }
-                    },
-                }
-            }
-
+            self.process_module_symbols(module_index, module, &resolver, &mut cache, &mut edges)?;
             module.set_status(LinkStatus::Linked);
         }
 
@@ -612,6 +547,111 @@ impl Linker {
         })?;
 
         Ok(())
+    }
+
+    fn process_module_symbols(
+        &self,
+        module_index: ModuleIndex,
+        module: &LinkModule,
+        resolver: &SymbolResolver<'_>,
+        cache: &mut ResolverCache,
+        edges: &mut Vec<(GlobalItemIndex, GlobalItemIndex)>,
+    ) -> Result<(), LinkerError> {
+        for (symbol_idx, symbol) in module.symbols().enumerate() {
+            assert!(symbol.is_unlinked(), "an unlinked module should only have unlinked symbols");
+
+            let gid = module_index + ItemIndex::new(symbol_idx);
+
+            // Perform any applicable rewrites to this item
+            rewrites::rewrite_symbol(gid, symbol, resolver, cache)?;
+
+            // Collect edges based on symbol type
+            self.process_symbol_item(gid, symbol, module_index, resolver, edges)?;
+        }
+        Ok(())
+    }
+
+    fn process_symbol_item(
+        &self,
+        gid: GlobalItemIndex,
+        symbol: &Symbol,
+        module_index: ModuleIndex,
+        resolver: &SymbolResolver<'_>,
+        edges: &mut Vec<(GlobalItemIndex, GlobalItemIndex)>,
+    ) -> Result<(), LinkerError> {
+        match symbol.item() {
+            SymbolItem::Compiled(_) | SymbolItem::Type(_) | SymbolItem::Constant(_) => Ok(()),
+            SymbolItem::Alias { alias, resolved } => {
+                self.process_alias_symbol(gid, alias, resolved, module_index, resolver, edges);
+                Ok(())
+            },
+            SymbolItem::Procedure(proc) => {
+                self.process_procedure_symbol(gid, proc, module_index, resolver, edges);
+                Ok(())
+            },
+        }
+    }
+
+    fn process_alias_symbol(
+        &self,
+        gid: GlobalItemIndex,
+        alias: &ast::Alias,
+        resolved: &Cell<Option<GlobalItemIndex>>,
+        module_index: ModuleIndex,
+        resolver: &SymbolResolver<'_>,
+        edges: &mut Vec<(GlobalItemIndex, GlobalItemIndex)>,
+    ) {
+        if let Some(resolved_gid) = resolved.get() {
+            log::debug!(target: "linker", "  | resolved alias {} to item {resolved_gid}", alias.target());
+            if self[resolved_gid].is_procedure() {
+                edges.push((gid, resolved_gid));
+            }
+        } else {
+            log::debug!(target: "linker", "  | resolving alias {}..", alias.target());
+
+            let context = SymbolResolutionContext::new(alias.target().span(), module_index);
+            if let Ok(Some(callee)) = resolver
+                .resolve_alias_target(&context, alias.target())
+                .map(|r| r.into_global_id())
+            {
+                log::debug!(
+                    target: "linker",
+                    "  | resolved alias to gid {:?}:{:?}",
+                    callee.module,
+                    callee.index
+                );
+                edges.push((gid, callee));
+                resolved.set(Some(callee));
+            }
+        }
+    }
+
+    fn process_procedure_symbol(
+        &self,
+        gid: GlobalItemIndex,
+        proc: &RefCell<Box<ast::Procedure>>,
+        module_index: ModuleIndex,
+        resolver: &SymbolResolver<'_>,
+        edges: &mut Vec<(GlobalItemIndex, GlobalItemIndex)>,
+    ) {
+        let proc = proc.borrow();
+        for invoke in proc.invoked() {
+            log::debug!(target: "linker", "  | recording {} dependency on {}", invoke.kind, &invoke.target);
+
+            let context = SymbolResolutionContext::new(invoke.span(), module_index);
+            if let Ok(Some(callee)) = resolver
+                .resolve_invoke_target(&context, &invoke.target)
+                .map(|r| r.into_global_id())
+            {
+                log::debug!(
+                    target: "linker",
+                    "  | resolved dependency to gid {}:{}",
+                    callee.module.as_usize(),
+                    callee.index.as_usize()
+                );
+                edges.push((gid, callee));
+            }
+        }
     }
 }
 
