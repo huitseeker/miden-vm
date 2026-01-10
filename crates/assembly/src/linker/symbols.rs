@@ -43,6 +43,21 @@ pub enum SymbolItem {
     Compiled(ItemInfo),
 }
 
+impl SymbolItem {
+    /// Returns a string describing the kind of symbol item for logging purposes.
+    pub fn kind_name(&self) -> &'static str {
+        match self {
+            SymbolItem::Compiled(ItemInfo::Procedure(_)) => "compiled procedure",
+            SymbolItem::Compiled(ItemInfo::Constant(_)) => "compiled constant",
+            SymbolItem::Compiled(ItemInfo::Type(_)) => "compiled type",
+            SymbolItem::Procedure(_) => "procedure",
+            SymbolItem::Constant(_) => "constant",
+            SymbolItem::Type(_) => "type",
+            SymbolItem::Alias { .. } => "alias",
+        }
+    }
+}
+
 impl Symbol {
     /// Create a new [Symbol].
     #[inline]

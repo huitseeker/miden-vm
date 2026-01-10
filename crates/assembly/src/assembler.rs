@@ -8,7 +8,10 @@ use miden_assembly_syntax::{
     },
     debuginfo::{DefaultSourceManager, SourceManager, SourceSpan, Spanned},
     diagnostics::{IntoDiagnostic, RelatedLabel, Report},
-    library::{ConstantExport, ItemInfo, LibraryExport, ProcedureExport, TypeExport},
+    library::{
+        ConstantExport, ConstantInfo, ItemInfo, LibraryExport, ProcedureExport, ProcedureInfo,
+        TypeExport, TypeInfo,
+    },
 };
 use miden_core::{
     AssemblyOp, Decorator, Kernel, Operation, Program, Word,
@@ -518,105 +521,150 @@ impl Assembler {
         symbol_path: Arc<Path>,
         mast_forest_builder: &mut MastForestBuilder,
     ) -> Result<LibraryExport, Report> {
-        log::trace!(target: "assembler::export_symbol", "exporting {} {symbol_path}", match self.linker[gid].item() {
-            SymbolItem::Compiled(ItemInfo::Procedure(_)) => "compiled procedure",
-            SymbolItem::Compiled(ItemInfo::Constant(_)) => "compiled constant",
-            SymbolItem::Compiled(ItemInfo::Type(_)) => "compiled type",
-            SymbolItem::Procedure(_) => "procedure",
-            SymbolItem::Constant(_) => "constant",
-            SymbolItem::Type(_) => "type",
-            SymbolItem::Alias { .. } => "alias",
-        });
-        let mut cache = crate::linker::ResolverCache::default();
-        let export = match self.linker[gid].item() {
-            SymbolItem::Compiled(ItemInfo::Procedure(item)) => {
-                let resolved = match mast_forest_builder.get_procedure(gid) {
-                    Some(proc) => ResolvedProcedure {
-                        node: proc.body_node_id(),
-                        signature: proc.signature(),
-                    },
-                    // We didn't find the procedure in our current MAST forest. We still need to
-                    // check if it exists in one of a library dependency.
-                    None => {
-                        let node = self.ensure_valid_procedure_mast_root(
-                            InvokeKind::ProcRef,
-                            SourceSpan::UNKNOWN,
-                            item.digest,
-                            mast_forest_builder,
-                        )?;
-                        ResolvedProcedure { node, signature: item.signature.clone() }
-                    },
-                };
-                let digest = item.digest;
-                let ResolvedProcedure { node, signature } = resolved;
-                let attributes = item.attributes.clone();
-                let pctx = ProcedureContext::new(
-                    gid,
-                    /* is_program_entrypoint= */ false,
-                    symbol_path.clone(),
-                    Visibility::Public,
-                    signature.clone(),
-                    module_kind.is_kernel(),
-                    self.source_manager.clone(),
-                );
+        // Clone the item to avoid borrow checker issues when calling mutable methods
+        let item = self.linker[gid].item().clone();
+        log::trace!(target: "assembler::export_symbol", "exporting {} {symbol_path}", item.kind_name());
 
-                let procedure = pctx.into_procedure(digest, node);
-                self.linker.register_procedure_root(gid, digest)?;
-                mast_forest_builder.insert_procedure(gid, procedure)?;
-                LibraryExport::Procedure(ProcedureExport {
-                    node,
-                    path: symbol_path,
-                    signature: signature.map(|sig| (*sig).clone()),
-                    attributes,
-                })
-            },
+        // Handle aliases first
+        if let SymbolItem::Alias { alias, resolved } = &item {
+            let alias_target = alias.target().clone();
+            let alias_resolved = resolved.get();
+            let resolved = alias_resolved.unwrap_or_else(|| {
+                panic!("unresolved alias {symbol_path} targeting: {}", alias_target)
+            });
+            return self.export_symbol(resolved, module_kind, symbol_path, mast_forest_builder);
+        }
+
+        let mut cache = crate::linker::ResolverCache::default();
+        let export = match &item {
+            SymbolItem::Compiled(ItemInfo::Procedure(item)) => self.export_compiled_procedure(
+                gid,
+                module_kind,
+                symbol_path,
+                item,
+                mast_forest_builder,
+            )?,
             SymbolItem::Compiled(ItemInfo::Constant(item)) => {
-                LibraryExport::Constant(ConstantExport {
-                    path: symbol_path,
-                    value: item.value.clone(),
-                })
+                self.export_compiled_constant(symbol_path, item)
             },
             SymbolItem::Compiled(ItemInfo::Type(item)) => {
-                LibraryExport::Type(TypeExport { path: symbol_path, ty: item.ty.clone() })
+                self.export_compiled_type(symbol_path, item)
             },
             SymbolItem::Procedure(_) => {
-                self.compile_subgraph(SubgraphRoot::not_as_entrypoint(gid), mast_forest_builder)?;
-                let node = mast_forest_builder
-                    .get_procedure(gid)
-                    .expect("compilation succeeded but root not found in cache")
-                    .body_node_id();
-                let signature = self.linker.resolve_signature(gid)?;
-                let attributes = self.linker.resolve_attributes(gid)?;
-                LibraryExport::Procedure(ProcedureExport {
-                    node,
-                    path: symbol_path,
-                    signature: signature.map(Arc::unwrap_or_clone),
-                    attributes,
-                })
+                self.export_procedure(gid, symbol_path, mast_forest_builder)?
             },
             SymbolItem::Constant(item) => {
-                // Evaluate constant to a concrete value for export
-                let value = self.linker.const_eval(gid, &item.value, &mut cache)?;
-
-                LibraryExport::Constant(ConstantExport { path: symbol_path, value })
+                self.export_constant(gid, symbol_path, item, &mut cache)?
             },
-            SymbolItem::Type(item) => {
-                let ty = self.linker.resolve_type(item.span(), gid)?;
-                // TODO(pauls): Add export type for enums, and make sure we emit them
-                // here
-                LibraryExport::Type(TypeExport { path: symbol_path, ty })
-            },
-
-            SymbolItem::Alias { alias, resolved } => {
-                // All aliases should've been resolved by now
-                let resolved = resolved.get().unwrap_or_else(|| {
-                    panic!("unresolved alias {symbol_path} targeting: {}", alias.target())
-                });
-                return self.export_symbol(resolved, module_kind, symbol_path, mast_forest_builder);
-            },
+            SymbolItem::Type(item) => self.export_type(gid, symbol_path, item)?,
+            SymbolItem::Alias { .. } => unreachable!(),
         };
 
         Ok(export)
+    }
+
+    fn export_compiled_procedure(
+        &mut self,
+        gid: GlobalItemIndex,
+        module_kind: ModuleKind,
+        symbol_path: Arc<Path>,
+        item: &ProcedureInfo,
+        mast_forest_builder: &mut MastForestBuilder,
+    ) -> Result<LibraryExport, Report> {
+        let resolved = match mast_forest_builder.get_procedure(gid) {
+            Some(proc) => ResolvedProcedure {
+                node: proc.body_node_id(),
+                signature: proc.signature(),
+            },
+            None => {
+                let node = self.ensure_valid_procedure_mast_root(
+                    InvokeKind::ProcRef,
+                    SourceSpan::UNKNOWN,
+                    item.digest,
+                    mast_forest_builder,
+                )?;
+                ResolvedProcedure { node, signature: item.signature.clone() }
+            },
+        };
+        let digest = item.digest;
+        let ResolvedProcedure { node, signature } = resolved;
+        let attributes = item.attributes.clone();
+        let pctx = ProcedureContext::new(
+            gid,
+            /* is_program_entrypoint= */ false,
+            symbol_path.clone(),
+            Visibility::Public,
+            signature.clone(),
+            module_kind.is_kernel(),
+            self.source_manager.clone(),
+        );
+
+        let procedure = pctx.into_procedure(digest, node);
+        self.linker.register_procedure_root(gid, digest)?;
+        mast_forest_builder.insert_procedure(gid, procedure)?;
+        Ok(LibraryExport::Procedure(ProcedureExport {
+            node,
+            path: symbol_path,
+            signature: signature.map(|sig| (*sig).clone()),
+            attributes,
+        }))
+    }
+
+    fn export_compiled_constant(
+        &self,
+        symbol_path: Arc<Path>,
+        item: &ConstantInfo,
+    ) -> LibraryExport {
+        LibraryExport::Constant(ConstantExport {
+            path: symbol_path,
+            value: item.value.clone(),
+        })
+    }
+
+    fn export_compiled_type(&self, symbol_path: Arc<Path>, item: &TypeInfo) -> LibraryExport {
+        LibraryExport::Type(TypeExport { path: symbol_path, ty: item.ty.clone() })
+    }
+
+    fn export_procedure(
+        &mut self,
+        gid: GlobalItemIndex,
+        symbol_path: Arc<Path>,
+        mast_forest_builder: &mut MastForestBuilder,
+    ) -> Result<LibraryExport, Report> {
+        self.compile_subgraph(SubgraphRoot::not_as_entrypoint(gid), mast_forest_builder)?;
+        let node = mast_forest_builder
+            .get_procedure(gid)
+            .expect("compilation succeeded but root not found in cache")
+            .body_node_id();
+        let signature = self.linker.resolve_signature(gid)?;
+        let attributes = self.linker.resolve_attributes(gid)?;
+        Ok(LibraryExport::Procedure(ProcedureExport {
+            node,
+            path: symbol_path,
+            signature: signature.map(Arc::unwrap_or_clone),
+            attributes,
+        }))
+    }
+
+    fn export_constant(
+        &mut self,
+        gid: GlobalItemIndex,
+        symbol_path: Arc<Path>,
+        item: &ast::Constant,
+        cache: &mut crate::linker::ResolverCache,
+    ) -> Result<LibraryExport, Report> {
+        let value = self.linker.const_eval(gid, &item.value, cache)?;
+        Ok(LibraryExport::Constant(ConstantExport { path: symbol_path, value }))
+    }
+
+    fn export_type(
+        &mut self,
+        gid: GlobalItemIndex,
+        symbol_path: Arc<Path>,
+        item: &ast::TypeDecl,
+    ) -> Result<LibraryExport, Report> {
+        let ty = self.linker.resolve_type(item.span(), gid)?;
+        Ok(LibraryExport::Type(TypeExport { path: symbol_path, ty }))
     }
 
     /// Compiles the provided module into a [`Program`]. The resulting program can be executed on
