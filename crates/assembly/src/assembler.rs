@@ -775,99 +775,159 @@ impl Assembler {
                 let module = &self.linker[procedure_gid.module];
                 (module.kind(), module.path().clone())
             };
-            match self.linker[procedure_gid].item() {
-                SymbolItem::Procedure(proc) => {
-                    let proc = proc.borrow();
-                    let num_locals = proc.num_locals();
-                    let path = module_path.join(proc.name().as_str()).into();
-                    let signature = self.linker.resolve_signature(procedure_gid)?;
-                    let is_program_entrypoint =
-                        root.is_program_entrypoint && root.proc_id == procedure_gid;
 
-                    let pctx = ProcedureContext::new(
-                        procedure_gid,
-                        is_program_entrypoint,
-                        path,
-                        proc.visibility(),
-                        signature,
-                        module_kind.is_kernel(),
-                        self.source_manager.clone(),
-                    )
-                    .with_num_locals(num_locals)
-                    .with_span(proc.span());
-
-                    // Compile this procedure
-                    let procedure = self.compile_procedure(pctx, mast_forest_builder)?;
-                    // TODO: if a re-exported procedure with the same MAST root had been previously
-                    // added to the builder, this will result in unreachable nodes added to the
-                    // MAST forest. This is because while we won't insert a duplicate node for the
-                    // procedure body node itself, all nodes that make up the procedure body would
-                    // be added to the forest.
-
-                    // Cache the compiled procedure
-                    drop(proc);
-                    self.linker.register_procedure_root(procedure_gid, procedure.mast_root())?;
-                    mast_forest_builder.insert_procedure(procedure_gid, procedure)?;
-                },
-                SymbolItem::Alias { alias, resolved } => {
-                    let procedure_gid = resolved.get().expect("resolved alias");
-                    match self.linker[procedure_gid].item() {
-                        SymbolItem::Procedure(_) | SymbolItem::Compiled(ItemInfo::Procedure(_)) => {
-                        },
-                        SymbolItem::Constant(_) | SymbolItem::Type(_) | SymbolItem::Compiled(_) => {
-                            continue;
-                        },
-                        // A resolved alias will always refer to a non-alias item, this is because
-                        // when aliases are resolved, they are resolved recursively. Had the alias
-                        // chain been cyclical, we would have raised an error already.
-                        SymbolItem::Alias { .. } => unreachable!(),
-                    }
-                    let path = module_path.join(alias.name().as_str()).into();
-                    // A program entrypoint is never an alias
-                    let is_program_entrypoint = false;
-                    let mut pctx = ProcedureContext::new(
-                        procedure_gid,
-                        is_program_entrypoint,
-                        path,
-                        ast::Visibility::Public,
-                        None,
-                        module_kind.is_kernel(),
-                        self.source_manager.clone(),
-                    )
-                    .with_span(alias.span());
-
-                    // We must resolve aliases at this point to their real definition, in order to
-                    // know whether we need to emit a MAST node for a foreign procedure item. If
-                    // the aliased item is not a procedure, we can ignore the alias entirely.
-                    let Some(ResolvedProcedure { node: proc_node_id, signature, .. }) = self
-                        .resolve_target(
-                            InvokeKind::ProcRef,
-                            &alias.target().into(),
-                            procedure_gid,
-                            mast_forest_builder,
-                        )?
-                    else {
-                        continue;
-                    };
-
-                    pctx.set_signature(signature);
-
-                    let proc_mast_root =
-                        mast_forest_builder.get_mast_node(proc_node_id).unwrap().digest();
-
-                    let procedure = pctx.into_procedure(proc_mast_root, proc_node_id);
-
-                    // Make the MAST root available to all dependents
-                    self.linker.register_procedure_root(procedure_gid, proc_mast_root)?;
-                    mast_forest_builder.insert_procedure(procedure_gid, procedure)?;
-                },
-                SymbolItem::Compiled(_) | SymbolItem::Constant(_) | SymbolItem::Type(_) => {
-                    // There is nothing to do for other items that might have edges in the graph
-                    continue;
-                },
-            }
+            self.process_worklist_item(
+                procedure_gid,
+                module_kind,
+                module_path,
+                root,
+                mast_forest_builder,
+            )?;
         }
 
+        Ok(())
+    }
+
+    fn process_worklist_item(
+        &mut self,
+        procedure_gid: GlobalItemIndex,
+        module_kind: ModuleKind,
+        module_path: Arc<Path>,
+        root: &SubgraphRoot,
+        mast_forest_builder: &mut MastForestBuilder,
+    ) -> Result<(), Report> {
+        // Clone the item to avoid borrow checker issues
+        let item = self.linker[procedure_gid].item().clone();
+
+        match &item {
+            SymbolItem::Procedure(_) => {
+                self.process_procedure_item(
+                    procedure_gid,
+                    module_kind,
+                    module_path,
+                    root,
+                    mast_forest_builder,
+                )?;
+            },
+            SymbolItem::Alias { .. } => {
+                if let Some(alias) = item.as_alias() {
+                    self.process_alias_item(
+                        procedure_gid,
+                        alias,
+                        module_kind,
+                        module_path,
+                        mast_forest_builder,
+                    )?;
+                }
+            },
+            SymbolItem::Compiled(_) | SymbolItem::Constant(_) | SymbolItem::Type(_) => {
+                // There is nothing to do for other items that might have edges in the graph
+            },
+        }
+        Ok(())
+    }
+
+    fn process_procedure_item(
+        &mut self,
+        procedure_gid: GlobalItemIndex,
+        module_kind: ModuleKind,
+        module_path: Arc<Path>,
+        root: &SubgraphRoot,
+        mast_forest_builder: &mut MastForestBuilder,
+    ) -> Result<(), Report> {
+        let proc = self.linker[procedure_gid].item().as_procedure().unwrap();
+        let proc = proc.borrow();
+        let num_locals = proc.num_locals();
+        let path = module_path.join(proc.name().as_str()).into();
+        let signature = self.linker.resolve_signature(procedure_gid)?;
+        let is_program_entrypoint = root.is_program_entrypoint && root.proc_id == procedure_gid;
+
+        let pctx = ProcedureContext::new(
+            procedure_gid,
+            is_program_entrypoint,
+            path,
+            proc.visibility(),
+            signature,
+            module_kind.is_kernel(),
+            self.source_manager.clone(),
+        )
+        .with_num_locals(num_locals)
+        .with_span(proc.span());
+
+        // Compile this procedure
+        let procedure = self.compile_procedure(pctx, mast_forest_builder)?;
+        // TODO: if a re-exported procedure with the same MAST root had been previously
+        // added to the builder, this will result in unreachable nodes added to the
+        // MAST forest. This is because while we won't insert a duplicate node for the
+        // procedure body node itself, all nodes that make up the procedure body would
+        // be added to the forest.
+
+        // Cache the compiled procedure
+        drop(proc);
+        self.linker.register_procedure_root(procedure_gid, procedure.mast_root())?;
+        mast_forest_builder.insert_procedure(procedure_gid, procedure)?;
+        Ok(())
+    }
+
+    fn process_alias_item(
+        &mut self,
+        procedure_gid: GlobalItemIndex,
+        alias: &ast::Alias,
+        module_kind: ModuleKind,
+        module_path: Arc<Path>,
+        mast_forest_builder: &mut MastForestBuilder,
+    ) -> Result<(), Report> {
+        let item = self.linker[procedure_gid].item();
+        let SymbolItem::Alias { resolved, .. } = item else {
+            return Ok(());
+        };
+
+        let resolved_gid = resolved.get().expect("resolved alias");
+
+        // Check if the resolved item is a procedure
+        match self.linker[resolved_gid].item() {
+            SymbolItem::Procedure(_) | SymbolItem::Compiled(ItemInfo::Procedure(_)) => {},
+            SymbolItem::Constant(_) | SymbolItem::Type(_) | SymbolItem::Compiled(_) => {
+                return Ok(());
+            },
+            // A resolved alias will always refer to a non-alias item
+            SymbolItem::Alias { .. } => unreachable!(),
+        }
+
+        let path = module_path.join(alias.name().as_str()).into();
+        let mut pctx = ProcedureContext::new(
+            procedure_gid,
+            /* is_program_entrypoint */ false,
+            path,
+            ast::Visibility::Public,
+            None,
+            module_kind.is_kernel(),
+            self.source_manager.clone(),
+        )
+        .with_span(alias.span());
+
+        // We must resolve aliases at this point to their real definition, in order to
+        // know whether we need to emit a MAST node for a foreign procedure item. If
+        // the aliased item is not a procedure, we can ignore the alias entirely.
+        let Some(ResolvedProcedure { node: proc_node_id, signature, .. }) = self.resolve_target(
+            InvokeKind::ProcRef,
+            &alias.target().into(),
+            resolved_gid,
+            mast_forest_builder,
+        )?
+        else {
+            return Ok(());
+        };
+
+        pctx.set_signature(signature);
+
+        let proc_mast_root = mast_forest_builder.get_mast_node(proc_node_id).unwrap().digest();
+
+        let procedure = pctx.into_procedure(proc_mast_root, proc_node_id);
+
+        // Make the MAST root available to all dependents
+        self.linker.register_procedure_root(procedure_gid, proc_mast_root)?;
+        mast_forest_builder.insert_procedure(procedure_gid, procedure)?;
         Ok(())
     }
 

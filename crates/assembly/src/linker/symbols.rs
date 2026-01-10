@@ -56,6 +56,22 @@ impl SymbolItem {
             SymbolItem::Alias { .. } => "alias",
         }
     }
+
+    /// Returns a reference to the alias if this item is an alias.
+    pub fn as_alias(&self) -> Option<&ast::Alias> {
+        match self {
+            SymbolItem::Alias { alias, .. } => Some(alias),
+            _ => None,
+        }
+    }
+
+    /// Returns a reference to the procedure if this item is a procedure.
+    pub fn as_procedure(&self) -> Option<&RefCell<Box<ast::Procedure>>> {
+        match self {
+            SymbolItem::Procedure(proc) => Some(proc),
+            _ => None,
+        }
+    }
 }
 
 impl Symbol {
