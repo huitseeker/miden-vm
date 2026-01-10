@@ -248,31 +248,28 @@ impl MastForestBuilder {
 
         let mut node_ids = self.merge_contiguous_basic_blocks(node_ids)?;
 
-        // build a binary tree of blocks joining them using JOIN blocks
+        // Build a binary tree of JOIN blocks by repeatedly pairing adjacent nodes.
+        // If we have an odd number of nodes, the last one carries over to the next round.
         while node_ids.len() > 1 {
-            let last_mast_node_id = if node_ids.len().is_multiple_of(2) {
-                None
-            } else {
-                node_ids.pop()
-            };
-
-            let mut source_node_ids = Vec::new();
-            core::mem::swap(&mut node_ids, &mut source_node_ids);
-
-            let mut source_mast_node_iter = source_node_ids.drain(0..);
-            while let (Some(left), Some(right)) =
-                (source_mast_node_iter.next(), source_mast_node_iter.next())
-            {
-                let join_mast_node_id = self.ensure_join(left, right, vec![], vec![])?;
-
-                node_ids.push(join_mast_node_id);
-            }
-            if let Some(mast_node_id) = last_mast_node_id {
-                node_ids.push(mast_node_id);
-            }
+            node_ids = self.join_pairs(node_ids)?;
         }
 
-        Ok(node_ids.remove(0))
+        Ok(node_ids.into_iter().next().unwrap())
+    }
+
+    /// Pairs up adjacent nodes and joins them, leaving an unpaired last node if odd count.
+    fn join_pairs(&mut self, node_ids: Vec<MastNodeId>) -> Result<Vec<MastNodeId>, Report> {
+        node_ids
+            .chunks(2)
+            .map(|chunk| {
+                if let [left, right] = chunk {
+                    self.ensure_join(*left, *right, vec![], vec![])
+                } else {
+                    // Single element in chunk (odd count) - carry through unchanged
+                    Ok(chunk[0])
+                }
+            })
+            .collect()
     }
 
     /// Returns a list of [`MastNodeId`]s built from merging the contiguous basic blocks
