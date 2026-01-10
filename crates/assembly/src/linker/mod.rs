@@ -641,6 +641,35 @@ impl Linker {
         resolver.resolve_path(caller, Span::new(caller.span, path))
     }
 
+    /// Resolves a procedure alias to the underlying procedure's GlobalItemIndex.
+    ///
+    /// Returns `Ok(Some(gid))` if the alias resolves to a concrete procedure,
+    /// or `Ok(None)` if it resolves to a phantom digest (MAST root without procedure).
+    fn resolve_procedure_alias(
+        &self,
+        gid: GlobalItemIndex,
+        alias: &ast::Alias,
+        resolved: &Cell<Option<GlobalItemIndex>>,
+    ) -> Result<Option<GlobalItemIndex>, LinkerError> {
+        if let Some(resolved) = resolved.get() {
+            return Ok(Some(resolved));
+        }
+
+        let context = SymbolResolutionContext {
+            span: alias.target().span(),
+            module: gid.module,
+            kind: Some(InvokeKind::ProcRef),
+        };
+        let resolution = self.resolve_alias_target(&context, alias.target())?;
+        match resolution {
+            SymbolResolution::MastRoot(_) => Ok(None),
+            SymbolResolution::Exact { gid, .. } => Ok(Some(gid)),
+            SymbolResolution::Module { .. }
+            | SymbolResolution::Local(_)
+            | SymbolResolution::External(_) => unreachable!(),
+        }
+    }
+
     /// Resolves the user-defined type signature of the given procedure to the HIR type signature
     pub(super) fn resolve_signature(
         &self,
@@ -656,23 +685,9 @@ impl Linker {
                 }
             },
             SymbolItem::Alias { alias, resolved } => {
-                if let Some(resolved) = resolved.get() {
-                    return self.resolve_signature(resolved);
-                }
-
-                let context = SymbolResolutionContext {
-                    span: alias.target().span(),
-                    module: gid.module,
-                    kind: Some(InvokeKind::ProcRef),
-                };
-                let resolution = self.resolve_alias_target(&context, alias.target())?;
-                match resolution {
-                    // If we get back a MAST root resolution, it's a phantom digest
-                    SymbolResolution::MastRoot(_) => Ok(None),
-                    SymbolResolution::Exact { gid, .. } => self.resolve_signature(gid),
-                    SymbolResolution::Module { .. }
-                    | SymbolResolution::Local(_)
-                    | SymbolResolution::External(_) => unreachable!(),
+                match self.resolve_procedure_alias(gid, alias, resolved)? {
+                    Some(resolved_gid) => self.resolve_signature(resolved_gid),
+                    None => Ok(None),
                 }
             },
             SymbolItem::Compiled(_) | SymbolItem::Constant(_) | SymbolItem::Type(_) => {
@@ -736,24 +751,9 @@ impl Linker {
                 Ok(proc.attributes().clone())
             },
             SymbolItem::Alias { alias, resolved } => {
-                if let Some(resolved) = resolved.get() {
-                    return self.resolve_attributes(resolved);
-                }
-
-                let context = SymbolResolutionContext {
-                    span: alias.target().span(),
-                    module: gid.module,
-                    kind: Some(InvokeKind::ProcRef),
-                };
-                let resolution = self.resolve_alias_target(&context, alias.target())?;
-                match resolution {
-                    SymbolResolution::MastRoot(_)
-                    | SymbolResolution::Local(_)
-                    | SymbolResolution::External(_) => Ok(AttributeSet::default()),
-                    SymbolResolution::Exact { gid, .. } => self.resolve_attributes(gid),
-                    SymbolResolution::Module { .. } => {
-                        unreachable!("expected resolver to raise error")
-                    },
+                match self.resolve_procedure_alias(gid, alias, resolved)? {
+                    Some(resolved_gid) => self.resolve_attributes(resolved_gid),
+                    None => Ok(AttributeSet::default()),
                 }
             },
             SymbolItem::Compiled(_) | SymbolItem::Constant(_) | SymbolItem::Type(_) => {
