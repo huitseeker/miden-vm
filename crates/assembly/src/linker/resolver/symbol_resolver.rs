@@ -300,13 +300,7 @@ impl<'a> SymbolResolver<'a> {
             },
             SymbolResolution::MastRoot(digest) => {
                 log::debug!(target: "name-resolver::resolve", "resolved '{symbol}' to digest {digest}");
-                match self.graph.get_procedure_index_by_digest(&digest) {
-                    Some(gid) => Ok(SymbolResolution::Exact {
-                        gid,
-                        path: Span::new(digest.span(), self.item_path(gid)),
-                    }),
-                    None => Ok(SymbolResolution::MastRoot(digest)),
-                }
+                Ok(self.resolve_mast_root(&digest))
             },
             res @ (SymbolResolution::Exact { .. } | SymbolResolution::Module { .. }) => {
                 log::debug!(target: "name-resolver::resolve", "resolved '{symbol}': {res:?}");
@@ -339,15 +333,7 @@ impl<'a> SymbolResolver<'a> {
                     path: Span::new(item.span(), self.item_path(gid)),
                 })
             },
-            Ok(SymbolResolution::MastRoot(digest)) => {
-                match self.graph.get_procedure_index_by_digest(&digest) {
-                    Some(gid) => Ok(SymbolResolution::Exact {
-                        gid,
-                        path: Span::new(digest.span(), self.item_path(gid)),
-                    }),
-                    None => Ok(SymbolResolution::MastRoot(digest)),
-                }
-            },
+            Ok(SymbolResolution::MastRoot(digest)) => Ok(self.resolve_mast_root(&digest)),
             Ok(res @ (SymbolResolution::Exact { .. } | SymbolResolution::Module { .. })) => Ok(res),
             Err(err) if matches!(&*err, SymbolResolutionError::UndefinedSymbol { .. }) => {
                 // If we attempted to resolve a symbol to an import, but there is no such import,
