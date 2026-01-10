@@ -46,6 +46,24 @@ macro_rules! wrap_const_control_flow {
     };
 }
 
+/// Generates VisitMut methods for immediate types that delegate to ConstEvalVisitor.
+///
+/// Each generated method:
+/// 1. Creates a ConstEvalVisitor wrapping self
+/// 2. Calls the corresponding visit method on the visitor
+/// 3. Wraps the result in the appropriate ControlFlow type
+macro_rules! impl_immediate_visitors {
+    ($($method:ident => $ty:ty),* $(,)?) => {
+        $(
+            fn $method(&mut self, imm: &mut ast::Immediate<$ty>) -> ControlFlow<LinkerError> {
+                let mut visitor = ConstEvalVisitor::new(self);
+                let _ = visitor.$method(imm);
+                wrap_const_control_flow!(visitor)
+            }
+        )*
+    };
+}
+
 impl<'a, 'b: 'a> ModuleRewriter<'a, 'b> {
     /// Create a new instance of this pass with the given [SymbolResolver]
     pub fn new(module: ModuleIndex, resolver: &'a SymbolResolver<'b>) -> Self {
@@ -162,58 +180,14 @@ impl<'a, 'b: 'a> VisitMut<LinkerError> for ModuleRewriter<'a, 'b> {
         }
         ControlFlow::Continue(())
     }
-    fn visit_mut_immediate_u8(&mut self, imm: &mut ast::Immediate<u8>) -> ControlFlow<LinkerError> {
-        let mut visitor = ConstEvalVisitor::new(self);
-        let _ = visitor.visit_mut_immediate_u8(imm);
-        wrap_const_control_flow!(visitor)
-    }
-    fn visit_mut_immediate_u16(
-        &mut self,
-        imm: &mut ast::Immediate<u16>,
-    ) -> ControlFlow<LinkerError> {
-        let mut visitor = ConstEvalVisitor::new(self);
-        let _ = visitor.visit_mut_immediate_u16(imm);
-        wrap_const_control_flow!(visitor)
-    }
-    fn visit_mut_immediate_u32(
-        &mut self,
-        imm: &mut ast::Immediate<u32>,
-    ) -> ControlFlow<LinkerError> {
-        let mut visitor = ConstEvalVisitor::new(self);
-        let _ = visitor.visit_mut_immediate_u32(imm);
-        wrap_const_control_flow!(visitor)
-    }
-    fn visit_mut_immediate_error_message(
-        &mut self,
-        imm: &mut ast::Immediate<Arc<str>>,
-    ) -> ControlFlow<LinkerError> {
-        let mut visitor = ConstEvalVisitor::new(self);
-        let _ = visitor.visit_mut_immediate_error_message(imm);
-        wrap_const_control_flow!(visitor)
-    }
-    fn visit_mut_immediate_felt(
-        &mut self,
-        imm: &mut ast::Immediate<Felt>,
-    ) -> ControlFlow<LinkerError> {
-        let mut visitor = ConstEvalVisitor::new(self);
-        let _ = visitor.visit_mut_immediate_felt(imm);
-        wrap_const_control_flow!(visitor)
-    }
-    fn visit_mut_immediate_push_value(
-        &mut self,
-        imm: &mut ast::Immediate<miden_assembly_syntax::parser::PushValue>,
-    ) -> ControlFlow<LinkerError> {
-        let mut visitor = ConstEvalVisitor::new(self);
-        let _ = visitor.visit_mut_immediate_push_value(imm);
-        wrap_const_control_flow!(visitor)
-    }
-    fn visit_mut_immediate_word_value(
-        &mut self,
-        imm: &mut ast::Immediate<miden_assembly_syntax::parser::WordValue>,
-    ) -> ControlFlow<LinkerError> {
-        let mut visitor = ConstEvalVisitor::new(self);
-        let _ = visitor.visit_mut_immediate_word_value(imm);
-        wrap_const_control_flow!(visitor)
+    impl_immediate_visitors! {
+        visit_mut_immediate_u8 => u8,
+        visit_mut_immediate_u16 => u16,
+        visit_mut_immediate_u32 => u32,
+        visit_mut_immediate_error_message => Arc<str>,
+        visit_mut_immediate_felt => Felt,
+        visit_mut_immediate_push_value => miden_assembly_syntax::parser::PushValue,
+        visit_mut_immediate_word_value => miden_assembly_syntax::parser::WordValue,
     }
 }
 
