@@ -329,6 +329,24 @@ impl Assembler {
 
 // ------------------------------------------------------------------------------------------------
 /// Compilation/Assembly
+/// Macro to attach decorators and an assembly operation decorator to a control flow node builder.
+/// Reduces duplication in if/while control flow handling.
+macro_rules! attach_decorators_and_asmop {
+    (
+        $self:expr, $block_builder:expr, $builder:expr, $span:expr, $op_name:expr, $proc_ctx:expr
+    ) => {{
+        if let Some(decorator_ids) = $block_builder.drain_decorators() {
+            $builder.append_before_enter(decorator_ids);
+        }
+
+        let op = $self.create_asmop_decorator($span, $op_name, $proc_ctx);
+        let decorator_id = $block_builder
+            .mast_forest_builder_mut()
+            .ensure_decorator(Decorator::AsmOp(op))?;
+        $builder.append_before_enter([decorator_id]);
+    }};
+}
+
 impl Assembler {
     /// Assembles a set of modules into a [Library].
     ///
@@ -1027,16 +1045,14 @@ impl Assembler {
                     )?;
 
                     let mut split_builder = SplitNodeBuilder::new([then_blk, else_blk]);
-                    if let Some(decorator_ids) = block_builder.drain_decorators() {
-                        split_builder.append_before_enter(decorator_ids);
-                    }
-
-                    // Add an assembly operation decorator to the if node.
-                    let op = self.create_asmop_decorator(span, "if.true", proc_ctx);
-                    let decorator_id = block_builder
-                        .mast_forest_builder_mut()
-                        .ensure_decorator(Decorator::AsmOp(op))?;
-                    split_builder.append_before_enter([decorator_id]);
+                    attach_decorators_and_asmop!(
+                        self,
+                        block_builder,
+                        split_builder,
+                        span,
+                        "if.true",
+                        proc_ctx
+                    );
 
                     let split_node_id =
                         block_builder.mast_forest_builder_mut().ensure_node(split_builder)?;
@@ -1090,16 +1106,14 @@ impl Assembler {
                         block_builder.mast_forest_builder_mut(),
                     )?;
                     let mut loop_builder = LoopNodeBuilder::new(loop_body_node_id);
-                    if let Some(decorator_ids) = block_builder.drain_decorators() {
-                        loop_builder.append_before_enter(decorator_ids);
-                    }
-
-                    // Add an assembly operation decorator to the loop node.
-                    let op = self.create_asmop_decorator(span, "while.true", proc_ctx);
-                    let decorator_id = block_builder
-                        .mast_forest_builder_mut()
-                        .ensure_decorator(Decorator::AsmOp(op))?;
-                    loop_builder.append_before_enter([decorator_id]);
+                    attach_decorators_and_asmop!(
+                        self,
+                        block_builder,
+                        loop_builder,
+                        span,
+                        "while.true",
+                        proc_ctx
+                    );
 
                     let loop_node_id =
                         block_builder.mast_forest_builder_mut().ensure_node(loop_builder)?;
