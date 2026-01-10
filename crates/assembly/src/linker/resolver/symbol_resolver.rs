@@ -33,6 +33,18 @@ pub struct SymbolResolutionContext {
 }
 
 impl SymbolResolutionContext {
+    /// Creates a new context for resolving a non-invocation symbol reference.
+    #[inline]
+    pub fn new(span: SourceSpan, module: ModuleIndex) -> Self {
+        Self { span, module, kind: None }
+    }
+
+    /// Creates a new context for resolving an invocation target with a specific invoke kind.
+    #[inline]
+    pub fn with_kind(span: SourceSpan, module: ModuleIndex, kind: InvokeKind) -> Self {
+        Self { span, module, kind: Some(kind) }
+    }
+
     #[inline]
     pub fn in_syscall(&self) -> bool {
         matches!(self.kind, Some(InvokeKind::SysCall))
@@ -226,12 +238,13 @@ impl<'a> SymbolResolver<'a> {
 
                     let span = path.span();
                     let path = module_path.join(subpath);
-                    let context = SymbolResolutionContext {
-                        span: module_path.span(),
-                        module: id,
-                        kind: context.kind,
+                    let new_context = match context.kind {
+                        Some(kind) => {
+                            SymbolResolutionContext::with_kind(module_path.span(), id, kind)
+                        },
+                        None => SymbolResolutionContext::new(module_path.span(), id),
                     };
-                    self.resolve_path(&context, Span::new(span, path.as_path()))
+                    self.resolve_path(&new_context, Span::new(span, path.as_path()))
                 },
                 SymbolResolution::Local(_) | SymbolResolution::External(_) => unreachable!(),
             }
@@ -308,12 +321,8 @@ impl<'a> SymbolResolver<'a> {
         log::debug!(target: "name-resolver::import", "local resolution for '{symbol}': {found:?}");
         match found {
             Ok(SymbolResolution::External(path)) => {
-                let context = SymbolResolutionContext {
-                    span: symbol.span(),
-                    module: context.module,
-                    kind: None,
-                };
-                self.resolve_path(&context, path.as_deref())
+                let new_context = SymbolResolutionContext::new(symbol.span(), context.module);
+                self.resolve_path(&new_context, path.as_deref())
             },
             Ok(SymbolResolution::Local(item)) => {
                 let gid = context.module + item.into_inner();
@@ -480,10 +489,11 @@ impl<'a> SymbolResolver<'a> {
             log::debug!(target: "name-resolver::find", "resolved '{resolving_parent}' to module {module_index} ({})", self.module_path(module_index));
 
             log::debug!(target: "name-resolver::find", "resolving {resolving_symbol} in module {resolving_parent}");
-            let context = SymbolResolutionContext {
-                module: module_index,
-                span: current_context.span,
-                kind: current_context.kind,
+            let context = match current_context.kind {
+                Some(kind) => {
+                    SymbolResolutionContext::with_kind(current_context.span, module_index, kind)
+                },
+                None => SymbolResolutionContext::new(current_context.span, module_index),
             };
             match self.find_local(
                 &context,
@@ -543,14 +553,13 @@ impl<'a> SymbolResolver<'a> {
                                     ].into(),
                                 }))
                 } else {
-                    ControlFlow::Continue(LocalFindResult {
-                        context: SymbolResolutionContext {
-                            span: fqn.span(),
-                            module: context.module,
-                            kind: context.kind,
+                    let new_context = match context.kind {
+                        Some(kind) => {
+                            SymbolResolutionContext::with_kind(fqn.span(), context.module, kind)
                         },
-                        resolving: fqn,
-                    })
+                        None => SymbolResolutionContext::new(fqn.span(), context.module),
+                    };
+                    ControlFlow::Continue(LocalFindResult { context: new_context, resolving: fqn })
                 }
             },
             Ok(SymbolResolution::MastRoot(ref digest)) => {

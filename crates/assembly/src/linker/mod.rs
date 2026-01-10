@@ -505,11 +505,8 @@ impl Linker {
                         } else {
                             log::debug!(target: "linker", "  | resolving alias {}..", alias.target());
 
-                            let context = SymbolResolutionContext {
-                                span: alias.target().span(),
-                                module: module_index,
-                                kind: None,
-                            };
+                            let context =
+                                SymbolResolutionContext::new(alias.target().span(), module_index);
                             if let Some(callee) = resolver
                                 .resolve_alias_target(&context, alias.target())?
                                 .into_global_id()
@@ -532,11 +529,7 @@ impl Linker {
                         for invoke in proc.invoked() {
                             log::debug!(target: "linker", "  | recording {} dependency on {}", invoke.kind, &invoke.target);
 
-                            let context = SymbolResolutionContext {
-                                span: invoke.span(),
-                                module: module_index,
-                                kind: None,
-                            };
+                            let context = SymbolResolutionContext::new(invoke.span(), module_index);
                             if let Some(callee) = resolver
                                 .resolve_invoke_target(&context, &invoke.target)?
                                 .into_global_id()
@@ -655,11 +648,11 @@ impl Linker {
             return Ok(Some(resolved));
         }
 
-        let context = SymbolResolutionContext {
-            span: alias.target().span(),
-            module: gid.module,
-            kind: Some(InvokeKind::ProcRef),
-        };
+        let context = SymbolResolutionContext::with_kind(
+            alias.target().span(),
+            gid.module,
+            InvokeKind::ProcRef,
+        );
         let resolution = self.resolve_alias_target(&context, alias.target())?;
         match resolution {
             SymbolResolution::MastRoot(_) => Ok(None),

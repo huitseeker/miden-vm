@@ -33,11 +33,7 @@ pub fn rewrite_symbol(
             ItemInfo::Procedure(_) => (),
         },
         SymbolItem::Alias { alias, resolved: resolved_gid } => {
-            let context = SymbolResolutionContext {
-                span: alias.span(),
-                module: gid.module,
-                kind: None,
-            };
+            let context = SymbolResolutionContext::new(alias.span(), gid.module);
             match resolver.resolve_alias_target(&context, alias.target())? {
                 SymbolResolution::Exact { gid, .. } => {
                     resolved_gid.set(Some(gid));

@@ -45,11 +45,7 @@ impl<'a, 'b: 'a> ConstEnvironment for Resolver<'a, 'b> {
     }
 
     fn get(&self, name: &Ident) -> Result<Option<CachedConstantValue<'_>>, Self::Error> {
-        let context = SymbolResolutionContext {
-            span: name.span(),
-            module: self.current_module,
-            kind: None,
-        };
+        let context = SymbolResolutionContext::new(name.span(), self.current_module);
         let gid = match self.resolver.resolve_local(&context, name)? {
             SymbolResolution::Exact { gid, .. } => gid,
             SymbolResolution::Local(index) => self.current_module + index.into_inner(),
@@ -87,11 +83,7 @@ impl<'a, 'b: 'a> ConstEnvironment for Resolver<'a, 'b> {
         &self,
         path: Span<&Path>,
     ) -> Result<Option<CachedConstantValue<'_>>, Self::Error> {
-        let context = SymbolResolutionContext {
-            span: path.span(),
-            module: self.current_module,
-            kind: None,
-        };
+        let context = SymbolResolutionContext::new(path.span(), self.current_module);
         let gid = match self.resolver.resolve_path(&context, path)? {
             SymbolResolution::Exact { gid, .. } => gid,
             SymbolResolution::Local(index) => self.current_module + index.into_inner(),
@@ -135,11 +127,7 @@ impl<'a, 'b: 'a> ConstEnvironment for Resolver<'a, 'b> {
         let Some(value) = value.as_value() else {
             return;
         };
-        let context = SymbolResolutionContext {
-            span: path.span(),
-            module: self.current_module,
-            kind: None,
-        };
+        let context = SymbolResolutionContext::new(path.span(), self.current_module);
         let gid = match self.resolver.resolve_path(&context, path) {
             Ok(SymbolResolution::Exact { gid, .. }) => gid,
             Ok(SymbolResolution::Local(index)) => self.current_module + index.into_inner(),
@@ -189,11 +177,7 @@ impl<'a, 'b: 'a> ast::TypeResolver<LinkerError> for Resolver<'a, 'b> {
     }
 
     fn resolve_type_ref(&self, ty: Span<&Path>) -> Result<SymbolResolution, LinkerError> {
-        let context = SymbolResolutionContext {
-            span: ty.span(),
-            module: self.current_module,
-            kind: None,
-        };
+        let context = SymbolResolutionContext::new(ty.span(), self.current_module);
         match self.resolver.resolve_path(&context, ty)? {
             exact @ SymbolResolution::Exact { .. } => Ok(exact),
             SymbolResolution::Local(index) => {

@@ -80,11 +80,7 @@ impl<'a, 'b: 'a> ModuleRewriter<'a, 'b> {
         target: &mut InvocationTarget,
     ) -> ControlFlow<LinkerError> {
         log::debug!(target: "linker", "    * rewriting {kind} target {target}");
-        let context = SymbolResolutionContext {
-            span: target.span(),
-            module: self.module_id,
-            kind: Some(kind),
-        };
+        let context = SymbolResolutionContext::with_kind(target.span(), self.module_id, kind);
         match self.resolver.resolve_invoke_target(&context, target) {
             Err(err) => {
                 log::error!(target: "linker", "    | failed to resolve target {target}");
@@ -159,7 +155,7 @@ impl<'a, 'b: 'a> VisitMut<LinkerError> for ModuleRewriter<'a, 'b> {
         }
         log::debug!(target: "linker", "    * rewriting alias target {target}");
         let span = target.span();
-        let context = SymbolResolutionContext { span, module: self.module_id, kind: None };
+        let context = SymbolResolutionContext::new(span, self.module_id);
         match self.resolver.resolve_alias_target(&context, target) {
             Err(err) => {
                 log::error!(target: "linker", "    | failed to resolve target {target}");
@@ -201,11 +197,7 @@ impl<'a, 'b: 'a> ConstEnvironment for ModuleRewriter<'a, 'b> {
     fn get(&self, name: &ast::Ident) -> Result<Option<CachedConstantValue<'_>>, Self::Error> {
         let module = &self.resolver.linker()[self.module_id];
         let name = Span::new(name.span(), name.as_str());
-        let context = SymbolResolutionContext {
-            span: name.span(),
-            module: self.module_id,
-            kind: None,
-        };
+        let context = SymbolResolutionContext::new(name.span(), self.module_id);
         let symbol = match self.resolver.resolve_local(&context, &name)? {
             SymbolResolution::Exact { gid, .. } => &self.resolver.linker()[gid],
             SymbolResolution::Local(item) => &module[*item.inner()],
@@ -238,11 +230,7 @@ impl<'a, 'b: 'a> ConstEnvironment for ModuleRewriter<'a, 'b> {
         &self,
         path: Span<&ast::Path>,
     ) -> Result<Option<CachedConstantValue<'_>>, Self::Error> {
-        let context = SymbolResolutionContext {
-            span: path.span(),
-            module: self.module_id,
-            kind: None,
-        };
+        let context = SymbolResolutionContext::new(path.span(), self.module_id);
         let gid = match self.resolver.resolve_path(&context, path)? {
             SymbolResolution::Exact { gid, .. } => gid,
             SymbolResolution::Local(item) => self.module_id + item.into_inner(),

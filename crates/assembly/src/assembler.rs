@@ -1070,11 +1070,7 @@ impl Assembler {
         caller_id: GlobalItemIndex,
         mast_forest_builder: &mut MastForestBuilder,
     ) -> Result<Option<ResolvedProcedure>, Report> {
-        let caller = SymbolResolutionContext {
-            span: target.span(),
-            module: caller_id.module,
-            kind: Some(kind),
-        };
+        let caller = SymbolResolutionContext::with_kind(target.span(), caller_id.module, kind);
         let resolved = self.linker.resolve_invoke_target(&caller, target)?;
         match resolved {
             SymbolResolution::MastRoot(mast_root) => {
