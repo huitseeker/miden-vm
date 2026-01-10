@@ -1,5 +1,7 @@
 use alloc::{borrow::Borrow, string::ToString, sync::Arc, vec::Vec};
 
+// Re-export Immediate for use in register_error_from
+use miden_assembly_syntax::ast::Immediate;
 use miden_assembly_syntax::{ast::Instruction, debuginfo::Span, diagnostics::Report};
 use miden_core::{
     AssemblyOp, Decorator, DecoratorList, Felt, Operation,
@@ -237,5 +239,16 @@ impl BasicBlockBuilder<'_> {
     /// corresponding error code as a Felt.
     pub fn register_error(&mut self, msg: Arc<str>) -> Felt {
         self.mast_forest_builder.register_error(msg)
+    }
+
+    /// Registers an error from an Immediate<Arc<str>> and returns the error code.
+    ///
+    /// This is a convenience method for instructions that accept error messages,
+    /// such as assert.err, u32assert.err, etc.
+    ///
+    /// Note: This method requires `&mut self`, so it should be called before
+    /// passing `block_builder` to other functions that also require mutable access.
+    pub fn register_error_from(&mut self, err_msg: &Immediate<Arc<str>>) -> Felt {
+        self.register_error(err_msg.expect_string())
     }
 }

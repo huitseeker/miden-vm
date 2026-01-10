@@ -95,22 +95,22 @@ impl Assembler {
             Instruction::Nop => block_builder.push_op(Noop),
             Instruction::Assert => block_builder.push_op(Assert(ZERO)),
             Instruction::AssertWithError(err_msg) => {
-                let error_code = block_builder.register_error(err_msg.expect_string());
+                let error_code = block_builder.register_error_from(err_msg);
                 block_builder.push_op(Assert(error_code))
             },
             Instruction::AssertEq => block_builder.push_ops([Eq, Assert(ZERO)]),
             Instruction::AssertEqWithError(err_msg) => {
-                let error_code = block_builder.register_error(err_msg.expect_string());
+                let error_code = block_builder.register_error_from(err_msg);
                 block_builder.push_ops([Eq, Assert(error_code)])
             },
             Instruction::AssertEqw => field_ops::assertw(block_builder, ZERO),
             Instruction::AssertEqwWithError(err_msg) => {
-                let error_code = block_builder.register_error(err_msg.expect_string());
+                let error_code = block_builder.register_error_from(err_msg);
                 field_ops::assertw(block_builder, error_code)
             },
             Instruction::Assertz => block_builder.push_ops([Eqz, Assert(ZERO)]),
             Instruction::AssertzWithError(err_msg) => {
-                let error_code = block_builder.register_error(err_msg.expect_string());
+                let error_code = block_builder.register_error_from(err_msg);
                 block_builder.push_ops([Eqz, Assert(error_code)])
             },
 
@@ -168,17 +168,17 @@ impl Assembler {
             Instruction::U32TestW => u32_ops::u32testw(block_builder),
             Instruction::U32Assert => block_builder.push_ops([Pad, U32assert2(ZERO), Drop]),
             Instruction::U32AssertWithError(err_msg) => {
-                let error_code = block_builder.register_error(err_msg.expect_string());
+                let error_code = block_builder.register_error_from(err_msg);
                 block_builder.push_ops([Pad, U32assert2(error_code), Drop])
             },
             Instruction::U32Assert2 => block_builder.push_op(U32assert2(ZERO)),
             Instruction::U32Assert2WithError(err_msg) => {
-                let error_code = block_builder.register_error(err_msg.expect_string());
+                let error_code = block_builder.register_error_from(err_msg);
                 block_builder.push_op(U32assert2(error_code))
             },
             Instruction::U32AssertW => u32_ops::u32assertw(block_builder, ZERO),
             Instruction::U32AssertWWithError(err_msg) => {
-                let error_code = block_builder.register_error(err_msg.expect_string());
+                let error_code = block_builder.register_error_from(err_msg);
                 u32_ops::u32assertw(block_builder, error_code)
             },
 
@@ -522,7 +522,7 @@ impl Assembler {
             Instruction::MTreeMerge => crypto_ops::mtree_merge(block_builder),
             Instruction::MTreeVerify => block_builder.push_op(MpVerify(ZERO)),
             Instruction::MTreeVerifyWithError(err_msg) => {
-                let error_code = block_builder.register_error(err_msg.expect_string());
+                let error_code = block_builder.register_error_from(err_msg);
                 block_builder.push_op(MpVerify(error_code))
             },
             Instruction::CryptoStream => block_builder.push_op(CryptoStream),
