@@ -387,18 +387,10 @@ impl<'a> SymbolResolver<'a> {
         context: &SymbolResolutionContext,
         path: Span<&Path>,
     ) -> Result<SymbolResolution, LinkerError> {
-        // If the caller is a syscall, set the invoke kind to `ProcRef` until we have resolved the
-        // procedure, then verify that it is in the kernel module. This bypasses validation until
-        // after resolution
-        let mut current_context = if context.in_syscall() {
-            let mut caller = context.clone();
-            caller.kind = Some(InvokeKind::ProcRef);
-            Cow::Owned(caller)
-        } else {
-            Cow::Borrowed(context)
-        };
+        let mut current_context = self.adjust_context_for_syscall(context);
         let mut resolving = path.map(|p| Arc::<Path>::from(p.to_path_buf()));
         let mut visited = BTreeSet::default();
+
         loop {
             let current_module_path = self.module_path(current_context.module);
             log::debug!(target: "name-resolver::find", "resolving {} of {resolving} from {} ({current_module_path})", current_context.display_kind(), &current_context.module);
@@ -406,24 +398,21 @@ impl<'a> SymbolResolver<'a> {
             let (resolving_symbol, resolving_parent) = resolving.split_last().unwrap();
             let resolving_symbol = Span::new(resolving.span(), resolving_symbol);
 
-            // Handle trivial case where we are resolving the current module path in the context of
-            // that module.
-            if current_module_path == &**resolving {
-                return Ok(SymbolResolution::Module {
-                    id: current_context.module,
-                    path: resolving,
-                });
+            // Try each resolution strategy in order
+            if let Some(result) =
+                self.try_resolve_trivial_case(&current_context, &resolving, current_module_path)
+            {
+                return Ok(result);
             }
 
-            // Handle the case where we are resolving a symbol in the current module
-            if resolving_parent == current_module_path {
-                match self.find_local(
-                    &current_context,
-                    resolving_symbol,
-                    resolving.inner().clone(),
-                    &mut visited,
-                ) {
-                    ControlFlow::Break(result) => break result,
+            if let Some(control) = self.try_resolve_in_current_module(
+                &current_context,
+                resolving_symbol,
+                &resolving,
+                &mut visited,
+            ) {
+                match control {
+                    ControlFlow::Break(result) => return result,
                     ControlFlow::Continue(LocalFindResult { context, resolving: next }) => {
                         current_context = Cow::Owned(context);
                         resolving = next;
@@ -432,61 +421,111 @@ impl<'a> SymbolResolver<'a> {
                 }
             }
 
-            // There are three possibilities at this point
-            //
-            // 1. `resolving` refers to a module, and that is how we will resolve it
-            // 2. `resolving` refers to an item, so we need to resolve `resolving_parent` to a
-            //    module first, then resolve `resolving_symbol` relative to that module.
-            // 3. `resolving` refers to an undefined symbol
-
-            // First, check if `resolving` refers to a module in the global module table
-            if let Some(id) =
-                self.find_module_index(current_context.module, resolving.as_deref())?
-            {
-                log::debug!(target: "name-resolver::find", "resolved '{resolving}' to module {id} ({})", self.module_path(id));
-                return Ok(SymbolResolution::Module {
-                    id,
-                    path: Span::new(resolving.span(), self.module_path(id).to_path_buf().into()),
-                });
+            if let Some(result) = self.try_resolve_global_module(&current_context, &resolving) {
+                return result;
             }
 
-            // We must assume that `resolving` is an item path, so we resolve `resolving_parent` as
-            // a module first, and proceed from there.
-            log::debug!(target: "name-resolver::find", "resolving '{resolving_parent}' from {} ({current_module_path})", current_context.module);
-            let module_index = self
-                .find_module_index(
-                    current_context.module,
-                    Span::new(resolving.span(), resolving_parent),
-                )?
-                .ok_or_else(|| {
-                    // If we couldn't resolve `resolving_parent` as a module either, then
-                    // `resolving` must be an undefined symbol path.
-                    LinkerError::UndefinedModule {
-                        span: current_context.span,
-                        source_file: self
-                            .graph
-                            .source_manager
-                            .get(current_context.span.source_id())
-                            .ok(),
-                        path: (*resolving).clone(),
-                    }
-                })?;
-            log::debug!(target: "name-resolver::find", "resolved '{resolving_parent}' to module {module_index} ({})", self.module_path(module_index));
-
-            log::debug!(target: "name-resolver::find", "resolving {resolving_symbol} in module {resolving_parent}");
-            let context = current_context.derive(current_context.span, module_index);
-            match self.find_local(
-                &context,
+            return self.resolve_via_parent_module(
+                &current_context,
                 resolving_symbol,
-                resolving.inner().clone(),
+                resolving_parent,
+                &resolving,
                 &mut visited,
-            ) {
-                ControlFlow::Break(result) => break result,
-                ControlFlow::Continue(LocalFindResult { context, resolving: next }) => {
-                    current_context = Cow::Owned(context);
-                    resolving = next;
-                },
-            }
+            );
+        }
+    }
+
+    fn adjust_context_for_syscall<'ctx>(
+        &'ctx self,
+        context: &'ctx SymbolResolutionContext,
+    ) -> Cow<'ctx, SymbolResolutionContext> {
+        // If the caller is a syscall, set the invoke kind to `ProcRef` until we have resolved the
+        // procedure, then verify that it is in the kernel module. This bypasses validation until
+        // after resolution
+        if context.in_syscall() {
+            let mut caller = context.clone();
+            caller.kind = Some(InvokeKind::ProcRef);
+            Cow::Owned(caller)
+        } else {
+            Cow::Borrowed(context)
+        }
+    }
+
+    fn try_resolve_trivial_case(
+        &self,
+        context: &SymbolResolutionContext,
+        resolving: &Span<Arc<Path>>,
+        current_module_path: &Path,
+    ) -> Option<SymbolResolution> {
+        // Handle trivial case where we are resolving the current module path in the context of
+        // that module.
+        (current_module_path == &**resolving).then(|| SymbolResolution::Module {
+            id: context.module,
+            path: resolving.clone(),
+        })
+    }
+
+    fn try_resolve_in_current_module(
+        &self,
+        context: &SymbolResolutionContext,
+        resolving_symbol: Span<&str>,
+        resolving: &Span<Arc<Path>>,
+        visited: &mut BTreeSet<Span<Arc<Path>>>,
+    ) -> Option<ControlFlow<Result<SymbolResolution, LinkerError>, LocalFindResult>> {
+        let current_module_path = self.module_path(context.module);
+        let (_resolving_symbol, resolving_parent) = resolving.split_last().unwrap();
+
+        (resolving_parent == current_module_path)
+            .then(|| self.find_local(context, resolving_symbol, resolving.inner().clone(), visited))
+    }
+
+    fn try_resolve_global_module(
+        &self,
+        context: &SymbolResolutionContext,
+        resolving: &Span<Arc<Path>>,
+    ) -> Option<Result<SymbolResolution, LinkerError>> {
+        // Check if `resolving` refers to a module in the global module table
+        let id = self.find_module_index(context.module, resolving.as_deref()).ok()??;
+
+        log::debug!(target: "name-resolver::find", "resolved '{resolving}' to module {id} ({})", self.module_path(id));
+        Some(Ok(SymbolResolution::Module {
+            id,
+            path: Span::new(resolving.span(), self.module_path(id).to_path_buf().into()),
+        }))
+    }
+
+    fn resolve_via_parent_module(
+        &self,
+        context: &SymbolResolutionContext,
+        resolving_symbol: Span<&str>,
+        resolving_parent: &Path,
+        resolving: &Span<Arc<Path>>,
+        visited: &mut BTreeSet<Span<Arc<Path>>>,
+    ) -> Result<SymbolResolution, LinkerError> {
+        // We must assume that `resolving` is an item path, so we resolve `resolving_parent` as
+        // a module first, and proceed from there.
+        let current_module_path = self.module_path(context.module);
+        log::debug!(target: "name-resolver::find", "resolving '{resolving_parent}' from {} ({current_module_path})", context.module);
+
+        let module_index = self
+            .find_module_index(context.module, Span::new(resolving.span(), resolving_parent))?
+            .ok_or_else(|| LinkerError::UndefinedModule {
+                span: context.span,
+                source_file: self.graph.source_manager.get(context.span.source_id()).ok(),
+                path: (**resolving).clone(),
+            })?;
+
+        log::debug!(target: "name-resolver::find", "resolved '{resolving_parent}' to module {module_index} ({})", self.module_path(module_index));
+        log::debug!(target: "name-resolver::find", "resolving {resolving_symbol} in module {resolving_parent}");
+
+        let new_context = context.derive(context.span, module_index);
+
+        match self.find_local(&new_context, resolving_symbol, resolving.inner().clone(), visited) {
+            ControlFlow::Break(result) => result,
+            ControlFlow::Continue(LocalFindResult { context, resolving: next }) => {
+                // This shouldn't happen in practice, but handle it gracefully
+                self.find(&context, next.as_deref())
+            },
         }
     }
 
