@@ -135,23 +135,33 @@ impl CallGraph {
             }
         }
 
-        let has_cycle = graph
+        if let Some(err) = graph.detect_cycle(&output) {
+            Err(err)
+        } else {
+            assert!(!expect_cycle, "we expected a cycle to be found, but one was not identified");
+            Ok(output)
+        }
+    }
+
+    /// Detects if any nodes remain unprocessed or have remaining edges after a topological sort,
+    /// indicating a cycle. Returns `Some(CycleError)` if a cycle is found.
+    fn detect_cycle(&self, processed: &[GlobalItemIndex]) -> Option<CycleError> {
+        let has_cycle = self
             .nodes
             .iter()
-            .any(|(n, out_edges)| !output.contains(n) || !out_edges.is_empty());
+            .any(|(n, out_edges)| !processed.contains(n) || !out_edges.is_empty());
         if has_cycle {
             let mut in_cycle = BTreeSet::default();
-            for (n, edges) in graph.nodes.iter() {
+            for (n, edges) in self.nodes.iter() {
                 if edges.is_empty() {
                     continue;
                 }
                 in_cycle.insert(*n);
                 in_cycle.extend(edges.as_slice());
             }
-            Err(CycleError(in_cycle))
+            Some(CycleError(in_cycle))
         } else {
-            assert!(!expect_cycle, "we expected a cycle to be found, but one was not identified");
-            Ok(output)
+            None
         }
     }
 
@@ -209,20 +219,8 @@ impl CallGraph {
             }
         }
 
-        let has_cycle = graph
-            .nodes
-            .iter()
-            .any(|(n, out_edges)| output.contains(n) && !out_edges.is_empty());
-        if has_cycle {
-            let mut in_cycle = BTreeSet::default();
-            for (n, edges) in graph.nodes.iter() {
-                if edges.is_empty() {
-                    continue;
-                }
-                in_cycle.insert(*n);
-                in_cycle.extend(edges.as_slice());
-            }
-            Err(CycleError(in_cycle))
+        if let Some(err) = graph.detect_cycle(&output) {
+            Err(err)
         } else {
             Ok(output)
         }
