@@ -51,6 +51,7 @@ use core::{
 };
 
 use miden_assembly_syntax::{
+    Library,
     ast::{
         self, AliasTarget, AttributeSet, GlobalItemIndex, InvocationTarget, InvokeKind, ItemIndex,
         Module, ModuleIndex, Path, SymbolResolution, Visibility, types,
@@ -582,6 +583,12 @@ impl Linker {
     /// Get an iterator over the external libraries the linker has linked against
     pub fn libraries(&self) -> impl Iterator<Item = &LinkLibrary> {
         self.libraries.values()
+    }
+
+    /// Get an iterator over the statically-linked libraries
+    pub fn static_libraries(&self) -> impl Iterator<Item = &Library> {
+        self.libraries()
+            .filter_map(|lib| lib.is_static().then_some(lib.library.as_ref()))
     }
 
     /// Compute the topological sort of the callgraph rooted at `caller`

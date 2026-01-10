@@ -22,6 +22,12 @@ impl LinkLibrary {
     pub fn r#static(library: Arc<Library>) -> Self {
         Self { library, kind: LinkLibraryKind::Static }
     }
+
+    /// Returns true if this library is statically linked.
+    #[inline]
+    pub fn is_static(&self) -> bool {
+        self.kind == LinkLibraryKind::Static
+    }
 }
 
 /// Represents how a library should be linked into the assembled MAST

@@ -454,14 +454,7 @@ impl Assembler {
 
     /// Shared code used by both [`Self::assemble_library`] and [`Self::assemble_kernel`].
     fn assemble_common(mut self, module_indices: &[ModuleIndex]) -> Result<Library, Report> {
-        let staticlibs = self.linker.libraries().filter_map(|lib| {
-            if matches!(lib.kind, LinkLibraryKind::Static) {
-                Some(lib.library.as_ref())
-            } else {
-                None
-            }
-        });
-        let mut mast_forest_builder = MastForestBuilder::new(staticlibs)?;
+        let mut mast_forest_builder = MastForestBuilder::new(self.linker.static_libraries())?;
         let mut exports = {
             let mut exports = BTreeMap::new();
 
@@ -655,14 +648,7 @@ impl Assembler {
             .ok_or(SemanticAnalysisError::MissingEntrypoint)?;
 
         // Compile the linked module graph rooted at the entrypoint
-        let staticlibs = self.linker.libraries().filter_map(|lib| {
-            if matches!(lib.kind, LinkLibraryKind::Static) {
-                Some(lib.library.as_ref())
-            } else {
-                None
-            }
-        });
-        let mut mast_forest_builder = MastForestBuilder::new(staticlibs)?;
+        let mut mast_forest_builder = MastForestBuilder::new(self.linker.static_libraries())?;
 
         if let Some(advice_map) = self.linker[module_index].advice_map() {
             mast_forest_builder.merge_advice_map(advice_map)?;
