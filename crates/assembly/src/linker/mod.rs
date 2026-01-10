@@ -697,8 +697,6 @@ impl Linker {
         use miden_assembly_syntax::ast::TypeResolver;
 
         let cc = ty.cc;
-        let mut args = Vec::with_capacity(ty.args.len());
-
         let symbol_resolver = SymbolResolver::new(self);
         let mut cache = ResolverCache::default();
         let resolver = Resolver {
@@ -706,29 +704,18 @@ impl Linker {
             cache: &mut cache,
             current_module: module_index,
         };
-        for arg in ty.args.iter() {
-            if let Some(arg) = resolver.resolve(arg)? {
-                args.push(arg);
-            } else {
-                let span = arg.span();
-                return Err(LinkerError::UndefinedType {
+        let resolve_type = |ty_expr: &ast::TypeExpr| -> Result<_, LinkerError> {
+            resolver.resolve(ty_expr)?.ok_or_else(|| {
+                let span = ty_expr.span();
+                LinkerError::UndefinedType {
                     span,
                     source_file: self.source_manager.get(span.source_id()).ok(),
-                });
-            }
-        }
-        let mut results = Vec::with_capacity(ty.results.len());
-        for result in ty.results.iter() {
-            if let Some(result) = resolver.resolve(result)? {
-                results.push(result);
-            } else {
-                let span = result.span();
-                return Err(LinkerError::UndefinedType {
-                    span,
-                    source_file: self.source_manager.get(span.source_id()).ok(),
-                });
-            }
-        }
+                }
+            })
+        };
+
+        let args: Vec<_> = ty.args.iter().map(&resolve_type).collect::<Result<_, _>>()?;
+        let results: Vec<_> = ty.results.iter().map(resolve_type).collect::<Result<_, _>>()?;
         Ok(Arc::new(types::FunctionType::new(cc, args, results)))
     }
 
