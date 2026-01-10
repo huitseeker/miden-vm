@@ -520,11 +520,9 @@ impl Linker {
         let mut edges = Vec::new();
         let mut cache = ResolverCache::default();
 
-        for (module_index, module) in self.modules.iter().enumerate() {
-            if !module.is_unlinked() {
-                continue;
-            }
-
+        for (module_index, module) in
+            self.modules.iter().enumerate().filter(|(_, m)| m.is_unlinked())
+        {
             let module_index = ModuleIndex::new(module_index);
             self.process_module_symbols(module_index, module, &resolver, &mut cache, &mut edges)?;
             module.set_status(LinkStatus::Linked);
