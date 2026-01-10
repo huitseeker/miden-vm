@@ -796,35 +796,25 @@ impl Assembler {
         root: &SubgraphRoot,
         mast_forest_builder: &mut MastForestBuilder,
     ) -> Result<(), Report> {
-        // Clone the item to avoid borrow checker issues
-        let item = self.linker[procedure_gid].item().clone();
-
-        match &item {
-            SymbolItem::Procedure(_) => {
-                self.process_procedure_item(
-                    procedure_gid,
-                    module_kind,
-                    module_path,
-                    root,
-                    mast_forest_builder,
-                )?;
-            },
-            SymbolItem::Alias { .. } => {
-                if let Some(alias) = item.as_alias() {
-                    self.process_alias_item(
-                        procedure_gid,
-                        alias,
-                        module_kind,
-                        module_path,
-                        mast_forest_builder,
-                    )?;
-                }
-            },
+        match self.linker[procedure_gid].item() {
+            SymbolItem::Procedure(_) => self.process_procedure_item(
+                procedure_gid,
+                module_kind,
+                module_path,
+                root,
+                mast_forest_builder,
+            ),
+            SymbolItem::Alias { .. } => self.process_alias_item(
+                procedure_gid,
+                module_kind,
+                module_path,
+                mast_forest_builder,
+            ),
             SymbolItem::Compiled(_) | SymbolItem::Constant(_) | SymbolItem::Type(_) => {
                 // There is nothing to do for other items that might have edges in the graph
+                Ok(())
             },
         }
-        Ok(())
     }
 
     fn process_procedure_item(
@@ -872,13 +862,12 @@ impl Assembler {
     fn process_alias_item(
         &mut self,
         procedure_gid: GlobalItemIndex,
-        alias: &ast::Alias,
         module_kind: ModuleKind,
         module_path: Arc<Path>,
         mast_forest_builder: &mut MastForestBuilder,
     ) -> Result<(), Report> {
         let item = self.linker[procedure_gid].item();
-        let SymbolItem::Alias { resolved, .. } = item else {
+        let SymbolItem::Alias { alias, resolved, .. } = item else {
             return Ok(());
         };
 
