@@ -6,7 +6,7 @@ use miden_assembly_syntax::{
     library::ItemInfo,
 };
 
-use super::LinkStatus;
+use super::{LinkStatus, LinkStatusCell};
 
 /// A [Symbol] is a named, linkable item defined within a module.
 #[derive(Debug, Clone)]
@@ -16,7 +16,7 @@ pub struct Symbol {
     /// The external visibility of the symbol
     visibility: Visibility,
     /// The link status of the symbol, i.e. unlinked, partially, or fully linked.
-    status: Cell<LinkStatus>,
+    status: LinkStatusCell,
     /// The type of item associated with this symbol.
     item: SymbolItem,
 }
@@ -50,7 +50,7 @@ impl Symbol {
         Self {
             name,
             visibility,
-            status: Cell::new(status),
+            status: LinkStatusCell::new(status),
             item,
         }
     }
@@ -88,13 +88,13 @@ impl Symbol {
     /// Returns true if this symbol has not yet been visited by the linker.
     #[inline]
     pub fn is_unlinked(&self) -> bool {
-        matches!(self.status.get(), LinkStatus::Unlinked)
+        self.status.is_unlinked()
     }
 
     /// Returns true if this symbol is fully-linked.
     #[inline]
     pub fn is_linked(&self) -> bool {
-        matches!(self.status.get(), LinkStatus::Linked)
+        self.status.is_linked()
     }
 
     /// Returns true if this symbol represents a procedure definition.

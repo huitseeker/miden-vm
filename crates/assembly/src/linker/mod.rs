@@ -87,6 +87,51 @@ pub enum LinkStatus {
     Linked,
 }
 
+/// Wraps interior mutability for link status with domain-specific methods.
+///
+/// This encapsulates the `Cell<LinkStatus>` pattern used by both `LinkModule` and `Symbol`,
+/// providing a single place for status-related logic and reducing boilerplate.
+#[derive(Debug, Clone, Default)]
+pub struct LinkStatusCell(core::cell::Cell<LinkStatus>);
+
+impl LinkStatusCell {
+    /// Create a new status cell with the given initial status.
+    #[inline]
+    pub const fn new(status: LinkStatus) -> Self {
+        Self(core::cell::Cell::new(status))
+    }
+
+    /// Get the current status.
+    #[inline(always)]
+    pub fn get(&self) -> LinkStatus {
+        self.0.get()
+    }
+
+    /// Set the status.
+    #[inline]
+    pub fn set(&self, status: LinkStatus) {
+        self.0.set(status);
+    }
+
+    /// Returns true if this item has not yet been visited by the linker.
+    #[inline]
+    pub fn is_unlinked(&self) -> bool {
+        matches!(self.get(), LinkStatus::Unlinked)
+    }
+
+    /// Returns true if this item is fully-linked.
+    #[inline]
+    pub fn is_linked(&self) -> bool {
+        matches!(self.get(), LinkStatus::Linked)
+    }
+
+    /// Returns true if this item is partially linked (visited but not fully resolved).
+    #[inline]
+    pub fn is_partially_linked(&self) -> bool {
+        matches!(self.get(), LinkStatus::PartiallyLinked)
+    }
+}
+
 // LINKER
 // ================================================================================================
 

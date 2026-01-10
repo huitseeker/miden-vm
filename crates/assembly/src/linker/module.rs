@@ -1,5 +1,5 @@
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
-use core::{cell::Cell, ops::Index};
+use core::ops::Index;
 
 use miden_assembly_syntax::{
     Path,
@@ -10,7 +10,7 @@ use miden_assembly_syntax::{
     debuginfo::{SourceManager, Span, Spanned},
 };
 
-use super::{AdviceMap, LinkStatus, Symbol, SymbolItem, SymbolResolver};
+use super::{AdviceMap, LinkStatus, LinkStatusCell, Symbol, SymbolItem, SymbolResolver};
 
 /// The source from which a [LinkModule] was derived.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -34,7 +34,7 @@ pub struct LinkModule {
     /// The kind of module being linked, i.e. kernel, executable or library.
     kind: ModuleKind,
     /// The link status of this module, i.e. whether it is unlinked, partially, or fully linked
-    status: Cell<LinkStatus>,
+    status: LinkStatusCell,
     /// The source of the module info, i.e. parsed from MASM source code, or loaded as MAST.
     ///
     /// Whether a module is in source form or assembled form determines whether the assembler needs
@@ -64,7 +64,7 @@ impl LinkModule {
         Self {
             id,
             kind,
-            status: Cell::new(status),
+            status: LinkStatusCell::new(status),
             source,
             path,
             symbols: Vec::default(),
@@ -112,13 +112,13 @@ impl LinkModule {
     /// Returns true if this module has not yet been visited by the linker.
     #[inline]
     pub fn is_unlinked(&self) -> bool {
-        matches!(self.status.get(), LinkStatus::Unlinked)
+        self.status.is_unlinked()
     }
 
     /// Returns true if this module is fully linked.
     #[inline]
     pub fn is_linked(&self) -> bool {
-        matches!(self.status.get(), LinkStatus::Linked)
+        self.status.is_linked()
     }
 
     /// Returns true if this module was loaded from MAST, rather than parsed from MASM sources.
