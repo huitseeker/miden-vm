@@ -267,23 +267,14 @@ impl<'a> SymbolResolver<'a> {
     ) -> Result<SymbolResolution, LinkerError> {
         log::debug!(target: "name-resolver::resolve", "resolving symbol '{symbol}'");
         match self.resolve_local(context, symbol.inner())? {
-            SymbolResolution::Local(index) if context.in_syscall() => {
-                log::debug!(target: "name-resolver::resolve", "resolved symbol to local item '{index}'");
-                let gid = GlobalItemIndex {
-                    module: self.graph.kernel_index.unwrap(),
-                    index: index.into_inner(),
-                };
-                Ok(SymbolResolution::Exact {
-                    gid,
-                    path: Span::new(index.span(), self.item_path(gid)),
-                })
-            },
             SymbolResolution::Local(index) => {
                 log::debug!(target: "name-resolver::resolve", "resolved symbol to local item '{index}'");
-                let gid = GlobalItemIndex {
-                    module: context.module,
-                    index: index.into_inner(),
+                let module = if context.in_syscall() {
+                    self.graph.kernel_index.unwrap()
+                } else {
+                    context.module
                 };
+                let gid = GlobalItemIndex { module, index: index.into_inner() };
                 Ok(SymbolResolution::Exact {
                     gid,
                     path: Span::new(index.span(), self.item_path(gid)),
