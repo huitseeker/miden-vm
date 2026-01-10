@@ -621,16 +621,7 @@ impl Assembler {
 /// When the value is 0, PUSH operation is replaced with PAD. When the value is 1, PUSH operation
 /// is replaced with PAD INCR because in most cases this will be more efficient than doing a PUSH.
 fn push_u32_value(span_builder: &mut BasicBlockBuilder, value: u32) {
-    use Operation::*;
-
-    if value == 0 {
-        span_builder.push_op(Pad);
-    } else if value == 1 {
-        span_builder.push_op(Pad);
-        span_builder.push_op(Incr);
-    } else {
-        span_builder.push_op(Push(Felt::from(value)));
-    }
+    push_felt(span_builder, Felt::from(value));
 }
 
 /// This is a helper function that appends a PUSH operation to the span block which puts the
