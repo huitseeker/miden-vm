@@ -415,6 +415,20 @@ impl MastForestBuilder {
         }
     }
 
+    /// Helper method to add a decorated node to the forest.
+    ///
+    /// This encapsulates the common pattern of creating a node builder,
+    /// adding before/after decorators, and inserting it into the forest.
+    fn ensure_decorated_node(
+        &mut self,
+        builder: impl MastForestContributor,
+        before_enter: Vec<DecoratorId>,
+        after_exit: Vec<DecoratorId>,
+    ) -> Result<MastNodeId, Report> {
+        let decorated = builder.with_before_enter(before_enter).with_after_exit(after_exit);
+        self.ensure_node(decorated)
+    }
+
     /// Adds a basic block node to the forest, and returns the [`MastNodeId`] associated with it.
     pub fn ensure_block(
         &mut self,
@@ -423,10 +437,11 @@ impl MastForestBuilder {
         before_enter: Vec<DecoratorId>,
         after_exit: Vec<DecoratorId>,
     ) -> Result<MastNodeId, Report> {
-        let block = BasicBlockNodeBuilder::new(operations, decorators)
-            .with_before_enter(before_enter)
-            .with_after_exit(after_exit);
-        self.ensure_node(block)
+        self.ensure_decorated_node(
+            BasicBlockNodeBuilder::new(operations, decorators),
+            before_enter,
+            after_exit,
+        )
     }
 
     /// Adds a join node to the forest, and returns the [`MastNodeId`] associated with it.
@@ -437,10 +452,11 @@ impl MastForestBuilder {
         before_enter: Vec<DecoratorId>,
         after_exit: Vec<DecoratorId>,
     ) -> Result<MastNodeId, Report> {
-        let join = JoinNodeBuilder::new([left_child, right_child])
-            .with_before_enter(before_enter)
-            .with_after_exit(after_exit);
-        self.ensure_node(join)
+        self.ensure_decorated_node(
+            JoinNodeBuilder::new([left_child, right_child]),
+            before_enter,
+            after_exit,
+        )
     }
 
     /// Adds a call node to the forest, and returns the [`MastNodeId`] associated with it.
@@ -450,10 +466,7 @@ impl MastForestBuilder {
         before_enter: Vec<DecoratorId>,
         after_exit: Vec<DecoratorId>,
     ) -> Result<MastNodeId, Report> {
-        let call = CallNodeBuilder::new(callee)
-            .with_before_enter(before_enter)
-            .with_after_exit(after_exit);
-        self.ensure_node(call)
+        self.ensure_decorated_node(CallNodeBuilder::new(callee), before_enter, after_exit)
     }
 
     /// Adds a split node to the forest, and returns the [`MastNodeId`] associated with it.
@@ -466,10 +479,11 @@ impl MastForestBuilder {
         before_enter: Vec<DecoratorId>,
         after_exit: Vec<DecoratorId>,
     ) -> Result<MastNodeId, Report> {
-        let split = SplitNodeBuilder::new([left_child, right_child])
-            .with_before_enter(before_enter)
-            .with_after_exit(after_exit);
-        self.ensure_node(split)
+        self.ensure_decorated_node(
+            SplitNodeBuilder::new([left_child, right_child]),
+            before_enter,
+            after_exit,
+        )
     }
 
     /// Adds a loop node to the forest, and returns the [`MastNodeId`] associated with it.
@@ -481,10 +495,7 @@ impl MastForestBuilder {
         before_enter: Vec<DecoratorId>,
         after_exit: Vec<DecoratorId>,
     ) -> Result<MastNodeId, Report> {
-        let loop_node = LoopNodeBuilder::new(body)
-            .with_before_enter(before_enter)
-            .with_after_exit(after_exit);
-        self.ensure_node(loop_node)
+        self.ensure_decorated_node(LoopNodeBuilder::new(body), before_enter, after_exit)
     }
 
     /// Adds a syscall node to the forest, and returns the [`MastNodeId`] associated with it.
@@ -494,10 +505,7 @@ impl MastForestBuilder {
         before_enter: Vec<DecoratorId>,
         after_exit: Vec<DecoratorId>,
     ) -> Result<MastNodeId, Report> {
-        let syscall = CallNodeBuilder::new_syscall(callee)
-            .with_after_exit(after_exit)
-            .with_before_enter(before_enter);
-        self.ensure_node(syscall)
+        self.ensure_decorated_node(CallNodeBuilder::new_syscall(callee), before_enter, after_exit)
     }
 
     /// Adds a dyn node to the forest, and returns the [`MastNodeId`] associated with it.
@@ -506,11 +514,7 @@ impl MastForestBuilder {
         before_enter: Vec<DecoratorId>,
         after_exit: Vec<DecoratorId>,
     ) -> Result<MastNodeId, Report> {
-        self.ensure_node(
-            DynNodeBuilder::new_dyn()
-                .with_after_exit(after_exit)
-                .with_before_enter(before_enter),
-        )
+        self.ensure_decorated_node(DynNodeBuilder::new_dyn(), before_enter, after_exit)
     }
 
     /// Adds a dyncall node to the forest, and returns the [`MastNodeId`] associated with it.
@@ -519,11 +523,7 @@ impl MastForestBuilder {
         before_enter: Vec<DecoratorId>,
         after_exit: Vec<DecoratorId>,
     ) -> Result<MastNodeId, Report> {
-        self.ensure_node(
-            DynNodeBuilder::new_dyncall()
-                .with_after_exit(after_exit)
-                .with_before_enter(before_enter),
-        )
+        self.ensure_decorated_node(DynNodeBuilder::new_dyncall(), before_enter, after_exit)
     }
 
     /// Collects all decorators from a subtree in the statically linked forest and copies them
