@@ -532,40 +532,31 @@ impl MastForestBuilder {
     /// This must be called before copying nodes from the subtree to ensure all decorator IDs
     /// can be properly remapped.
     fn collect_decorators_from_subtree(&mut self, root_id: &MastNodeId) -> Result<(), Report> {
-        // Clear the decorator remapping for this subtree
         self.statically_linked_decorator_remapping.clear();
 
-        // Iterate through all nodes in the subtree
         for node_id in SubtreeIterator::new(root_id, &self.statically_linked_mast.clone()) {
-            // Get all decorator IDs used by this node
-            let decorator_ids: Vec<DecoratorId> = {
-                let mut ids = Vec::new();
+            // Collect to break the borrow on self before the mutable loop below
+            let decorator_ids: Vec<_> = self
+                .statically_linked_mast
+                .before_enter_decorators(node_id)
+                .iter()
+                .copied()
+                .chain(self.statically_linked_mast.after_exit_decorators(node_id).iter().copied())
+                .chain(if let MastNode::Block(block) = &self.statically_linked_mast[node_id] {
+                    block
+                        .indexed_decorator_iter(&self.statically_linked_mast)
+                        .map(|(_, id)| id)
+                        .collect()
+                } else {
+                    Vec::new()
+                })
+                .collect();
 
-                // Collect before_enter decorators
-                ids.extend(self.statically_linked_mast.before_enter_decorators(node_id));
-
-                // Collect after_exit decorators
-                ids.extend(self.statically_linked_mast.after_exit_decorators(node_id));
-
-                // For BasicBlockNode, also collect op-indexed decorators
-                if let MastNode::Block(block_node) = &self.statically_linked_mast[node_id] {
-                    for (_idx, decorator_id) in
-                        block_node.indexed_decorator_iter(&self.statically_linked_mast)
-                    {
-                        ids.push(decorator_id);
-                    }
-                }
-
-                ids
-            };
-
-            // Copy each decorator to the target forest if not already copied
-            for old_decorator_id in decorator_ids {
-                if !self.statically_linked_decorator_remapping.contains_key(&old_decorator_id) {
-                    let decorator = self.statically_linked_mast[old_decorator_id].clone();
-                    let new_decorator_id = self.ensure_decorator(decorator)?;
-                    self.statically_linked_decorator_remapping
-                        .insert(old_decorator_id, new_decorator_id);
+            for old_id in decorator_ids {
+                if !self.statically_linked_decorator_remapping.contains_key(&old_id) {
+                    let decorator = self.statically_linked_mast[old_id].clone();
+                    let new_id = self.ensure_decorator(decorator)?;
+                    self.statically_linked_decorator_remapping.insert(old_id, new_id);
                 }
             }
         }
