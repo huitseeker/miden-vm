@@ -534,13 +534,14 @@ impl Linker {
 
         // Make sure the graph is free of cycles
         self.callgraph.toposort().map_err(|cycle| {
-            let iter = cycle.into_node_ids();
-            let mut nodes = Vec::with_capacity(iter.len());
-            for node in iter {
-                let module = self[node.module].path();
-                let item = self[node].name();
-                nodes.push(module.join(item).to_string());
-            }
+            let nodes: Vec<_> = cycle
+                .into_node_ids()
+                .map(|node| {
+                    let module = self[node.module].path();
+                    let item = self[node].name();
+                    module.join(item).to_string()
+                })
+                .collect();
             LinkerError::Cycle { nodes: nodes.into() }
         })?;
 
