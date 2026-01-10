@@ -5,7 +5,7 @@ use miden_assembly_syntax::{
     ast::{
         AliasTarget, InvocationTarget, InvokeKind, Path, SymbolResolution, SymbolResolutionError,
     },
-    debuginfo::{SourceManager, SourceSpan, Span, Spanned},
+    debuginfo::{SourceFile, SourceManager, SourceSpan, Span, Spanned},
     diagnostics::RelatedLabel,
 };
 
@@ -106,6 +106,12 @@ impl<'a> SymbolResolver<'a> {
         self.graph.source_manager.clone()
     }
 
+    /// Returns the source file for the given span, if available.
+    #[inline]
+    pub fn source_file_for(&self, span: SourceSpan) -> Option<Arc<SourceFile>> {
+        self.graph.source_manager.get(span.source_id()).ok()
+    }
+
     #[inline(always)]
     pub(crate) fn linker(&self) -> &Linker {
         self.graph
@@ -144,7 +150,7 @@ impl<'a> SymbolResolver<'a> {
                 SymbolResolution::Module { id: _, path: module_path } => {
                     Err(LinkerError::InvalidInvokeTarget {
                         span: path.span(),
-                        source_file: self.graph.source_manager.get(path.span().source_id()).ok(),
+                        source_file: self.source_file_for(path.span()),
                         path: module_path.into_inner(),
                     })
                 },
@@ -374,7 +380,7 @@ impl<'a> SymbolResolver<'a> {
                 None => {
                     return Err(Box::new(SymbolResolutionError::UndefinedSymbol {
                         span: context.span,
-                        source_file: self.source_manager().get(context.span.source_id()).ok(),
+                        source_file: self.source_file_for(context.span),
                     }));
                 },
             }
@@ -525,7 +531,7 @@ impl<'a> SymbolResolver<'a> {
                 if context.in_syscall() && self.graph.kernel_index != Some(context.module) {
                     return ControlFlow::Break(Err(LinkerError::InvalidSysCallTarget {
                         span: context.span,
-                        source_file: self.graph.source_manager.get(context.span.source_id()).ok(),
+                        source_file: self.source_file_for(context.span),
                         callee: resolving,
                     }));
                 }
@@ -542,10 +548,10 @@ impl<'a> SymbolResolver<'a> {
                     ControlFlow::Break(Err(LinkerError::Failed {
                                     labels: vec![
                                         RelatedLabel::error("recursive alias")
-                                            .with_source_file(self.graph.source_manager.get(fqn.span().source_id()).ok())
+                                            .with_source_file(self.source_file_for(fqn.span()))
                                             .with_labeled_span(fqn.span(), "occurs because this import causes import resolution to loop back on itself"),
                                         RelatedLabel::advice("recursive alias")
-                                            .with_source_file(self.graph.source_manager.get(context.span.source_id()).ok())
+                                            .with_source_file(self.source_file_for(context.span))
                                             .with_labeled_span(context.span, "as a result of resolving this procedure reference"),
                                     ].into(),
                                 }))
@@ -567,17 +573,13 @@ impl<'a> SymbolResolver<'a> {
                     ControlFlow::Break(Err(LinkerError::Failed {
                         labels: vec![
                             RelatedLabel::error("undefined procedure")
-                                .with_source_file(
-                                    self.graph.source_manager.get(context.span.source_id()).ok(),
-                                )
+                                .with_source_file(self.source_file_for(context.span))
                                 .with_labeled_span(
                                     context.span,
                                     "unable to resolve this reference to its definition",
                                 ),
                             RelatedLabel::error("name resolution cannot proceed")
-                                .with_source_file(
-                                    self.graph.source_manager.get(symbol.span().source_id()).ok(),
-                                )
+                                .with_source_file(self.source_file_for(symbol.span()))
                                 .with_labeled_span(symbol.span(), "this name cannot be resolved"),
                         ]
                         .into(),
@@ -595,10 +597,10 @@ impl<'a> SymbolResolver<'a> {
                         ControlFlow::Break(Err(LinkerError::Failed {
                                         labels: vec![
                                             RelatedLabel::error("undefined kernel procedure")
-                                                .with_source_file(self.graph.source_manager.get(context.span.source_id()).ok())
+                                                .with_source_file(self.source_file_for(context.span))
                                                 .with_labeled_span(context.span, "unable to resolve this reference to a procedure in the current kernel"),
                                             RelatedLabel::error("invalid syscall")
-                                                .with_source_file(self.graph.source_manager.get(symbol.span().source_id()).ok())
+                                                .with_source_file(self.source_file_for(symbol.span()))
                                                 .with_labeled_span(
                                                     symbol.span(),
                                                     "this name cannot be resolved, because the assembler has an empty kernel",
@@ -610,10 +612,10 @@ impl<'a> SymbolResolver<'a> {
                         ControlFlow::Break(Err(LinkerError::Failed {
                                         labels: vec![
                                             RelatedLabel::error("undefined kernel procedure")
-                                                .with_source_file(self.graph.source_manager.get(context.span.source_id()).ok())
+                                                .with_source_file(self.source_file_for(context.span))
                                                 .with_labeled_span(context.span, "unable to resolve this reference to a procedure in the current kernel"),
                                             RelatedLabel::error("name resolution cannot proceed")
-                                                .with_source_file(self.graph.source_manager.get(symbol.span().source_id()).ok())
+                                                .with_source_file(self.source_file_for(symbol.span()))
                                                 .with_labeled_span(
                                                     symbol.span(),
                                                     "this name cannot be resolved",
@@ -632,17 +634,13 @@ impl<'a> SymbolResolver<'a> {
                     ControlFlow::Break(Err(LinkerError::Failed {
                         labels: vec![
                             RelatedLabel::error("undefined item")
-                                .with_source_file(
-                                    self.graph.source_manager.get(context.span.source_id()).ok(),
-                                )
+                                .with_source_file(self.source_file_for(context.span))
                                 .with_labeled_span(
                                     context.span,
                                     "unable to resolve this reference to its definition",
                                 ),
                             RelatedLabel::error("name resolution cannot proceed")
-                                .with_source_file(
-                                    self.graph.source_manager.get(symbol.span().source_id()).ok(),
-                                )
+                                .with_source_file(self.source_file_for(symbol.span()))
                                 .with_labeled_span(symbol.span(), "this name cannot be resolved"),
                         ]
                         .into(),
