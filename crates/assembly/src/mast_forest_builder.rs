@@ -145,9 +145,7 @@ fn get_nodes_to_remove(
 
     for node in mast_forest.nodes() {
         node.for_each_child(|child_id| {
-            if nodes_to_remove.contains(&child_id) {
-                nodes_to_remove.remove(&child_id);
-            }
+            nodes_to_remove.remove(&child_id);
         });
     }
 
