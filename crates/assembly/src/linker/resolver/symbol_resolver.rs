@@ -92,6 +92,20 @@ impl<'a> SymbolResolver<'a> {
         self.graph
     }
 
+    /// Resolves a MAST root to either a known procedure or returns the digest as-is.
+    ///
+    /// If the digest corresponds to a procedure already in the linker, returns an `Exact`
+    /// resolution with the procedure's path. Otherwise, returns a `MastRoot` resolution.
+    fn resolve_mast_root(&self, mast_root: &Span<miden_core::Word>) -> SymbolResolution {
+        match self.graph.get_procedure_index_by_digest(mast_root) {
+            None => SymbolResolution::MastRoot(*mast_root),
+            Some(gid) => SymbolResolution::Exact {
+                gid,
+                path: Span::new(mast_root.span(), self.item_path(gid)),
+            },
+        }
+    }
+
     /// Resolve `target`, a possibly-resolved symbol reference, to a [SymbolResolution], using
     /// `context` as the context.
     pub fn resolve_invoke_target(
@@ -102,13 +116,7 @@ impl<'a> SymbolResolver<'a> {
         match target {
             InvocationTarget::MastRoot(mast_root) => {
                 log::debug!(target: "name-resolver::invoke", "resolving {target}");
-                match self.graph.get_procedure_index_by_digest(mast_root) {
-                    None => Ok(SymbolResolution::MastRoot(*mast_root)),
-                    Some(gid) => Ok(SymbolResolution::Exact {
-                        gid,
-                        path: Span::new(mast_root.span(), self.item_path(gid)),
-                    }),
-                }
+                Ok(self.resolve_mast_root(mast_root))
             },
             InvocationTarget::Symbol(symbol) => {
                 self.resolve(context, Span::new(symbol.span(), symbol))
@@ -136,13 +144,7 @@ impl<'a> SymbolResolver<'a> {
         match target {
             AliasTarget::MastRoot(mast_root) => {
                 log::debug!(target: "name-resolver::alias", "resolving alias target {target}");
-                match self.graph.get_procedure_index_by_digest(mast_root) {
-                    None => Ok(SymbolResolution::MastRoot(*mast_root)),
-                    Some(gid) => Ok(SymbolResolution::Exact {
-                        gid,
-                        path: Span::new(mast_root.span(), self.item_path(gid)),
-                    }),
-                }
+                Ok(self.resolve_mast_root(mast_root))
             },
             AliasTarget::Path(path) => self.resolve_path(context, path.as_deref()),
         }
