@@ -40,17 +40,11 @@ pub(super) fn hash(block_builder: &mut BasicBlockBuilder) {
 
         // Apply a hashing permutation on the top 12 elements in the stack
         HPerm,
-
-        // Drop 4 elements (the part of the rate that doesn't have our result)
-        Drop, Drop, Drop, Drop,
-
-        // Move the top word (our result) down the stack
-        SwapW,
-
-        // Drop 4 elements (the capacity portion)
-        Drop, Drop, Drop, Drop,
     ];
     block_builder.push_ops(ops);
+
+    // Extract the hash result, dropping rate padding and capacity
+    drop_hash_result_padding(block_builder);
 }
 
 /// Appends HPERM and stack manipulation operations to the span block as required to compute a
@@ -85,7 +79,23 @@ pub(super) fn hmerge(block_builder: &mut BasicBlockBuilder) {
 
         // Do the RPO permutation on the top 12 elements in the stack
         HPerm,
+    ];
+    block_builder.push_ops(ops);
 
+    // Extract the hash result, dropping rate padding and capacity
+    drop_hash_result_padding(block_builder);
+}
+
+/// Extracts the hash result from the stack after HPERM, dropping the rate portion that does not
+/// contain the result and the capacity portion.
+///
+/// After HPERM, the stack looks like [D, C, B, ...] where C is the hash result. This helper
+/// drops D, moves C down, and drops B, leaving [C, ...].
+///
+/// This operation takes 9 VM cycles.
+fn drop_hash_result_padding(block_builder: &mut BasicBlockBuilder) {
+    #[rustfmt::skip]
+    let ops = [
         // Drop 4 elements (the part of the rate that doesn't have our result)
         Drop, Drop, Drop, Drop,
 
