@@ -2911,6 +2911,213 @@ fn program_with_import_errors() {
     );
 }
 
+#[test]
+fn assemble_library_missing_import_span_regression() -> TestResult {
+    let context = TestContext::default();
+    let source = source_file!(
+        &context,
+        "\
+        use miden::core::math::u512
+        pub proc foo
+            push.4 push.3
+            exec.u512::iszero_unsafe
+        end"
+    );
+    let module = context.parse_module_with_path("test::lib", source)?;
+
+    let err = Assembler::new(context.source_manager())
+        .assemble_library([module])
+        .expect_err("expected undefined symbol diagnostic");
+
+    // Force diagnostic rendering to surface invalid source spans, if any.
+    let _ = err.to_string();
+
+    Ok(())
+}
+
+#[test]
+fn assemble_library_missing_proc_span_regression() -> TestResult {
+    let context = TestContext::default();
+    let source = source_file!(
+        &context,
+        "\
+        use miden::core::math::u256
+        pub proc foo
+            push.4 push.3
+            exec.u256::missing_proc
+        end"
+    );
+    let module = context.parse_module_with_path("test::lib", source)?;
+
+    let err = Assembler::new(context.source_manager())
+        .assemble_library([module])
+        .expect_err("expected undefined symbol diagnostic");
+
+    let _ = err.to_string();
+
+    Ok(())
+}
+
+#[test]
+fn assemble_library_locals_underflow_span_regression() -> TestResult {
+    let context = TestContext::default();
+    let source = source_file!(
+        &context,
+        "\
+        @locals(1)
+        pub proc foo
+            push.1
+            loc_store.1
+        end"
+    );
+    let module = context.parse_module_with_path("test::lib", source)?;
+
+    let err = Assembler::new(context.source_manager())
+        .assemble_library([module])
+        .expect_err("expected locals out-of-range diagnostic");
+
+    let _ = err.to_string();
+
+    Ok(())
+}
+
+#[test]
+fn assemble_library_parser_api_span_regression() -> TestResult {
+    use crate::DefaultSourceManager;
+
+    let source_manager = Arc::new(DefaultSourceManager::default());
+    let mut parser = ModuleParser::new(ModuleKind::Library);
+    let source = "\
+        use miden::core::math::u512
+        pub proc foo
+            push.4 push.3
+            exec.u512::iszero_unsafe
+        end";
+    let module = parser.parse_str("test::lib", source, source_manager.clone())?;
+
+    let err = Assembler::new(source_manager)
+        .assemble_library([module])
+        .expect_err("expected undefined symbol diagnostic");
+
+    let _ = err.to_string();
+
+    Ok(())
+}
+
+#[test]
+fn assemble_library_missing_proc_across_modules_span_regression() -> TestResult {
+    let context = TestContext::default();
+    let module_a = context.parse_module_with_path(
+        "test::lib_a",
+        source_file!(
+            &context,
+            "\
+            pub proc foo
+                push.1
+            end"
+        ),
+    )?;
+    let module_b = context.parse_module_with_path(
+        "test::lib_b",
+        source_file!(
+            &context,
+            "\
+            use test::lib_a
+            pub proc bar
+                exec.lib_a::missing_proc
+            end"
+        ),
+    )?;
+
+    let err = Assembler::new(context.source_manager())
+        .assemble_library([module_a, module_b])
+        .expect_err("expected undefined symbol diagnostic");
+
+    let _ = err.to_string();
+
+    Ok(())
+}
+
+#[test]
+fn assemble_library_missing_protocol_import_span_regression() -> TestResult {
+    let context = TestContext::default();
+    let source = source_file!(
+        &context,
+        "\
+        use miden::protocol::output_note
+        pub proc foo
+            exec.output_note::create_note
+        end"
+    );
+    let module = context.parse_module_with_path("test::lib", source)?;
+
+    let err = Assembler::new(context.source_manager())
+        .assemble_library([module])
+        .expect_err("expected undefined symbol diagnostic");
+
+    let _ = err.to_string();
+
+    Ok(())
+}
+
+#[test]
+fn assemble_library_issue_2778_repro_snippet() -> TestResult {
+    use crate::DefaultSourceManager;
+
+    let source_manager = Arc::new(DefaultSourceManager::default());
+    let mut parser = ModuleParser::new(ModuleKind::Library);
+    let source = "\
+        use miden::protocol::output_note
+
+        @locals(1)
+        pub proc create_withdraw_return_note(tag: felt, note_type: felt, recipient: word, amount_0_out: felt, amount_1_out: felt)
+            # loc.0: note_id
+            # => [tag, aux, note_type, execution_hint, PAYBACK_NOTE_RECIPIENT]
+            exec.output_note::create_note
+            # => [note_id]
+            loc_store.0
+            # => []
+        end";
+    let module = parser.parse_str("test::lib", source, source_manager.clone())?;
+
+    let err = Assembler::new(source_manager)
+        .assemble_library([module])
+        .expect_err("expected undefined symbol diagnostic");
+
+    let _ = err.to_string();
+
+    Ok(())
+}
+
+#[test]
+fn assemble_library_author_parser_api_span_regression() -> TestResult {
+    use crate::DefaultSourceManager;
+
+    let source_manager = Arc::new(DefaultSourceManager::default());
+    let mut parser = Module::parser(ModuleKind::Library);
+    let source = "\
+        use miden::protocol::output_note
+
+        @locals(1)
+        pub proc create_withdraw_return_note(tag: felt, note_type: felt, recipient: word, amount_0_out: felt, amount_1_out: felt)
+            # loc.0: note_id
+            # => [tag, aux, note_type, execution_hint, PAYBACK_NOTE_RECIPIENT]
+            exec.output_note::create_note
+            # => [note_id]
+            loc_store.0
+            # => []
+        end";
+    let module = parser.parse_str("test::lib", source, source_manager.clone())?;
+
+    let err = Assembler::new(source_manager)
+        .assemble_library([module])
+        .expect_err("expected undefined symbol diagnostic");
+
+    let _ = err.to_string();
+
+    Ok(())
+}
+
 // COMMENTS
 // ================================================================================================
 
