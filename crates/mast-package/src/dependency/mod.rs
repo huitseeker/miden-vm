@@ -1,4 +1,5 @@
 use alloc::string::String;
+use core::fmt;
 
 use miden_core::serde::{
     ByteReader, ByteWriter, Deserializable, DeserializationError, Serializable,
@@ -19,6 +20,25 @@ pub(crate) mod resolver;
     miden_test_serde_macros::serde_test(binary_serde(true))
 )]
 pub struct DependencyName(String);
+
+impl DependencyName {
+    /// Returns the dependency name as a string slice.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl AsRef<str> for DependencyName {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl fmt::Display for DependencyName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
 
 #[cfg(feature = "arbitrary")]
 impl proptest::arbitrary::Arbitrary for DependencyName {
@@ -64,6 +84,13 @@ pub struct Dependency {
     /// Serves as an ultimate source of truth for identifying the dependency.
     #[cfg_attr(feature = "arbitrary", proptest(value = "Word::default()"))]
     pub digest: Word,
+}
+
+impl Dependency {
+    /// Returns the dependency name.
+    pub fn name(&self) -> &DependencyName {
+        &self.name
+    }
 }
 
 impl Serializable for Dependency {
