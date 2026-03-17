@@ -139,6 +139,27 @@ impl<'de> Deserialize<'de> for TargetType {
     }
 }
 
+mod serialization {
+    use alloc::string::ToString;
+
+    use miden_core::serde::*;
+
+    use super::TargetType;
+
+    impl Serializable for TargetType {
+        fn write_into<W: ByteWriter>(&self, target: &mut W) {
+            target.write_u8(*self as u8);
+        }
+    }
+
+    impl Deserializable for TargetType {
+        fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
+            TargetType::try_from(source.read_u8()?)
+                .map_err(|err| DeserializationError::InvalidValue(err.to_string()))
+        }
+    }
+}
+
 // ERROR
 // ================================================================================================
 

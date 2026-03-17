@@ -4,12 +4,13 @@ use crate::{Package, Workspace};
 
 /// Dependency resolution
 impl Package {
-    /// Register `self` in the given package registry using the dependency metadata from its manifest.
+    /// Register `self` in the given package registry using the dependency metadata from its
+    /// manifest.
     pub fn register_with<R>(&self, registry: &mut R)
     where
         R: ?Sized + PackageRegistry,
     {
-        let name = PackageId::from(self.name().into_inner());
+        let name = self.name().into_inner();
         let version = miden_package_registry::Version::from(self.version().into_inner().clone());
         let record = PackageRecord::new(
             version.clone(),

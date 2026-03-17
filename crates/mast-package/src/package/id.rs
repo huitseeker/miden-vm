@@ -15,6 +15,19 @@ use serde::{Deserialize, Serialize};
 #[repr(transparent)]
 pub struct PackageId(Arc<str>);
 
+impl PackageId {
+    #[inline(always)]
+    pub fn into_inner(self) -> Arc<str> {
+        self.0
+    }
+}
+
+impl PartialEq<str> for PackageId {
+    fn eq(&self, other: &str) -> bool {
+        self.0.as_ref() == other
+    }
+}
+
 impl Borrow<str> for PackageId {
     fn borrow(&self) -> &str {
         &self.0
@@ -71,5 +84,42 @@ impl From<&str> for PackageId {
 impl From<alloc::string::String> for PackageId {
     fn from(value: alloc::string::String) -> Self {
         Self(value.into_boxed_str().into())
+    }
+}
+
+#[cfg(feature = "arbitrary")]
+impl proptest::arbitrary::Arbitrary for PackageId {
+    type Parameters = ();
+    type Strategy = proptest::prelude::BoxedStrategy<Self>;
+    fn arbitrary_with(_args: Self::Parameters) -> Self::Strategy {
+        use alloc::string::String;
+
+        use proptest::prelude::Strategy;
+
+        let chars = proptest::char::range('a', 'z');
+        proptest::collection::vec(chars, 4..32)
+            .prop_map(|chars| Self(String::from_iter(chars).into_boxed_str().into()))
+            .no_shrink()  // Pure random strings, no meaningful shrinking pattern
+            .boxed()
+    }
+}
+
+mod serialization {
+    use miden_core::serde::*;
+
+    use super::PackageId;
+
+    impl Serializable for PackageId {
+        fn write_into<W: ByteWriter>(&self, target: &mut W) {
+            // This is equivalent to String::write_into
+            target.write_usize(self.0.len());
+            target.write_bytes(self.0.as_bytes());
+        }
+    }
+
+    impl Deserializable for PackageId {
+        fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
+            alloc::string::String::read_from(source).map(Self::from)
+        }
     }
 }
