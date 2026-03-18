@@ -92,6 +92,9 @@ impl Package {
 
 /// Accessors
 impl Package {
+    /// The file extension given to serialized packages
+    pub const EXTENSION: &str = "masp";
+
     /// Returns the digest of the package's MAST artifact
     pub fn digest(&self) -> Word {
         *self.mast.digest()
@@ -239,6 +242,12 @@ impl Package {
     #[cfg(feature = "std")]
     pub fn write_to_file(&self, path: impl AsRef<std::path::Path>) -> std::io::Result<()> {
         use miden_core::serde::Serializable;
+
+        let path = path.as_ref();
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+
         let mut file = std::fs::File::create(path)?;
         <Self as Serializable>::write_into(self, &mut file);
         Ok(())
