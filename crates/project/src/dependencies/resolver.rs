@@ -1,4 +1,6 @@
-pub use miden_package_registry::{PackageId, PackageRecord, PackageRegistry, PackageResolver};
+pub use miden_package_registry::{
+    PackageId, PackageIndex, PackageRecord, PackageRegistry, PackageResolver,
+};
 
 use crate::{Package, Workspace};
 
@@ -8,7 +10,7 @@ impl Package {
     /// manifest.
     pub fn register_with<R>(&self, registry: &mut R)
     where
-        R: ?Sized + PackageRegistry,
+        R: ?Sized + PackageIndex,
     {
         let name = self.name().into_inner();
         let version = miden_package_registry::Version::from(self.version().into_inner().clone());
