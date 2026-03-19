@@ -4312,7 +4312,7 @@ static PRG_EXAMPLE: LazyLock<Arc<Library>> = LazyLock::new(build_program_example
 fn build_library_example() -> Arc<Library> {
     let context = TestContext::new();
     // declare foo module
-    let foo = r#"
+    let foo_src = r#"
         pub proc foo(a: felt, b: felt) -> felt
             add
         end
@@ -4320,10 +4320,10 @@ fn build_library_example() -> Arc<Library> {
             mul
         end
     "#;
-    let foo = parse_module!(&context, "test::foo", foo);
+    let foo_module = parse_module!(&context, "test::foo", foo_src);
 
     // declare bar module
-    let bar = r#"
+    let bar_src = r#"
         pub proc bar
             mtree_get
         end
@@ -4331,8 +4331,8 @@ fn build_library_example() -> Arc<Library> {
             mul
         end
     "#;
-    let bar = parse_module!(&context, "test::bar", bar);
-    let modules = [foo, bar];
+    let bar_module = parse_module!(&context, "test::bar", bar_src);
+    let modules = [foo_module, bar_module];
 
     // serialize/deserialize the bundle with locations
     Assembler::new(context.source_manager())
