@@ -1318,6 +1318,7 @@ impl Assembler {
                 vec![],
                 vec![],
                 vec![],
+                vec![],
             )?
         } else {
             let asm_op = self.create_asmop_decorator(&proc_ctx.span(), "begin", proc_ctx);
