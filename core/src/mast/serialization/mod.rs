@@ -119,7 +119,7 @@ use info::MastNodeWireEntry;
 pub use info::{MastNodeEntry, MastNodeInfo};
 
 mod view;
-use view::WireAdviceMapView;
+use view::{AdviceMapViewHandle, WireAdviceMapView};
 pub use view::{AdviceMapView, AdviceValueView, MastForestView};
 
 mod layout;
@@ -584,8 +584,8 @@ impl<'a> MastForestWireView<'a> {
     }
 
     /// Returns a read-only view over the serialized forest advice map.
-    pub fn advice_map(&self) -> AdviceMapView<'_> {
-        AdviceMapView::wire(&self.advice_map)
+    pub fn advice_map(&self) -> impl AdviceMapView<'_> {
+        AdviceMapViewHandle::wire(&self.advice_map)
     }
 
     fn resolved(&self) -> Result<&ResolvedSerializedForest<'a>, DeserializationError> {
@@ -836,7 +836,7 @@ impl MastForestView for MastForestWireView<'_> {
         MastForestWireView::procedure_root_at(self, index)
     }
 
-    fn advice_map(&self) -> AdviceMapView<'_> {
+    fn advice_map(&self) -> impl AdviceMapView<'_> {
         MastForestWireView::advice_map(self)
     }
 }
@@ -885,10 +885,12 @@ impl MastForestView for MastForestReadView<'_> {
         }
     }
 
-    fn advice_map(&self) -> AdviceMapView<'_> {
+    fn advice_map(&self) -> impl AdviceMapView<'_> {
         match self {
-            MastForestReadView::Materialized(forest) => MastForestView::advice_map(forest),
-            MastForestReadView::WireBacked(view) => view.advice_map(),
+            MastForestReadView::Materialized(forest) => {
+                AdviceMapViewHandle::materialized(&forest.advice_map)
+            },
+            MastForestReadView::WireBacked(view) => AdviceMapViewHandle::wire(&view.advice_map),
         }
     }
 }
@@ -931,8 +933,8 @@ impl MastForestView for MastForest {
         })
     }
 
-    fn advice_map(&self) -> AdviceMapView<'_> {
-        AdviceMapView::materialized(&self.advice_map)
+    fn advice_map(&self) -> impl AdviceMapView<'_> {
+        AdviceMapViewHandle::materialized(&self.advice_map)
     }
 }
 

@@ -65,8 +65,24 @@ impl AsRef<[Felt]> for AdviceValueView<'_> {
 }
 
 /// Read-only view over forest advice.
+pub trait AdviceMapView<'a> {
+    /// Returns the number of key-value entries in this advice map.
+    fn len(&self) -> usize;
+
+    /// Returns true when this advice map has no entries.
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Returns true when the key has a corresponding value in the map.
+    fn contains_key(&self, key: &Word) -> bool;
+
+    /// Returns the values associated with a key, if present.
+    fn get(&self, key: &Word) -> Result<Option<AdviceValueView<'a>>, DeserializationError>;
+}
+
 #[derive(Debug)]
-pub struct AdviceMapView<'a> {
+pub(crate) struct AdviceMapViewHandle<'a> {
     inner: AdviceMapViewInner<'a>,
 }
 
@@ -76,7 +92,7 @@ enum AdviceMapViewInner<'a> {
     Wire(&'a WireAdviceMapView<'a>),
 }
 
-impl<'a> AdviceMapView<'a> {
+impl<'a> AdviceMapViewHandle<'a> {
     pub(crate) fn materialized(advice_map: &'a AdviceMap) -> Self {
         Self {
             inner: AdviceMapViewInner::Materialized(advice_map),
@@ -88,30 +104,24 @@ impl<'a> AdviceMapView<'a> {
             inner: AdviceMapViewInner::Wire(advice_map),
         }
     }
+}
 
-    /// Returns the number of key-value entries in this advice map.
-    pub fn len(&self) -> usize {
+impl<'a> AdviceMapView<'a> for AdviceMapViewHandle<'a> {
+    fn len(&self) -> usize {
         match self.inner {
             AdviceMapViewInner::Materialized(advice_map) => advice_map.len(),
             AdviceMapViewInner::Wire(advice_map) => advice_map.len(),
         }
     }
 
-    /// Returns true when this advice map has no entries.
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    /// Returns true when the key has a corresponding value in the map.
-    pub fn contains_key(&self, key: &Word) -> bool {
+    fn contains_key(&self, key: &Word) -> bool {
         match self.inner {
             AdviceMapViewInner::Materialized(advice_map) => advice_map.contains_key(key),
             AdviceMapViewInner::Wire(advice_map) => advice_map.contains_key(key),
         }
     }
 
-    /// Returns the values associated with a key, if present.
-    pub fn get(&self, key: &Word) -> Result<Option<AdviceValueView<'a>>, DeserializationError> {
+    fn get(&self, key: &Word) -> Result<Option<AdviceValueView<'a>>, DeserializationError> {
         match self.inner {
             AdviceMapViewInner::Materialized(advice_map) => {
                 Ok(advice_map.get(key).map(|values| AdviceValueView::borrowed(values.as_ref())))
@@ -240,7 +250,7 @@ pub trait MastForestView {
     fn procedure_root_at(&self, index: usize) -> Result<MastNodeId, DeserializationError>;
 
     /// Returns a read-only view over the forest advice map.
-    fn advice_map(&self) -> AdviceMapView<'_>;
+    fn advice_map(&self) -> impl AdviceMapView<'_>;
 
     /// Returns true when the forest contains no nodes.
     fn is_empty(&self) -> bool {
