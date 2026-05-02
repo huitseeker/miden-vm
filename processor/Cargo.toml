@@ -19,6 +19,8 @@ bench = false
 doctest = false
 
 [features]
+# Internal benchmark switch for comparing fast operand stack storage strategies.
+bench-vec-stack = []
 concurrent = ["std", "miden-air/concurrent"]
 default = ["std"]
 std = [

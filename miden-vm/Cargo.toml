@@ -41,6 +41,11 @@ required-features = ["internal"]
 harness = false
 
 [[bench]]
+name = "operand_stack_growth"
+required-features = ["internal"]
+harness = false
+
+[[bench]]
 name = "deserialize_core_lib"
 harness = false
 
@@ -53,6 +58,7 @@ arbitrary = ["std", "dep:proptest"]
 concurrent = ["miden-prover/concurrent", "std"]
 default = ["std"]
 executable = ["dep:hex", "dep:clap", "dep:tracing-subscriber", "internal", "serde", "std"]
+bench-vec-stack = ["miden-processor/bench-vec-stack"]
 serde = ["dep:serde", "dep:serde_json"]
 std = [
     "hex?/std",

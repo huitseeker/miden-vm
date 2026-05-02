@@ -1,6 +1,8 @@
 #[cfg(test)]
 use alloc::rc::Rc;
-use alloc::{boxed::Box, sync::Arc, vec, vec::Vec};
+#[cfg(not(feature = "bench-vec-stack"))]
+use alloc::boxed::Box;
+use alloc::{sync::Arc, vec, vec::Vec};
 #[cfg(test)]
 use core::cell::Cell;
 use core::{cmp::min, ops::ControlFlow};
@@ -106,7 +108,10 @@ const STACK_BUFFER_BASE_IDX: usize = INITIAL_STACK_TOP_IDX - MIN_STACK_DEPTH;
 #[derive(Debug)]
 pub struct FastProcessor {
     /// The stack is stored in reverse order, so that the last element is at the top of the stack.
+    #[cfg(not(feature = "bench-vec-stack"))]
     stack: Box<[Felt]>,
+    #[cfg(feature = "bench-vec-stack")]
+    stack: Vec<Felt>,
     /// The index of the top of the stack.
     stack_top_idx: usize,
     /// The index of the bottom of the stack.
@@ -255,15 +260,19 @@ impl FastProcessor {
     ) -> Self {
         let stack_top_idx = INITIAL_STACK_TOP_IDX;
         let stack = {
-            // Note: we use `Vec::into_boxed_slice()` here, since `Box::new([T; N])` first allocates
-            // the array on the stack, and then moves it to the heap. This might cause a
-            // stack overflow on some systems.
-            let mut stack = vec![ZERO; INITIAL_STACK_BUFFER_SIZE].into_boxed_slice();
+            let mut stack = vec![ZERO; INITIAL_STACK_BUFFER_SIZE];
 
             // Copy inputs in reverse order so first element ends up at top of stack
             for (i, &input) in stack_inputs.iter().enumerate() {
                 stack[stack_top_idx - 1 - i] = input;
             }
+
+            // Note: we use `Vec::into_boxed_slice()` here, since `Box::new([T; N])` first allocates
+            // the array on the stack, and then moves it to the heap. This might cause a
+            // stack overflow on some systems.
+            #[cfg(not(feature = "bench-vec-stack"))]
+            let stack = stack.into_boxed_slice();
+
             stack
         };
 
@@ -653,17 +662,28 @@ impl FastProcessor {
         }
         debug_assert!(new_len <= max_len);
 
-        let mut new_stack = vec![ZERO; new_len].into_boxed_slice();
         let new_stack_bot_idx = STACK_BUFFER_BASE_IDX;
         let new_stack_top_idx = new_stack_bot_idx + live_len;
 
         // Only the active stack range carries VM state. Prefix/suffix cells are scratch storage and
         // stay zeroed, which keeps growth proportional to the live depth instead of the old buffer
         // length.
-        new_stack[new_stack_bot_idx..new_stack_top_idx]
-            .copy_from_slice(&self.stack[self.stack_bot_idx..self.stack_top_idx]);
+        #[cfg(not(feature = "bench-vec-stack"))]
+        {
+            let mut new_stack = vec![ZERO; new_len].into_boxed_slice();
+            new_stack[new_stack_bot_idx..new_stack_top_idx]
+                .copy_from_slice(&self.stack[self.stack_bot_idx..self.stack_top_idx]);
+            self.stack = new_stack;
+        }
 
-        self.stack = new_stack;
+        #[cfg(feature = "bench-vec-stack")]
+        {
+            self.stack.resize(new_len, ZERO);
+            self.stack
+                .copy_within(self.stack_bot_idx..self.stack_top_idx, new_stack_bot_idx);
+            self.stack[..new_stack_bot_idx].fill(ZERO);
+        }
+
         self.stack_bot_idx = new_stack_bot_idx;
         self.stack_top_idx = new_stack_top_idx;
     }
