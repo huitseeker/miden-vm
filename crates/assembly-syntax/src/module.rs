@@ -1,6 +1,7 @@
 use alloc::{sync::Arc, vec::Vec};
 use core::ops::Index;
 
+use miden_core::mast::MastNodeId;
 use midenc_hir_type::FunctionType;
 
 use crate::{
@@ -46,8 +47,32 @@ impl ModuleInfo {
         signature: Option<Arc<FunctionType>>,
         attributes: AttributeSet,
     ) {
-        self.items
-            .push(ItemInfo::Procedure(ProcedureInfo { name, digest, signature, attributes }));
+        self.add_procedure_with_provenance(name, digest, signature, attributes, None, None);
+    }
+
+    /// Adds a procedure to the module with optional source provenance.
+    ///
+    /// This records the source root supplied by the package manifest, but it cannot recover
+    /// provenance that was already erased during assembly. In particular, if metadata-neutral MAST
+    /// construction has collapsed two same-digest procedures to the same root before the package
+    /// export is created, both exports will carry that same root here.
+    pub fn add_procedure_with_provenance(
+        &mut self,
+        name: ProcedureName,
+        digest: Word,
+        signature: Option<Arc<FunctionType>>,
+        attributes: AttributeSet,
+        source_root_id: Option<MastNodeId>,
+        source_library_commitment: Option<Word>,
+    ) {
+        self.items.push(ItemInfo::Procedure(ProcedureInfo {
+            name,
+            digest,
+            signature,
+            attributes,
+            source_root_id,
+            source_library_commitment,
+        }));
     }
 
     /// Adds a constant to the module.
@@ -186,6 +211,26 @@ pub struct ProcedureInfo {
     pub digest: Word,
     pub signature: Option<Arc<FunctionType>>,
     pub attributes: AttributeSet,
+    /// The exact procedure root in the source library, if known.
+    ///
+    /// This is needed when multiple exported procedures share the same digest but carry different
+    /// diagnostics metadata.
+    ///
+    /// This is best-effort provenance: it distinguishes same-digest exports only when the package
+    /// manifest still has distinct roots for them.
+    pub source_root_id: Option<MastNodeId>,
+    /// The commitment of the source library forest that `source_root_id` belongs to, if known.
+    pub source_library_commitment: Option<Word>,
+}
+
+impl ProcedureInfo {
+    pub fn source_root_id(&self) -> Option<MastNodeId> {
+        self.source_root_id
+    }
+
+    pub fn source_library_commitment(&self) -> Option<Word> {
+        self.source_library_commitment
+    }
 }
 
 /// Stores the name and value of a constant

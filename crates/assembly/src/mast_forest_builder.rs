@@ -11,8 +11,8 @@ use miden_core::{
     mast::{
         AsmOpId, BasicBlockNode, BasicBlockNodeBuilder, DecoratorFingerprint, DecoratorId,
         ExternalNodeBuilder, JoinNodeBuilder, MastForest, MastForestContributor, MastForestError,
-        MastNode, MastNodeBuilder, MastNodeExt, MastNodeFingerprint, MastNodeId, Remapping,
-        SubtreeIterator,
+        MastForestRootMap, MastNode, MastNodeBuilder, MastNodeExt, MastNodeFingerprint, MastNodeId,
+        Remapping, SubtreeIterator,
     },
     operations::{AssemblyOp, Decorator, DecoratorList, Operation},
 };
@@ -70,6 +70,12 @@ pub struct MastForestBuilder {
     /// A MastForest that contains the MAST of all statically-linked libraries, it's used to find
     /// precompiled procedures and copy their subtrees instead of inserting external nodes.
     statically_linked_mast: Arc<MastForest>,
+    /// Maps each statically linked source forest commitment to its position in the merged forest
+    /// root map.
+    statically_linked_forest_indices_by_commitment: BTreeMap<Word, usize>,
+    /// Maps procedure roots from each source static library to their new root ID in the merged
+    /// static forest.
+    statically_linked_root_map: MastForestRootMap,
     /// Keeps track of the new ids assigned to nodes that are copied from the MAST of
     /// statically-linked libraries.
     statically_linked_mast_remapping: Remapping,
@@ -103,8 +109,18 @@ impl MastForestBuilder {
         static_libraries: impl IntoIterator<Item = &'a MastForest>,
     ) -> Result<Self, Report> {
         // All statically-linked libraries are merged into a single MastForest.
-        let forests = static_libraries.into_iter();
-        let (statically_linked_mast, _remapping) = MastForest::merge(forests).into_diagnostic()?;
+        let forests = static_libraries.into_iter().collect::<Vec<_>>();
+        // TODO(#3067): `MastForest::commitment()` only hashes procedure root digests, so two
+        // forests with identical roots but different debug metadata share the same commitment.
+        // Using that commitment as a lookup key can point provenance from one static library at
+        // another library's root map and still select the wrong diagnostics metadata.
+        let statically_linked_forest_indices_by_commitment = forests
+            .iter()
+            .enumerate()
+            .map(|(idx, forest)| (forest.commitment(), idx))
+            .collect();
+        let (statically_linked_mast, statically_linked_root_map) =
+            MastForest::merge(forests.iter().copied()).into_diagnostic()?;
         // The AdviceMap of the statically-linked forest is copied to the forest being built.
         //
         // This might include excess advice map data in the built MastForest, but we currently do
@@ -115,6 +131,8 @@ impl MastForestBuilder {
         Ok(MastForestBuilder {
             mast_forest,
             statically_linked_mast: Arc::new(statically_linked_mast),
+            statically_linked_forest_indices_by_commitment,
+            statically_linked_root_map,
             ..Self::default()
         })
     }
@@ -921,15 +939,51 @@ impl MastForestBuilder {
     ///   the inserted subtree is returned.
     /// * If dynamically-linked, then an external node is inserted, and its MastNodeId is returned
     ///
-    /// TODO(#2990): when multiple roots share the same digest but carry
-    /// different metadata, this always picks the first match. Needs a source
-    /// MastNodeId threaded from ProcedureInfo through the linker.
-    pub fn ensure_external_link(&mut self, mast_root: Word) -> Result<MastNodeId, Report> {
-        if let Some(root_id) = self.statically_linked_mast.find_procedure_root(mast_root) {
-            self.copy_statically_linked_subtree(root_id)
-        } else {
-            self.ensure_node(ExternalNodeBuilder::new(mast_root))
+    /// Adds a node corresponding to the given MAST root, preferring an exact source root when
+    /// provenance from a statically-linked library is available.
+    pub fn ensure_external_link_with_source(
+        &mut self,
+        mast_root: Word,
+        source_library_commitment: Option<Word>,
+        source_root_id: Option<MastNodeId>,
+    ) -> Result<MastNodeId, Report> {
+        if let Some(root_id) =
+            self.find_statically_linked_root(source_library_commitment, source_root_id, mast_root)
+        {
+            return self.copy_statically_linked_subtree(root_id);
         }
+
+        self.ensure_node(ExternalNodeBuilder::new(mast_root))
+    }
+
+    fn find_statically_linked_root(
+        &self,
+        source_library_commitment: Option<Word>,
+        source_root_id: Option<MastNodeId>,
+        mast_root: Word,
+    ) -> Option<MastNodeId> {
+        if let (Some(source_library_commitment), Some(source_root_id)) =
+            (source_library_commitment, source_root_id)
+        {
+            let exact_root = self
+                .statically_linked_forest_indices_by_commitment
+                .get(&source_library_commitment)
+                .and_then(|forest_idx| {
+                    self.statically_linked_root_map.map_root(*forest_idx, &source_root_id)
+                });
+
+            if exact_root
+                .is_some_and(|root_id| self.statically_linked_mast[root_id].digest() == mast_root)
+            {
+                return exact_root;
+            }
+        }
+
+        if let Some(root_id) = self.statically_linked_mast.find_procedure_root(mast_root) {
+            return Some(root_id);
+        }
+
+        None
     }
 
     /// Copies a subtree from the statically linked forest into the builder's forest.
