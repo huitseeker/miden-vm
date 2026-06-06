@@ -20,6 +20,7 @@
 - Bounded `FastProcessor` memory growth with a configurable `ExecutionOptions::max_memory_elements` limit, rejecting writes to arbitrarily many unique addresses that could otherwise exhaust host memory ([#3226](https://github.com/0xMiden/miden-vm/pull/3226)).
 - [BREAKING] Simplified `MastForestBuilder` around builder-local refs and immutable finalized `MastForest`s ([#3139](https://github.com/0xMiden/miden-vm/pull/3139)).
 - Added `do <block> while <cond> end` syntax ([#3232](https://github.com/0xMiden/miden-vm/pull/3232)).
+- [BREAKING] Moved debug info ownership out of `MastForest` and into package debug sections, adding source-node debug metadata that preserves distinct source occurrences after MAST node deduplication ([#3221](https://github.com/0xMiden/miden-vm/pull/3221)).
 
 #### Fixes
 
