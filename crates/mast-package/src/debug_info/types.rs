@@ -328,7 +328,7 @@ impl<T: core::fmt::Debug> core::fmt::Debug for OptionC<T> {
     }
 }
 
-impl<T> From<Option<T>> for OptionC<T> {
+impl<T: Copy> From<Option<T>> for OptionC<T> {
     fn from(value: Option<T>) -> Self {
         match value {
             Some(t) => Self::some(t),
