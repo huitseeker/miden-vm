@@ -31,16 +31,6 @@ newtype_id!(
 
 impl SourceNodeIdMarker for SourceNodeRef {}
 
-newtype_id!(
-    /// Stable assembly-time reference to assembly operation metadata.
-    pub(crate) struct AsmOpRef;
-);
-
-newtype_id!(
-    /// Stable assembly-time reference to debug variable metadata.
-    pub(crate) struct DebugVarRef;
-);
-
 /// Builder-owned node record used before final [`MastNodeId`]s exist.
 ///
 /// The record keeps the node content, child refs, and debug metadata refs together so
