@@ -265,58 +265,6 @@ impl Deserializable for DebugVarLocation {
     }
 }
 
-#[cfg(false)]
-impl Serializable for DebugVarInfo {
-    fn write_into<W: ByteWriter>(&self, target: &mut W) {
-        (*self.name).write_into(target);
-        self.value_location.write_into(target);
-        self.ty.write_into(target);
-        self.declared_type.write_into(target);
-        self.arg_index.map(core::num::NonZero::get).write_into(target);
-        self.location.write_into(target);
-    }
-}
-
-#[cfg(false)]
-impl Deserializable for DebugVarInfo {
-    fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
-        let name = read_bounded_string(source, "debug variable name bytes")?;
-        let value_location = DebugVarLocation::read_from(source)?;
-        let ty = Option::<Type>::read_from(source)?;
-        let declared_type = Option::<TypeExpr>::read_from(source)?;
-        let type_id = Option::<u32>::read_from(source)?;
-        let arg_index = Option::<u32>::read_from(source)?
-            .map(|n| {
-                NonZeroU32::new(n).ok_or_else(|| {
-                    DeserializationError::InvalidValue("arg_index must be non-zero".into())
-                })
-            })
-            .transpose()?;
-        let location = Option::<Location>::read_from(source)?;
-
-        Ok(Self {
-            name,
-            ty,
-            declared_type,
-            arg_index,
-            location,
-            value_location,
-        })
-    }
-}
-
-#[cfg(false)]
-fn read_bounded_string<R: ByteReader>(
-    source: &mut R,
-    label: &str,
-) -> Result<Arc<str>, DeserializationError> {
-    let len = read_bounded_len(source, label, 1)?;
-    let bytes = source.read_slice(len)?;
-    let value = core::str::from_utf8(bytes)
-        .map_err(|err| DeserializationError::InvalidValue(format!("{err}")))?;
-    Ok(Arc::from(value))
-}
-
 fn read_bounded_bytes<R: ByteReader>(
     source: &mut R,
     label: &str,
@@ -338,19 +286,6 @@ mod tests {
     fn debug_var_info_display_simple() {
         let var = DebugVarInfo::new("x", DebugVarLocation::Stack(0));
         assert_eq!(var.to_string(), "var.x = stack[0]");
-    }
-
-    #[test]
-    #[cfg(false)]
-    fn debug_var_info_rejects_oversized_name_length() {
-        let bytes = [0x08, 0x2a, 0xfe, 0xfe, 0x01];
-        let mut reader = SliceReader::new(&bytes);
-        let err = DebugVarInfo::read_from(&mut reader).unwrap_err();
-        let DeserializationError::InvalidValue(message) = err else {
-            panic!("expected InvalidValue error");
-        };
-        assert!(message.contains("debug variable name bytes count"));
-        assert!(message.contains("exceeds remaining input"));
     }
 
     #[test]
@@ -430,25 +365,6 @@ mod tests {
             location.write_into(&mut bytes);
             assert_eq!(bytes.len(), min_serialized_size);
         }
-    }
-
-    #[test]
-    #[cfg(false)]
-    fn debug_var_info_serialization_round_trip_all_fields() {
-        let mut var = DebugVarInfo::new("full", DebugVarLocation::Expression(vec![0xaa, 0xbb]));
-        var.set_type_id(7);
-        var.set_arg_index(2);
-        var.set_location(Location::new(
-            Uri::new("lib.rs"),
-            ByteIndex::from(10u32),
-            ByteIndex::from(50u32),
-        ));
-
-        let mut bytes = Vec::new();
-        var.write_into(&mut bytes);
-        let mut reader = SliceReader::new(&bytes);
-        let deser = DebugVarInfo::read_from(&mut reader).unwrap();
-        assert_eq!(deser, var);
     }
 
     #[test]
