@@ -313,7 +313,7 @@ impl<T: PartialEq> PartialEq for OptionC<T> {
             (0, 0) => true,
             (1, 0) | (0, 1) => false,
             (1, 1) => unsafe { self.payload().eq(other.payload()) },
-            (..) => false,
+            (invalid1, invalid2) => invalid1 == invalid2,
         }
     }
 }
