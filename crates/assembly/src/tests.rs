@@ -1972,57 +1972,6 @@ fn asserts_and_mpverify_with_code_in_duplicate_procedure() -> TestResult {
 }
 
 #[test]
-fn dynamic_link_to_ambiguous_same_digest_export_is_rejected() -> TestResult {
-    let context = TestContext::default();
-    let library_module = parse_module!(
-        &context,
-        r#"
-        namespace lib::a
-        pub proc f1
-            assert.err="1"
-        end
-
-        pub proc f2
-            assert.err="2"
-        end
-        "#
-    );
-    let library = Assembler::new(context.source_manager()).assemble_library(
-        "lib",
-        library_module,
-        None::<Box<Module>>,
-    )?;
-
-    let f1 = QualifiedProcedureName::from_str("lib::a::f1").unwrap();
-    let f2 = QualifiedProcedureName::from_str("lib::a::f2").unwrap();
-    assert_eq!(library.get_procedure_root_by_path(&f1), library.get_procedure_root_by_path(&f2));
-    assert_ne!(library.get_export_node_id(&f1), library.get_export_node_id(&f2));
-
-    let source = source_file!(
-        &context,
-        "\
-        use lib::a
-
-        begin
-            exec.a::f2
-        end
-        "
-    );
-    let err = Assembler::new(context.source_manager())
-        .with_package(Arc::from(library), Linkage::Dynamic)?
-        .assemble_program("program", source)
-        .expect_err("expected ambiguous dynamic link diagnostic");
-
-    assert_diagnostic!(&err, "ambiguous dynamic link for procedure '::lib::a::f2'");
-    assert_diagnostic!(
-        &err,
-        "dynamic reference cannot select one of the same-digest exported roots"
-    );
-
-    Ok(())
-}
-
-#[test]
 fn mtree_verify_with_code() -> TestResult {
     let context = TestContext::default();
     let source = source_file!(

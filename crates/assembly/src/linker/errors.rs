@@ -217,20 +217,6 @@ pub enum LinkerError {
         source_file: Option<Arc<SourceFile>>,
         callee: Arc<Path>,
     },
-    #[error("ambiguous dynamic link for procedure {}: conflicts with '{conflicting_path}' which has the same MAST root", path.as_deref().map(|p| format!("'{p}' (MAST root {mast_root})")).unwrap_or_else(|| format!("MAST root {mast_root}")))]
-    #[diagnostic(help(
-        "link the library statically, or avoid exporting multiple procedures with this same execution digest"
-    ))]
-    AmbiguousDynamicProcedureRoot {
-        #[label("dynamic reference cannot select one of the same-digest exported roots")]
-        span: SourceSpan,
-        #[source_code]
-        source_file: Option<Arc<SourceFile>>,
-        path: Option<Arc<Path>>,
-        conflicting_path: Arc<Path>,
-        mast_root: Word,
-        source_library_commitment: Word,
-    },
     #[error("kernel procedure '{callee}' can only be invoked via syscall")]
     #[diagnostic()]
     KernelProcNotSyscall {

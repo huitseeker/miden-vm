@@ -1685,25 +1685,6 @@ impl Assembler {
             }
         }
 
-        if let (Some(source_library_commitment), Some(source_root_id)) =
-            (source_library_commitment, source_root_id)
-            && let Some((_conflicting_root, conflicting_path)) =
-                self.linker.conflicting_dynamic_procedure_export_root(
-                    source_library_commitment,
-                    mast_root,
-                    source_root_id,
-                )
-        {
-            return Err(Report::new(LinkerError::AmbiguousDynamicProcedureRoot {
-                span,
-                source_file: current_source_file,
-                path: path.map(|p| p.to_path_buf().into_boxed_path().into()),
-                mast_root,
-                source_library_commitment,
-                conflicting_path,
-            }));
-        }
-
         mast_forest_builder.ensure_external_link_with_source_ref(
             mast_root,
             source_library_commitment,
