@@ -11,7 +11,7 @@ mod builder;
 mod serialization;
 mod types;
 
-use alloc::{boxed::Box, sync::Arc, vec::Vec};
+use alloc::{sync::Arc, vec::Vec};
 
 pub use builder::*;
 use miden_core::mast::{MastForestRootMap, MastNodeId};
@@ -80,6 +80,40 @@ pub struct DebugInfo<Exec: Idx, Src: Idx> {
     roots: Vec<Src>,
     /// Assertion error messages uniqued by runtime error code.
     error_messages: Vec<DebugErrorMessage>,
+}
+
+/// Index remapping produced when importing the shared tables of one [`DebugInfo`] into another.
+///
+/// Source nodes and functions are intentionally excluded because their indices depend on how the
+/// caller maps or filters the source graph.
+#[derive(Clone, Debug, Default)]
+pub struct DebugInfoTableRemapping {
+    strings: IndexVec<DebugStringIdx, DebugStringIdx>,
+    files: IndexVec<DebugFileIdx, DebugFileIdx>,
+    locations: IndexVec<DebugLocIdx, DebugLocIdx>,
+    types: IndexVec<DebugTypeIdx, DebugTypeIdx>,
+}
+
+impl DebugInfoTableRemapping {
+    /// Returns the destination index for a source string index.
+    pub fn string(&self, index: DebugStringIdx) -> Option<DebugStringIdx> {
+        self.strings.get(index).copied()
+    }
+
+    /// Returns the destination index for a source file index.
+    pub fn file(&self, index: DebugFileIdx) -> Option<DebugFileIdx> {
+        self.files.get(index).copied()
+    }
+
+    /// Returns the destination index for a source location index.
+    pub fn location(&self, index: DebugLocIdx) -> Option<DebugLocIdx> {
+        self.locations.get(index).copied()
+    }
+
+    /// Returns the destination index for a source type index.
+    pub fn ty(&self, index: DebugTypeIdx) -> Option<DebugTypeIdx> {
+        self.types.get(index).copied()
+    }
 }
 
 // FUNDAMENTAL TRAIT IMPLS
@@ -460,6 +494,127 @@ impl<Exec: Idx, Src: Idx> DebugInfo<Exec, Src> {
     }
 }
 
+impl<Exec: Idx, Src: Idx> DebugInfo<Exec, Src> {
+    /// Imports the shared string, type, file, location, and error-message tables into `target`.
+    ///
+    /// The returned map translates every source table index to its destination index. Type rows
+    /// are reserved as a complete batch before their payloads are rewritten, which preserves
+    /// forward and cyclic references. Source nodes and functions must be imported separately once
+    /// the caller has established its source-node mapping.
+    pub fn merge_tables_into<TargetExec: Idx, TargetSrc: Idx>(
+        &self,
+        target: &mut DebugInfoBuilder<TargetExec, TargetSrc>,
+    ) -> Result<DebugInfoTableRemapping, DebugInfoTableRemapError> {
+        // Validate the complete source first so that an error never leaves `target` partially
+        // updated.
+        self.validate_shared_table_references()?;
+
+        let mut remapping = DebugInfoTableRemapping::default();
+
+        for (index, string) in self.strings.iter().enumerate() {
+            let source = DebugStringIdx::from(
+                u32::try_from(index).expect("invalid source string table index"),
+            );
+            let inserted = remapping
+                .strings
+                .push(target.add_string(string.clone()))
+                .expect("too many remapped strings");
+            debug_assert_eq!(inserted, source);
+        }
+
+        // Reserve the complete output range before rewriting any type row. Types may contain
+        // forward or cyclic references, so their mappings cannot be discovered incrementally.
+        let type_offset = target.debug_info().types.len();
+        for index in 0..self.types.len() {
+            let source =
+                DebugTypeIdx::from(u32::try_from(index).expect("invalid source type table index"));
+            let destination = DebugTypeIdx::from(
+                u32::try_from(type_offset + index).expect("too many types after merging"),
+            );
+            let inserted = remapping.types.push(destination).expect("too many remapped types");
+            debug_assert_eq!(inserted, source);
+        }
+        for (index, ty) in self.types.iter().enumerate() {
+            let source =
+                DebugTypeIdx::from(u32::try_from(index).expect("invalid source type table index"));
+            let ty = remap_debug_type_info(ty, &remapping.strings, &remapping.types)?;
+            let destination = target.push_type(ty);
+            debug_assert_eq!(destination, remapping.types[source]);
+        }
+
+        for (index, file) in self.files.iter().enumerate() {
+            let source =
+                DebugFileIdx::from(u32::try_from(index).expect("invalid source file table index"));
+            let path_idx = remapping.string(file.path_idx).ok_or(
+                DebugInfoTableRemapError::MissingSourceString { string_idx: file.path_idx },
+            )?;
+            let file = DebugFileInfo::new(path_idx)
+                .with_checksum(*file.checksum().unwrap_or(&DebugFileInfo::EMPTY_CHECKSUM));
+            let inserted = remapping
+                .files
+                .push(target.add_file_info(file))
+                .expect("too many remapped files");
+            debug_assert_eq!(inserted, source);
+        }
+
+        for (index, location) in self.locations.iter().enumerate() {
+            let source = DebugLocIdx::from(
+                u32::try_from(index).expect("invalid source location table index"),
+            );
+            let file_idx = remapping.file(location.file_idx).ok_or(
+                DebugInfoTableRemapError::MissingSourceFile { file_idx: location.file_idx },
+            )?;
+            let location = DebugLoc {
+                file_idx,
+                start: location.start,
+                end: location.end,
+            };
+            let inserted = remapping
+                .locations
+                .push(target.add_location_info(location))
+                .expect("too many remapped locations");
+            debug_assert_eq!(inserted, source);
+        }
+
+        for error_message in self.error_messages() {
+            let message = remapping.string(error_message.message).ok_or(
+                DebugInfoTableRemapError::MissingSourceString { string_idx: error_message.message },
+            )?;
+            target.add_error_message_with_index(error_message.err_code, message);
+        }
+
+        Ok(remapping)
+    }
+
+    fn validate_shared_table_references(&self) -> Result<(), DebugInfoTableRemapError> {
+        for ty in self.types.iter() {
+            validate_debug_type_info(ty, &self.strings, &self.types)?;
+        }
+        for file in self.files.iter() {
+            if self.strings.get(file.path_idx).is_none() {
+                return Err(DebugInfoTableRemapError::MissingSourceString {
+                    string_idx: file.path_idx,
+                });
+            }
+        }
+        for location in self.locations.iter() {
+            if self.files.get(location.file_idx).is_none() {
+                return Err(DebugInfoTableRemapError::MissingSourceFile {
+                    file_idx: location.file_idx,
+                });
+            }
+        }
+        for error_message in self.error_messages.iter() {
+            if self.strings.get(error_message.message).is_none() {
+                return Err(DebugInfoTableRemapError::MissingSourceString {
+                    string_idx: error_message.message,
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
 impl<Src: SourceNodeIdMarker> DebugInfo<MastNodeId, Src> {
     /// Merges package-owned source/debug metadata after a [`miden_core::mast::MastForest`] merge.
     ///
@@ -476,112 +631,11 @@ impl<Src: SourceNodeIdMarker> DebugInfo<MastNodeId, Src> {
     where
         Src: 'a,
     {
-        let mut inputs = inputs.into_iter();
-        let Some((base_forest_index, base)) = inputs.next() else {
-            return Ok(Default::default());
-        };
-
-        // Preserve the first input's table indices exactly so that subsequent inputs continue to
-        // deduplicate strings, files, and locations against the base tables. Execution node IDs are
-        // positional, however, so they must be remapped just like every later input.
-        let mut base = base.clone();
-        for source_node in base.nodes.iter_mut() {
-            source_node.exec_node = root_map
-                .map_node(base_forest_index, &source_node.exec_node)
-                .ok_or(DebugInfoMergeError::MissingExecNodeMapping {
-                    forest_index: base_forest_index,
-                    exec_node: source_node.exec_node,
-                })?;
-        }
-
-        let mut builder = DebugInfoBuilder::from(Box::new(base));
-
+        let mut builder = DebugInfoBuilder::default();
         for (forest_index, debug_info) in inputs {
-            let mut remapped_strings = FxHashMap::<DebugStringIdx, DebugStringIdx>::default();
-            for (i, string) in debug_info.strings.iter().enumerate() {
-                let prev_index =
-                    DebugStringIdx::from(u32::try_from(i).expect("invalid string table index"));
-                let new_index = builder.add_string(string.clone());
-                remapped_strings.insert(prev_index, new_index);
-            }
-
-            // Type records may contain forward or cyclic references. Reserve every output index
-            // before rewriting any record, then append records without interning so that those
-            // reserved indices remain stable. This mirrors the pre-consolidation merge behavior;
-            // each input table is already internally uniqued by its builder.
-            let type_offset = builder.debug_info().types.len();
-            let mut remapped_types = FxHashMap::<DebugTypeIdx, DebugTypeIdx>::default();
-            for i in 0..debug_info.types.len() {
-                let prev_index =
-                    DebugTypeIdx::from(u32::try_from(i).expect("invalid types table index"));
-                let new_index = DebugTypeIdx::from(
-                    u32::try_from(type_offset + i).expect("too many types after merging"),
-                );
-                remapped_types.insert(prev_index, new_index);
-            }
-            for (i, debug_type) in debug_info.types.iter().enumerate() {
-                let prev_index =
-                    DebugTypeIdx::from(u32::try_from(i).expect("invalid types table index"));
-                let debug_type = remap_debug_type_info(
-                    forest_index,
-                    debug_type,
-                    &remapped_strings,
-                    &remapped_types,
-                )?;
-                let new_index = builder
-                    .debug_info_mut()
-                    .types
-                    .push(debug_type)
-                    .expect("too many types after merging");
-                debug_assert_eq!(new_index, remapped_types[&prev_index]);
-            }
-
-            let mut remapped_files = FxHashMap::<DebugFileIdx, DebugFileIdx>::default();
-            for (i, file) in debug_info.files.iter().enumerate() {
-                let prev_index =
-                    DebugFileIdx::from(u32::try_from(i).expect("invalid sources table index"));
-                let path_idx = remapped_strings.get(&file.path_idx).copied().ok_or(
-                    DebugInfoMergeError::MissingSourceStringMapping {
-                        forest_index,
-                        string_idx: file.path_idx,
-                    },
-                )?;
-                let file = DebugFileInfo::new(path_idx)
-                    .with_checksum(*file.checksum().unwrap_or(&DebugFileInfo::EMPTY_CHECKSUM));
-                let new_index = builder.add_file_info(file);
-                remapped_files.insert(prev_index, new_index);
-            }
-
-            let mut remapped_locations = FxHashMap::<DebugLocIdx, DebugLocIdx>::default();
-            for (i, loc) in debug_info.locations.iter().enumerate() {
-                let prev_index =
-                    DebugLocIdx::from(u32::try_from(i).expect("invalid locations table index"));
-                let file_idx = remapped_files.get(&loc.file_idx).copied().ok_or(
-                    DebugInfoMergeError::MissingSourceFileMapping {
-                        forest_index,
-                        file_idx: loc.file_idx,
-                    },
-                )?;
-                let loc = DebugLoc { file_idx, start: loc.start, end: loc.end };
-                let new_index = if let Some(existing) =
-                    builder.debug_info().locations.iter().position(|l| l == &loc)
-                {
-                    DebugLocIdx::from(existing as u32)
-                } else {
-                    builder.debug_info_mut().locations.push(loc).expect("too many locations")
-                };
-                remapped_locations.insert(prev_index, new_index);
-            }
-
-            for error_message in debug_info.error_messages() {
-                let message = remapped_strings.get(&error_message.message).copied().ok_or(
-                    DebugInfoMergeError::MissingSourceStringMapping {
-                        forest_index,
-                        string_idx: error_message.message,
-                    },
-                )?;
-                builder.add_error_message_with_index(error_message.err_code, message);
-            }
+            let tables = debug_info
+                .merge_tables_into(&mut builder)
+                .map_err(|error| table_remap_error(forest_index, error))?;
 
             let mut remapped_nodes = FxHashMap::<Src, Src>::default();
             let start_node_index = builder.debug_info().nodes().len();
@@ -621,7 +675,7 @@ impl<Src: SourceNodeIdMarker> DebugInfo<MastNodeId, Src> {
                         .location_idx
                         .into_option()
                         .map(|location_idx| {
-                            remapped_locations.get(&location_idx).copied().ok_or(
+                            tables.location(location_idx).ok_or(
                                 DebugInfoMergeError::MissingSourceLocationMapping {
                                     forest_index,
                                     location_idx,
@@ -629,14 +683,13 @@ impl<Src: SourceNodeIdMarker> DebugInfo<MastNodeId, Src> {
                             )
                         })
                         .transpose()?;
-                    let context_name_idx = remapped_strings
-                        .get(&row.context_name_idx)
-                        .copied()
-                        .ok_or(DebugInfoMergeError::MissingSourceStringMapping {
+                    let context_name_idx = tables.string(row.context_name_idx).ok_or(
+                        DebugInfoMergeError::MissingSourceStringMapping {
                             forest_index,
                             string_idx: row.context_name_idx,
-                        })?;
-                    let op_name_idx = remapped_strings.get(&row.op_name_idx).copied().ok_or(
+                        },
+                    )?;
+                    let op_name_idx = tables.string(row.op_name_idx).ok_or(
                         DebugInfoMergeError::MissingSourceStringMapping {
                             forest_index,
                             string_idx: row.op_name_idx,
@@ -653,7 +706,7 @@ impl<Src: SourceNodeIdMarker> DebugInfo<MastNodeId, Src> {
 
                 let mut debug_vars = Vec::with_capacity(source_node.debug_vars.len());
                 for row in source_node.debug_vars.iter() {
-                    let name_idx = remapped_strings.get(&row.name_idx).copied().ok_or(
+                    let name_idx = tables.string(row.name_idx).ok_or(
                         DebugInfoMergeError::MissingSourceStringMapping {
                             forest_index,
                             string_idx: row.name_idx,
@@ -663,7 +716,7 @@ impl<Src: SourceNodeIdMarker> DebugInfo<MastNodeId, Src> {
                     let location_idx = row
                         .location_idx
                         .map(|idx| {
-                            remapped_locations.get(&idx).copied().ok_or(
+                            tables.location(idx).ok_or(
                                 DebugInfoMergeError::MissingSourceLocationMapping {
                                     forest_index,
                                     location_idx: idx,
@@ -671,10 +724,19 @@ impl<Src: SourceNodeIdMarker> DebugInfo<MastNodeId, Src> {
                             )
                         })
                         .transpose()?;
+                    let type_id = row
+                        .type_id
+                        .map(|idx| {
+                            tables.ty(idx).ok_or(DebugInfoMergeError::MissingTypeMapping {
+                                forest_index,
+                                type_idx: idx,
+                            })
+                        })
+                        .transpose()?;
                     debug_vars.push(DebugSourceVar {
                         op_idx: row.op_idx,
                         name_idx,
-                        type_id: row.type_id,
+                        type_id,
                         arg_idx: row.arg_idx,
                         location_idx,
                         value_location: row.value_location.clone(),
@@ -722,7 +784,7 @@ impl<Src: SourceNodeIdMarker> DebugInfo<MastNodeId, Src> {
                         )
                     })
                     .transpose()?;
-                let name_idx = remapped_strings.get(&function.name_idx).copied().ok_or(
+                let name_idx = tables.string(function.name_idx).ok_or(
                     DebugInfoMergeError::MissingSourceStringMapping {
                         forest_index,
                         string_idx: function.name_idx,
@@ -732,15 +794,13 @@ impl<Src: SourceNodeIdMarker> DebugInfo<MastNodeId, Src> {
                     .linkage_name_idx
                     .into_option()
                     .map(|idx| {
-                        remapped_strings.get(&idx).copied().ok_or(
-                            DebugInfoMergeError::MissingSourceStringMapping {
-                                forest_index,
-                                string_idx: idx,
-                            },
-                        )
+                        tables.string(idx).ok_or(DebugInfoMergeError::MissingSourceStringMapping {
+                            forest_index,
+                            string_idx: idx,
+                        })
                     })
                     .transpose()?;
-                let file_idx = remapped_files.get(&function.file_idx).copied().ok_or(
+                let file_idx = tables.file(function.file_idx).ok_or(
                     DebugInfoMergeError::MissingSourceFileMapping {
                         forest_index,
                         file_idx: function.file_idx,
@@ -749,7 +809,12 @@ impl<Src: SourceNodeIdMarker> DebugInfo<MastNodeId, Src> {
                 let type_idx = function
                     .type_idx
                     .into_option()
-                    .map(|idx| remap_type_idx(forest_index, idx, &remapped_types))
+                    .map(|idx| {
+                        tables.ty(idx).ok_or(DebugInfoMergeError::MissingTypeMapping {
+                            forest_index,
+                            type_idx: idx,
+                        })
+                    })
                     .transpose()?;
                 let new_index = builder
                     .debug_info_mut()
@@ -781,7 +846,7 @@ impl<Src: SourceNodeIdMarker> DebugInfo<MastNodeId, Src> {
                             function_idx: row.callee_idx,
                         },
                     )?;
-                    let loc_idx = remapped_locations.get(&row.loc_idx).copied().ok_or(
+                    let loc_idx = tables.location(row.loc_idx).ok_or(
                         DebugInfoMergeError::MissingSourceLocationMapping {
                             forest_index,
                             location_idx: row.loc_idx,
@@ -800,61 +865,111 @@ impl<Src: SourceNodeIdMarker> DebugInfo<MastNodeId, Src> {
     }
 }
 
-fn remap_debug_type_info<Exec: Idx, Src: Idx>(
-    forest_index: usize,
+fn validate_debug_type_info(
     ty: &DebugTypeInfo,
-    string_map: &FxHashMap<DebugStringIdx, DebugStringIdx>,
-    type_map: &FxHashMap<DebugTypeIdx, DebugTypeIdx>,
-) -> Result<DebugTypeInfo, DebugInfoMergeError<Exec, Src>> {
+    strings: &IndexVec<DebugStringIdx, Arc<str>>,
+    types: &IndexVec<DebugTypeIdx, DebugTypeInfo>,
+) -> Result<(), DebugInfoTableRemapError> {
+    match ty {
+        DebugTypeInfo::Primitive(_) | DebugTypeInfo::Unknown => {},
+        DebugTypeInfo::Pointer { pointee_type_idx } => {
+            validate_type_idx(*pointee_type_idx, types)?;
+        },
+        DebugTypeInfo::Array { element_type_idx, .. } => {
+            validate_type_idx(*element_type_idx, types)?;
+        },
+        DebugTypeInfo::Struct { name_idx, fields, .. } => {
+            validate_type_string(*name_idx, strings)?;
+            for field in fields {
+                validate_type_string(field.name_idx, strings)?;
+                validate_type_idx(field.type_idx, types)?;
+            }
+        },
+        DebugTypeInfo::Function { return_type_idx, param_type_indices } => {
+            if let Some(return_type_idx) = return_type_idx {
+                validate_type_idx(*return_type_idx, types)?;
+            }
+            for &param_type_idx in param_type_indices {
+                validate_type_idx(param_type_idx, types)?;
+            }
+        },
+        DebugTypeInfo::Enum {
+            name_idx,
+            discriminant_type_idx,
+            variants,
+            ..
+        } => {
+            validate_type_string(*name_idx, strings)?;
+            validate_type_idx(*discriminant_type_idx, types)?;
+            for variant in variants {
+                validate_type_string(variant.name_idx, strings)?;
+                if let Some(type_idx) = variant.type_idx {
+                    validate_type_idx(type_idx, types)?;
+                }
+            }
+        },
+    }
+    Ok(())
+}
+
+fn validate_type_string(
+    string_idx: DebugStringIdx,
+    strings: &IndexVec<DebugStringIdx, Arc<str>>,
+) -> Result<(), DebugInfoTableRemapError> {
+    if strings.get(string_idx).is_none() {
+        Err(DebugInfoTableRemapError::MissingTypeString { string_idx })
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_type_idx(
+    type_idx: DebugTypeIdx,
+    types: &IndexVec<DebugTypeIdx, DebugTypeInfo>,
+) -> Result<(), DebugInfoTableRemapError> {
+    if types.get(type_idx).is_none() {
+        Err(DebugInfoTableRemapError::MissingType { type_idx })
+    } else {
+        Ok(())
+    }
+}
+
+fn remap_debug_type_info(
+    ty: &DebugTypeInfo,
+    string_map: &IndexVec<DebugStringIdx, DebugStringIdx>,
+    type_map: &IndexVec<DebugTypeIdx, DebugTypeIdx>,
+) -> Result<DebugTypeInfo, DebugInfoTableRemapError> {
     Ok(match ty {
         DebugTypeInfo::Primitive(primitive) => DebugTypeInfo::Primitive(*primitive),
         DebugTypeInfo::Pointer { pointee_type_idx } => DebugTypeInfo::Pointer {
-            pointee_type_idx: remap_type_idx(forest_index, *pointee_type_idx, type_map)?,
+            pointee_type_idx: remap_type_idx(*pointee_type_idx, type_map)?,
         },
         DebugTypeInfo::Array { element_type_idx, count } => DebugTypeInfo::Array {
-            element_type_idx: remap_type_idx(forest_index, *element_type_idx, type_map)?,
+            element_type_idx: remap_type_idx(*element_type_idx, type_map)?,
             count: *count,
         },
         DebugTypeInfo::Struct { name_idx, size, fields } => DebugTypeInfo::Struct {
-            name_idx: remap_string_index(
-                forest_index,
-                *name_idx,
-                string_map,
-                |forest_index, string_idx| DebugInfoMergeError::MissingTypeStringMapping {
-                    forest_index,
-                    string_idx,
-                },
-            )?,
+            name_idx: remap_type_string(*name_idx, string_map)?,
             size: *size,
             fields: fields
                 .iter()
                 .map(|field| {
                     Ok(DebugFieldInfo {
-                        name_idx: remap_string_index(
-                            forest_index,
-                            field.name_idx,
-                            string_map,
-                            |forest_index, string_idx| {
-                                DebugInfoMergeError::MissingTypeStringMapping {
-                                    forest_index,
-                                    string_idx,
-                                }
-                            },
-                        )?,
-                        type_idx: remap_type_idx(forest_index, field.type_idx, type_map)?,
+                        name_idx: remap_type_string(field.name_idx, string_map)?,
+                        type_idx: remap_type_idx(field.type_idx, type_map)?,
                         offset: field.offset,
                     })
                 })
-                .collect::<Result<_, DebugInfoMergeError<Exec, Src>>>()?,
+                .collect::<Result<_, DebugInfoTableRemapError>>()?,
         },
         DebugTypeInfo::Function { return_type_idx, param_type_indices } => {
             DebugTypeInfo::Function {
                 return_type_idx: return_type_idx
-                    .map(|idx| remap_type_idx(forest_index, idx, type_map))
+                    .map(|idx| remap_type_idx(idx, type_map))
                     .transpose()?,
                 param_type_indices: param_type_indices
                     .iter()
-                    .map(|idx| remap_type_idx(forest_index, *idx, type_map))
+                    .map(|idx| remap_type_idx(*idx, type_map))
                     .collect::<Result<_, _>>()?,
             }
         },
@@ -864,65 +979,64 @@ fn remap_debug_type_info<Exec: Idx, Src: Idx>(
             discriminant_type_idx,
             variants,
         } => DebugTypeInfo::Enum {
-            name_idx: remap_string_index(
-                forest_index,
-                *name_idx,
-                string_map,
-                |forest_index, string_idx| DebugInfoMergeError::MissingTypeStringMapping {
-                    forest_index,
-                    string_idx,
-                },
-            )?,
+            name_idx: remap_type_string(*name_idx, string_map)?,
             size: *size,
-            discriminant_type_idx: remap_type_idx(forest_index, *discriminant_type_idx, type_map)?,
+            discriminant_type_idx: remap_type_idx(*discriminant_type_idx, type_map)?,
             variants: variants
                 .iter()
                 .map(|variant| {
                     Ok(DebugVariantInfo {
-                        name_idx: remap_string_index(
-                            forest_index,
-                            variant.name_idx,
-                            string_map,
-                            |forest_index, string_idx| {
-                                DebugInfoMergeError::MissingTypeStringMapping {
-                                    forest_index,
-                                    string_idx,
-                                }
-                            },
-                        )?,
+                        name_idx: remap_type_string(variant.name_idx, string_map)?,
                         type_idx: variant
                             .type_idx
-                            .map(|idx| remap_type_idx(forest_index, idx, type_map))
+                            .map(|idx| remap_type_idx(idx, type_map))
                             .transpose()?,
                         payload_offset: variant.payload_offset,
                         discriminant: variant.discriminant,
                     })
                 })
-                .collect::<Result<_, DebugInfoMergeError<Exec, Src>>>()?,
+                .collect::<Result<_, DebugInfoTableRemapError>>()?,
         },
         DebugTypeInfo::Unknown => DebugTypeInfo::Unknown,
     })
 }
 
-fn remap_string_index<Exec: Idx, Src: Idx>(
-    forest_index: usize,
+fn remap_type_string(
     string_idx: DebugStringIdx,
-    string_map: &FxHashMap<DebugStringIdx, DebugStringIdx>,
-    error: impl FnOnce(usize, DebugStringIdx) -> DebugInfoMergeError<Exec, Src>,
-) -> Result<DebugStringIdx, DebugInfoMergeError<Exec, Src>> {
+    string_map: &IndexVec<DebugStringIdx, DebugStringIdx>,
+) -> Result<DebugStringIdx, DebugInfoTableRemapError> {
     string_map
-        .get(&string_idx)
+        .get(string_idx)
         .copied()
-        .ok_or_else(|| error(forest_index, string_idx))
+        .ok_or(DebugInfoTableRemapError::MissingTypeString { string_idx })
 }
 
-fn remap_type_idx<Exec: Idx, Src: Idx>(
-    forest_index: usize,
+fn remap_type_idx(
     type_idx: DebugTypeIdx,
-    type_map: &FxHashMap<DebugTypeIdx, DebugTypeIdx>,
-) -> Result<DebugTypeIdx, DebugInfoMergeError<Exec, Src>> {
+    type_map: &IndexVec<DebugTypeIdx, DebugTypeIdx>,
+) -> Result<DebugTypeIdx, DebugInfoTableRemapError> {
     type_map
-        .get(&type_idx)
+        .get(type_idx)
         .copied()
-        .ok_or(DebugInfoMergeError::MissingTypeMapping { forest_index, type_idx })
+        .ok_or(DebugInfoTableRemapError::MissingType { type_idx })
+}
+
+fn table_remap_error<Exec: Idx, Src: Idx>(
+    forest_index: usize,
+    error: DebugInfoTableRemapError,
+) -> DebugInfoMergeError<Exec, Src> {
+    match error {
+        DebugInfoTableRemapError::MissingTypeString { string_idx } => {
+            DebugInfoMergeError::MissingTypeStringMapping { forest_index, string_idx }
+        },
+        DebugInfoTableRemapError::MissingType { type_idx } => {
+            DebugInfoMergeError::MissingTypeMapping { forest_index, type_idx }
+        },
+        DebugInfoTableRemapError::MissingSourceString { string_idx } => {
+            DebugInfoMergeError::MissingSourceStringMapping { forest_index, string_idx }
+        },
+        DebugInfoTableRemapError::MissingSourceFile { file_idx } => {
+            DebugInfoMergeError::MissingSourceFileMapping { forest_index, file_idx }
+        },
+    }
 }

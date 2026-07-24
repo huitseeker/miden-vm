@@ -53,6 +53,32 @@ pub enum SourceGraphLookupError<Exec: Idx, Src: Idx> {
 /// [`miden_core::mast::MastForest`] merge.
 pub type PackageDebugInfoMergeError = DebugInfoMergeError<MastNodeId, DebugSourceNodeId>;
 
+/// Error returned when the index-bearing tables of one [`DebugInfo`] cannot be remapped into
+/// another.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum DebugInfoTableRemapError {
+    /// A type row refers to a string that is not present in the source string table.
+    #[error(
+        "debug type references string index {string_idx}, which is not present in the string table"
+    )]
+    MissingTypeString { string_idx: DebugStringIdx },
+    /// A type row refers to a type that is not present in the source type table.
+    #[error(
+        "debug info references type index {type_idx:?}, which is not present in the type table"
+    )]
+    MissingType { type_idx: DebugTypeIdx },
+    /// A file or error-message row refers to a string that is not present in the source table.
+    #[error(
+        "debug info references string index {string_idx}, which is not present in the string table"
+    )]
+    MissingSourceString { string_idx: DebugStringIdx },
+    /// A location row refers to a file that is not present in the source file table.
+    #[error(
+        "debug info references source file index {file_idx}, which is not present in the file table"
+    )]
+    MissingSourceFile { file_idx: DebugFileIdx },
+}
+
 /// Error returned when package-owned source/debug metadata cannot be remapped after a
 /// [`miden_core::mast::MastForest`] merge.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -1474,6 +1500,48 @@ mod tests {
     }
 
     #[test]
+    fn merge_tables_into_validates_before_mutating_target() {
+        let mut source = PackageDebugInfoBuilder::default();
+        source.add_string("source");
+        source.add_type(DebugTypeInfo::Pointer { pointee_type_idx: DebugTypeIdx::from(99) });
+        let source = source.build();
+
+        let mut target = PackageDebugInfoBuilder::default();
+        target.add_string("target");
+        target.add_type(DebugTypeInfo::Primitive(DebugPrimitiveType::U8));
+        let before_strings = target.debug_info().strings().len();
+        let before_types = target.debug_info().types().len();
+
+        let error = source.merge_tables_into(&mut target).unwrap_err();
+
+        assert_eq!(
+            error,
+            DebugInfoTableRemapError::MissingType { type_idx: DebugTypeIdx::from(99) },
+        );
+        assert_eq!(target.debug_info().strings().len(), before_strings);
+        assert_eq!(target.debug_info().types().len(), before_types);
+    }
+
+    #[test]
+    fn merge_tables_into_keeps_builder_type_cache_coherent() {
+        let mut source = PackageDebugInfoBuilder::default();
+        let source_type = source.add_type(DebugTypeInfo::Primitive(DebugPrimitiveType::U32));
+        let source = source.build();
+
+        let mut target = PackageDebugInfoBuilder::default();
+        target.add_type(DebugTypeInfo::Primitive(DebugPrimitiveType::U8));
+        let tables = source.merge_tables_into(&mut target).unwrap();
+        let imported_type = tables.ty(source_type).unwrap();
+
+        assert_eq!(imported_type, DebugTypeIdx::from(1));
+        assert_eq!(
+            target.add_type(DebugTypeInfo::Primitive(DebugPrimitiveType::U32)),
+            imported_type,
+        );
+        assert_eq!(target.debug_info().types().len(), 2);
+    }
+
+    #[test]
     fn test_package_source_debug_merge_remaps_execution_nodes_without_collapsing_sources() {
         use miden_assembly_syntax::ast::DebugVarLocation;
         use miden_core::{
@@ -1680,6 +1748,81 @@ mod tests {
             merged[merged_second],
             DebugTypeInfo::Pointer { pointee_type_idx: merged_first }
         );
+    }
+
+    #[test]
+    fn test_package_source_debug_merge_remaps_debug_variable_types() {
+        use miden_assembly_syntax::ast::DebugVarLocation;
+        use miden_core::{
+            mast::{BasicBlockNodeBuilder, DenseMastForestBuilder, MastForest},
+            operations::Operation,
+        };
+
+        fn forest_with_add_block() -> (MastForest, MastNodeId) {
+            let mut builder = DenseMastForestBuilder::new();
+            let block = builder
+                .push_node(BasicBlockNodeBuilder::new(alloc::vec![Operation::Add]))
+                .unwrap();
+            builder.mark_root(block);
+            let (forest, remapping) = builder.finish_with_id_map().unwrap();
+            (forest, remapping.get(block).unwrap())
+        }
+
+        fn debug_info_with_variable(
+            block: MastNodeId,
+            type_info: DebugTypeInfo,
+            variable_name: &str,
+        ) -> PackageDebugInfo {
+            let mut builder = PackageDebugInfoBuilder::default();
+            let type_id = builder.add_type(type_info);
+            let name_idx = builder.add_string(variable_name);
+            let mut node = source_node(block, Vec::new(), 0, 1);
+            node.debug_vars.push(DebugSourceVar {
+                op_idx: 0,
+                name_idx,
+                type_id: Some(type_id),
+                arg_idx: None,
+                location_idx: None,
+                value_location: DebugVarLocation::Stack(0),
+            });
+            let root = builder.add_node(node).unwrap();
+            builder.add_root(root);
+            *builder.build()
+        }
+
+        let (forest_a, block_a) = forest_with_add_block();
+        let (forest_b, block_b) = forest_with_add_block();
+        let debug_a = debug_info_with_variable(
+            block_a,
+            DebugTypeInfo::Primitive(DebugPrimitiveType::U8),
+            "a",
+        );
+        let debug_b = debug_info_with_variable(
+            block_b,
+            DebugTypeInfo::Primitive(DebugPrimitiveType::U32),
+            "b",
+        );
+        let (_merged_forest, root_map) = MastForest::merge([&forest_a, &forest_b]).unwrap();
+
+        let merged =
+            PackageDebugInfo::merge_source_debug([(0, &debug_a), (1, &debug_b)], &root_map)
+                .unwrap();
+
+        let first_type = merged
+            .debug_vars_for_source_node(merged.roots()[0])
+            .next()
+            .unwrap()
+            .type_id
+            .unwrap();
+        let second_type = merged
+            .debug_vars_for_source_node(merged.roots()[1])
+            .next()
+            .unwrap()
+            .type_id
+            .unwrap();
+        assert_eq!(first_type, DebugTypeIdx::from(0));
+        assert_eq!(second_type, DebugTypeIdx::from(1));
+        assert_eq!(merged[second_type], DebugTypeInfo::Primitive(DebugPrimitiveType::U32),);
     }
 
     #[test]

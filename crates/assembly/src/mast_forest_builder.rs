@@ -14,7 +14,8 @@ use miden_core::{
     utils::{IndexVec, bytes_to_packed_u32_elements},
 };
 use miden_mast_package::debug_info::{
-    DebugInfoBuilder, DebugSourceAsmOp, DebugSourceVar, FunctionInfo, PackageDebugInfo,
+    DebugInfoBuilder, DebugInfoTableRemapping, DebugSourceAsmOp, DebugSourceVar, FunctionInfo,
+    PackageDebugInfo,
 };
 
 use super::{GlobalItemIndex, LinkerError, Procedure};
@@ -91,6 +92,8 @@ pub struct MastForestBuilder {
     statically_linked_source_forests: Vec<Arc<MastForest>>,
     /// Package-owned debug info decoded from each statically-linked package, when available.
     statically_linked_package_debug_info: Vec<Option<PackageDebugInfo>>,
+    /// Shared-table mappings imported lazily from each statically-linked package.
+    statically_linked_debug_table_remappings: Vec<Option<Arc<DebugInfoTableRemapping>>>,
     /// Maps each statically linked source forest commitment to its positions in the merged forest
     /// root map.
     statically_linked_forest_indices_by_commitment: BTreeMap<Word, Vec<usize>>,
@@ -167,6 +170,9 @@ impl MastForestBuilder {
         let statically_linked_package_debug_info = static_libraries
             .iter()
             .map(|library| {
+                // Error messages from every static library must remain available even when none of
+                // its source graph is linked. A later lazy table import revisits these rows, but
+                // insertion is idempotent and preserves this first-wins ordering.
                 if let Some(debug_info) = library.debug_info.as_ref() {
                     for row in debug_info.error_messages() {
                         debug_info_builder.add_error_message(
@@ -178,6 +184,8 @@ impl MastForestBuilder {
                 library.debug_info.clone()
             })
             .collect::<Vec<_>>();
+        let statically_linked_debug_table_remappings =
+            static_libraries.iter().map(|_| None).collect();
         let mut statically_linked_forest_indices_by_commitment = BTreeMap::new();
         for (idx, library) in static_libraries.iter().enumerate() {
             statically_linked_forest_indices_by_commitment
@@ -206,6 +214,7 @@ impl MastForestBuilder {
             statically_linked_mast: Arc::new(statically_linked_mast),
             statically_linked_source_forests,
             statically_linked_package_debug_info,
+            statically_linked_debug_table_remappings,
             statically_linked_forest_indices_by_commitment,
             statically_linked_root_map,
             ..Self::default()
@@ -2427,6 +2436,55 @@ mod tests {
                     && source_graph[debug_var.name_idx].as_ref() == "padded_var"
             })
         }));
+    }
+
+    #[test]
+    fn test_statically_linked_debug_variable_type_is_remapped() {
+        let mut source_builder = MastForestBuilder::new(&[]).unwrap();
+        let static_type = source_builder
+            .debug_info_mut()
+            .add_type(DebugTypeInfo::Primitive(DebugPrimitiveType::U32));
+        let mut static_var = add_test_debug_var(
+            &mut source_builder,
+            DebugVarInfo::new("static_var", DebugVarLocation::Stack(0)),
+        );
+        static_var.type_id = Some(static_type);
+        let static_block_ref = source_builder
+            .ensure_block_ref(vec![Operation::Add], vec![], vec![static_var])
+            .unwrap();
+        record_test_root(&mut source_builder, static_block_ref);
+        let (static_forest, source_remapping, static_debug_info, _) =
+            source_builder.build().unwrap().into_parts_with_debug_info();
+        let static_block = source_remapping[&static_block_ref];
+        let static_source_root = static_debug_info.roots()[0];
+
+        let mut builder = MastForestBuilder::new_with_static_libraries([StaticLibrary::new(
+            &static_forest,
+            Some(*static_debug_info),
+        )])
+        .unwrap();
+        let local_type = builder
+            .debug_info_mut()
+            .add_type(DebugTypeInfo::Primitive(DebugPrimitiveType::U8));
+        assert_eq!(local_type, DebugTypeIdx::from(0));
+        let linked_ref = builder
+            .ensure_external_link_with_source_ref(
+                static_forest[static_block].digest(),
+                Some(static_forest.commitment()),
+                Some(static_block),
+                Some(static_source_root),
+            )
+            .unwrap();
+        record_test_root(&mut builder, linked_ref);
+
+        let (_forest, _remapping, debug_info, _) =
+            builder.build().unwrap().into_parts_with_debug_info();
+        let linked_source = debug_info.roots()[0];
+        let linked_var = &debug_info[linked_source].debug_vars[0];
+        let linked_type = linked_var.type_id.unwrap();
+
+        assert_eq!(linked_type, DebugTypeIdx::from(1));
+        assert_eq!(debug_info[linked_type], DebugTypeInfo::Primitive(DebugPrimitiveType::U32),);
     }
 
     #[test]

@@ -319,6 +319,16 @@ impl<Exec: Idx, Src: Idx> DebugInfoBuilder<Exec, Src> {
             },
         }
     }
+
+    /// Appends a type without uniquing it, while keeping the builder's type cache coherent.
+    ///
+    /// This is used when importing a complete type table: all output indices must be reserved
+    /// before any row is rewritten so that forward and cyclic type references remain valid.
+    pub(crate) fn push_type(&mut self, ty: DebugTypeInfo) -> DebugTypeIdx {
+        let index = self.debug_info.types.push(ty.clone()).expect("too many types");
+        self.type_indices.entry(ty).or_insert(index);
+        index
+    }
 }
 
 // FUNCTION INFO

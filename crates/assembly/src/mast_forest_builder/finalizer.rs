@@ -11,10 +11,8 @@ use miden_core::{
     utils::IndexVec,
 };
 use miden_mast_package::debug_info::{
-    DebugFieldInfo, DebugFileIdx, DebugFileInfo, DebugFunctionIdx, DebugInfo, DebugInfoBuilder,
-    DebugLoc, DebugLocIdx, DebugSourceAsmOp, DebugSourceInlineCall, DebugSourceNodeId,
-    DebugSourceVar, DebugStringIdx, DebugTypeIdx, DebugTypeInfo, DebugVariantInfo, FunctionInfo,
-    PackageDebugInfo, PackageDebugInfoBuilder, SourceNode,
+    DebugFunctionIdx, DebugInfoBuilder, DebugSourceAsmOp, DebugSourceInlineCall, DebugSourceNodeId,
+    DebugSourceVar, FunctionInfo, PackageDebugInfo, PackageDebugInfoBuilder, SourceNode,
 };
 
 use super::{
@@ -109,147 +107,6 @@ pub(super) enum MastForestBuilderError {
         #[source]
         source: MastForestError,
     },
-}
-
-#[derive(Default)]
-struct FinalDebugInfoTableMap {
-    strings: BTreeMap<DebugStringIdx, DebugStringIdx>,
-    files: BTreeMap<DebugFileIdx, DebugFileIdx>,
-    locations: BTreeMap<DebugLocIdx, DebugLocIdx>,
-    types: BTreeMap<DebugTypeIdx, DebugTypeIdx>,
-    functions: BTreeMap<DebugFunctionIdx, DebugFunctionIdx>,
-}
-
-fn remapped<K, V>(map: &BTreeMap<K, V>, index: K, table: &str) -> Result<V, Report>
-where
-    K: Copy + Debug + Ord,
-    V: Copy,
-{
-    map.get(&index).copied().ok_or_else(|| {
-        Report::msg(format!("debug info references missing {table} index {index:?}"))
-    })
-}
-
-fn remap_debug_type(
-    ty: &DebugTypeInfo,
-    tables: &FinalDebugInfoTableMap,
-) -> Result<DebugTypeInfo, Report> {
-    Ok(match ty {
-        DebugTypeInfo::Primitive(primitive) => DebugTypeInfo::Primitive(*primitive),
-        DebugTypeInfo::Pointer { pointee_type_idx } => DebugTypeInfo::Pointer {
-            pointee_type_idx: remapped(&tables.types, *pointee_type_idx, "type")?,
-        },
-        DebugTypeInfo::Array { element_type_idx, count } => DebugTypeInfo::Array {
-            element_type_idx: remapped(&tables.types, *element_type_idx, "type")?,
-            count: *count,
-        },
-        DebugTypeInfo::Struct { name_idx, size, fields } => DebugTypeInfo::Struct {
-            name_idx: remapped(&tables.strings, *name_idx, "string")?,
-            size: *size,
-            fields: fields
-                .iter()
-                .map(|field| {
-                    Ok(DebugFieldInfo {
-                        name_idx: remapped(&tables.strings, field.name_idx, "string")?,
-                        type_idx: remapped(&tables.types, field.type_idx, "type")?,
-                        offset: field.offset,
-                    })
-                })
-                .collect::<Result<_, Report>>()?,
-        },
-        DebugTypeInfo::Function { return_type_idx, param_type_indices } => {
-            DebugTypeInfo::Function {
-                return_type_idx: return_type_idx
-                    .map(|index| remapped(&tables.types, index, "type"))
-                    .transpose()?,
-                param_type_indices: param_type_indices
-                    .iter()
-                    .map(|index| remapped(&tables.types, *index, "type"))
-                    .collect::<Result<_, _>>()?,
-            }
-        },
-        DebugTypeInfo::Enum {
-            name_idx,
-            size,
-            discriminant_type_idx,
-            variants,
-        } => DebugTypeInfo::Enum {
-            name_idx: remapped(&tables.strings, *name_idx, "string")?,
-            size: *size,
-            discriminant_type_idx: remapped(&tables.types, *discriminant_type_idx, "type")?,
-            variants: variants
-                .iter()
-                .map(|variant| {
-                    Ok(DebugVariantInfo {
-                        name_idx: remapped(&tables.strings, variant.name_idx, "string")?,
-                        type_idx: variant
-                            .type_idx
-                            .map(|index| remapped(&tables.types, index, "type"))
-                            .transpose()?,
-                        payload_offset: variant.payload_offset,
-                        discriminant: variant.discriminant,
-                    })
-                })
-                .collect::<Result<_, Report>>()?,
-        },
-        DebugTypeInfo::Unknown => DebugTypeInfo::Unknown,
-    })
-}
-
-fn remap_debug_tables(
-    source: &DebugInfo<MastNodeRef, SourceNodeRef>,
-    target: &mut PackageDebugInfoBuilder,
-) -> Result<FinalDebugInfoTableMap, Report> {
-    let mut tables = FinalDebugInfoTableMap::default();
-
-    for (index, string) in source.strings().iter().enumerate() {
-        let old = DebugStringIdx::from(index as u32);
-        tables.strings.insert(old, target.add_string(string.clone()));
-    }
-
-    // The pending type table may contain forward or cyclic references. The final builder is empty,
-    // and pending builders already unique types, so preserve row indices exactly and pre-seed the
-    // complete mapping before rewriting any type payloads.
-    assert!(target.debug_info().types().is_empty());
-    for index in 0..source.types().len() {
-        let index = DebugTypeIdx::from(index as u32);
-        tables.types.insert(index, index);
-    }
-    for (index, ty) in source.types().iter().enumerate() {
-        let old = DebugTypeIdx::from(index as u32);
-        let ty = remap_debug_type(ty, &tables)?;
-        let inserted = target.add_type(ty);
-        if inserted != tables.types[&old] {
-            return Err(Report::msg(
-                "pending debug type table could not be finalized without changing row indices",
-            ));
-        }
-    }
-
-    for (index, file) in source.files().iter().enumerate() {
-        let old = DebugFileIdx::from(index as u32);
-        let path_idx = remapped(&tables.strings, file.path_idx, "string")?;
-        let file =
-            DebugFileInfo::new(path_idx).with_checksum(file.checksum().copied().unwrap_or([0; 32]));
-        tables.files.insert(old, target.add_file_info(file));
-    }
-
-    for (index, location) in source.locations().iter().enumerate() {
-        let old = DebugLocIdx::from(index as u32);
-        let location = DebugLoc {
-            file_idx: remapped(&tables.files, location.file_idx, "file")?,
-            start: location.start,
-            end: location.end,
-        };
-        tables.locations.insert(old, target.add_location_info(location));
-    }
-
-    for error_message in source.error_messages() {
-        let message = remapped(&tables.strings, error_message.message, "string")?;
-        target.add_error_message_with_index(error_message.err_code, message);
-    }
-
-    Ok(tables)
 }
 
 /// Stateful finalization helper for converting live builder records into a [`MastForest`].
@@ -359,7 +216,9 @@ impl MastForestFinalizer {
     ) -> Result<(Box<PackageDebugInfo>, BTreeMap<SourceNodeRef, DebugSourceNodeId>), Report> {
         let source_debug_info = debug_info.build();
         let mut debug_info = PackageDebugInfoBuilder::default();
-        let mut tables = remap_debug_tables(&source_debug_info, &mut debug_info)?;
+        let tables = source_debug_info
+            .merge_tables_into(&mut debug_info)
+            .map_err(|error| Report::msg(format!("{error}")))?;
         let live_source_refs = source_debug_info
             .nodes()
             .iter()
@@ -415,11 +274,15 @@ impl MastForestFinalizer {
                     let location_idx = asm_op
                         .location_idx
                         .into_option()
-                        .map(|index| remapped(&tables.locations, index, "location"))
+                        .map(|index| remapped(tables.location(index), index, "location"))
                         .transpose()?;
-                    let context_name_idx =
-                        remapped(&tables.strings, asm_op.context_name_idx, "string")?;
-                    let op_name_idx = remapped(&tables.strings, asm_op.op_name_idx, "string")?;
+                    let context_name_idx = remapped(
+                        tables.string(asm_op.context_name_idx),
+                        asm_op.context_name_idx,
+                        "string",
+                    )?;
+                    let op_name_idx =
+                        remapped(tables.string(asm_op.op_name_idx), asm_op.op_name_idx, "string")?;
                     Ok(DebugSourceAsmOp::new(
                         u32::try_from(op_idx).unwrap(),
                         location_idx,
@@ -440,13 +303,18 @@ impl MastForestFinalizer {
                 .map(|(debug_var, op_idx)| {
                     let location_idx = debug_var
                         .location_idx
-                        .map(|index| remapped(&tables.locations, index, "location"))
+                        .map(|index| remapped(tables.location(index), index, "location"))
                         .transpose()?;
-                    let name_idx = remapped(&tables.strings, debug_var.name_idx, "string")?;
+                    let name_idx =
+                        remapped(tables.string(debug_var.name_idx), debug_var.name_idx, "string")?;
+                    let type_id = debug_var
+                        .type_id
+                        .map(|index| remapped(tables.ty(index), index, "type"))
+                        .transpose()?;
                     Ok(DebugSourceVar {
                         op_idx: u32::try_from(op_idx).unwrap(),
                         name_idx,
-                        type_id: debug_var.type_id,
+                        type_id,
                         arg_idx: debug_var.arg_idx,
                         location_idx,
                         value_location: debug_var.value_location.clone(),
@@ -484,6 +352,7 @@ impl MastForestFinalizer {
             debug_info.add_root(source_id);
         }
 
+        let mut function_ids = BTreeMap::new();
         for (index, function) in source_debug_info.functions().iter().enumerate() {
             let old_function_idx = DebugFunctionIdx::from(index as u32);
             // A function can outlive its source occurrence when unreachable MAST is pruned. Keep
@@ -492,17 +361,17 @@ impl MastForestFinalizer {
                 .source_node
                 .into_option()
                 .and_then(|source_ref| source_id_by_ref.get(&source_ref).copied());
-            let name_idx = remapped(&tables.strings, function.name_idx, "string")?;
+            let name_idx = remapped(tables.string(function.name_idx), function.name_idx, "string")?;
             let linkage_name_idx = function
                 .linkage_name_idx
                 .into_option()
-                .map(|index| remapped(&tables.strings, index, "string"))
+                .map(|index| remapped(tables.string(index), index, "string"))
                 .transpose()?;
-            let file_idx = remapped(&tables.files, function.file_idx, "file")?;
+            let file_idx = remapped(tables.file(function.file_idx), function.file_idx, "file")?;
             let type_idx = function
                 .type_idx
                 .into_option()
-                .map(|index| remapped(&tables.types, index, "type"))
+                .map(|index| remapped(tables.ty(index), index, "type"))
                 .transpose()?;
             let new_function_idx = debug_info.add_function(FunctionInfo {
                 source_node: source_node.into(),
@@ -514,7 +383,7 @@ impl MastForestFinalizer {
                 type_idx: type_idx.into(),
                 mast_root: function.mast_root,
             });
-            tables.functions.insert(old_function_idx, new_function_idx);
+            function_ids.insert(old_function_idx, new_function_idx);
         }
 
         for &source_ref in &live_source_refs {
@@ -541,11 +410,15 @@ impl MastForestFinalizer {
                     Ok(DebugSourceInlineCall {
                         op_idx: u32::try_from(op_idx).unwrap(),
                         callee_idx: remapped(
-                            &tables.functions,
+                            function_ids.get(&inline_call.callee_idx).copied(),
                             inline_call.callee_idx,
                             "function",
                         )?,
-                        loc_idx: remapped(&tables.locations, inline_call.loc_idx, "location")?,
+                        loc_idx: remapped(
+                            tables.location(inline_call.loc_idx),
+                            inline_call.loc_idx,
+                            "location",
+                        )?,
                     })
                 })
                 .collect::<Result<Vec<_>, Report>>()?;
@@ -554,6 +427,15 @@ impl MastForestFinalizer {
 
         Ok((debug_info.build(), source_id_by_ref))
     }
+}
+
+fn remapped<K, V>(mapped: Option<V>, index: K, table: &str) -> Result<V, Report>
+where
+    K: Debug,
+{
+    mapped.ok_or_else(|| {
+        Report::msg(format!("debug info references missing {table} index {index:?}"))
+    })
 }
 
 fn adjust_source_op_range(node: &MastNode, op_start: usize, op_end: usize) -> (usize, usize) {

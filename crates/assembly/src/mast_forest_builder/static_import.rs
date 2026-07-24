@@ -1,11 +1,12 @@
 use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
+use core::fmt::Debug;
 
 use miden_core::{
     Word,
     mast::{BasicBlockNode, MastForest, MastNode, MastNodeExt, MastNodeId, SubtreeIterator},
 };
 use miden_mast_package::debug_info::{
-    DebugSourceAsmOp, DebugSourceNodeId, DebugSourceVar, PackageDebugInfo,
+    DebugInfoTableRemapping, DebugSourceAsmOp, DebugSourceNodeId, DebugSourceVar, PackageDebugInfo,
 };
 
 use super::{
@@ -300,9 +301,12 @@ impl MastForestBuilder {
                         source_node.exec_node, source.source_root_id
                     )));
                 }
+                let tables =
+                    self.import_static_debug_tables(source.forest_idx, &package_debug_info)?;
                 return self.copy_package_debug_source_subtree_ref(
                     source_forest.as_ref(),
                     &package_debug_info,
+                    &tables,
                     source_debug_root_id,
                 );
             }
@@ -323,16 +327,40 @@ impl MastForestBuilder {
             .expect("statically linked subtree root must be copied"))
     }
 
+    fn import_static_debug_tables(
+        &mut self,
+        forest_idx: usize,
+        package_debug_info: &PackageDebugInfo,
+    ) -> Result<Arc<DebugInfoTableRemapping>, Report> {
+        let slot = self
+            .statically_linked_debug_table_remappings
+            .get_mut(forest_idx)
+            .expect("static debug table mappings must remain parallel to static libraries");
+        if let Some(tables) = slot.as_ref() {
+            return Ok(Arc::clone(tables));
+        }
+
+        let tables = Arc::new(package_debug_info.merge_tables_into(&mut self.debug_info).map_err(
+            |error| {
+                Report::msg(format!("failed to import statically linked debug tables: {error}"))
+            },
+        )?);
+        *slot = Some(Arc::clone(&tables));
+        Ok(tables)
+    }
+
     fn copy_package_debug_source_subtree_ref(
         &mut self,
         source_forest: &MastForest,
         package_debug_info: &PackageDebugInfo,
+        tables: &DebugInfoTableRemapping,
         source_root_id: DebugSourceNodeId,
     ) -> Result<MastNodeRef, Report> {
         let mut node_refs_by_source_id = BTreeMap::new();
         self.copy_package_debug_source_node_ref(
             source_forest,
             package_debug_info,
+            tables,
             source_root_id,
             &mut node_refs_by_source_id,
         )
@@ -342,6 +370,7 @@ impl MastForestBuilder {
         &mut self,
         source_forest: &MastForest,
         package_debug_info: &PackageDebugInfo,
+        tables: &DebugInfoTableRemapping,
         source_node_id: DebugSourceNodeId,
         node_refs_by_source_id: &mut BTreeMap<DebugSourceNodeId, MastNodeRef>,
     ) -> Result<MastNodeRef, Report> {
@@ -392,6 +421,7 @@ impl MastForestBuilder {
             child_refs.push(self.copy_package_debug_source_node_ref(
                 source_forest,
                 package_debug_info,
+                tables,
                 child_source_node_id,
                 node_refs_by_source_id,
             )?);
@@ -399,9 +429,10 @@ impl MastForestBuilder {
         let metadata = self.package_source_metadata(
             source_forest,
             package_debug_info,
+            tables,
             source_node_id,
             source_exec_node_id,
-        );
+        )?;
         let node_ref = self.ensure_node_from_statically_linked_source_ref(
             source_exec_node,
             child_refs,
@@ -415,48 +446,60 @@ impl MastForestBuilder {
         &mut self,
         source_forest: &MastForest,
         package_debug_info: &PackageDebugInfo,
+        tables: &DebugInfoTableRemapping,
         source_node_id: DebugSourceNodeId,
         source_exec_node_id: MastNodeId,
-    ) -> StaticSourceMetadata {
+    ) -> Result<StaticSourceMetadata, Report> {
         let asm_ops = package_debug_info
             .asm_ops_for_source_node(source_node_id)
             .map(|row| {
-                let location = row
+                let location_idx = row
                     .location_idx
                     .into_option()
-                    .map(|idx| package_debug_info.get_location(idx).unwrap());
-                let context_name = package_debug_info.get_string(row.context_name_idx).unwrap();
-                let op = package_debug_info.get_string(row.op_name_idx).unwrap();
-                let location_idx = location.map(|loc| self.debug_info.add_location(loc));
-                let context_name_idx = self.debug_info.add_string(context_name);
-                let op_name_idx = self.debug_info.add_string(op);
-                DebugSourceAsmOp::new(
+                    .map(|index| remapped_debug_index(tables.location(index), index, "location"))
+                    .transpose()?;
+                let context_name_idx = remapped_debug_index(
+                    tables.string(row.context_name_idx),
+                    row.context_name_idx,
+                    "string",
+                )?;
+                let op_name_idx = remapped_debug_index(
+                    tables.string(row.op_name_idx),
+                    row.op_name_idx,
+                    "string",
+                )?;
+                Ok(DebugSourceAsmOp::new(
                     row.op_idx,
                     location_idx,
                     context_name_idx,
                     op_name_idx,
                     row.num_cycles,
-                )
+                ))
             })
-            .collect();
+            .collect::<Result<Vec<_>, Report>>()?;
         let debug_vars = package_debug_info
             .debug_vars_for_source_node(source_node_id)
             .map(|row| {
-                let name_idx = self.debug_info.add_string(package_debug_info[row.name_idx].clone());
+                let name_idx =
+                    remapped_debug_index(tables.string(row.name_idx), row.name_idx, "string")?;
                 let location_idx = row
                     .location_idx
-                    .and_then(|loc| package_debug_info.get_location(loc))
-                    .map(|loc| self.debug_info.add_location(loc));
-                DebugSourceVar {
+                    .map(|index| remapped_debug_index(tables.location(index), index, "location"))
+                    .transpose()?;
+                let type_id = row
+                    .type_id
+                    .map(|index| remapped_debug_index(tables.ty(index), index, "type"))
+                    .transpose()?;
+                Ok(DebugSourceVar {
                     op_idx: row.op_idx,
                     name_idx,
-                    type_id: row.type_id,
+                    type_id,
                     arg_idx: row.arg_idx,
                     location_idx,
                     value_location: row.value_location.clone(),
-                }
+                })
             })
-            .collect();
+            .collect::<Result<Vec<_>, Report>>()?;
         let op_range = package_debug_info.source_node(source_node_id).map(|source_node| {
             self.unadjust_source_block_range(
                 source_forest,
@@ -466,7 +509,7 @@ impl MastForestBuilder {
             )
         });
 
-        StaticSourceMetadata {
+        Ok(StaticSourceMetadata {
             op_range,
             asm_ops: self.unadjust_source_block_indices(
                 source_forest,
@@ -480,7 +523,7 @@ impl MastForestBuilder {
                 debug_vars,
                 |debug_var| &mut debug_var.op_idx,
             ),
-        }
+        })
     }
 
     fn unadjust_source_block_range(
@@ -504,4 +547,16 @@ impl MastForestBuilder {
             (op_start, op_end)
         }
     }
+}
+
+fn remapped_debug_index<I: Debug, T>(
+    mapped: Option<T>,
+    index: I,
+    table: &str,
+) -> Result<T, Report> {
+    mapped.ok_or_else(|| {
+        Report::msg(format!(
+            "statically linked debug info references missing {table} index {index:?}"
+        ))
+    })
 }
