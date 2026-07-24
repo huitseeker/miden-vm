@@ -258,6 +258,11 @@ impl Deserializable for DebugVarLocation {
             ))),
         }
     }
+
+    fn min_serialized_size() -> usize {
+        // `Stack` is encoded as a one-byte tag followed by a one-byte stack position.
+        u8::min_serialized_size() + u8::min_serialized_size()
+    }
 }
 
 #[cfg(false)]
@@ -411,6 +416,19 @@ mod tests {
             let mut reader = SliceReader::new(&bytes);
             let deser = DebugVarLocation::read_from(&mut reader).unwrap();
             assert_eq!(&deser, loc);
+        }
+    }
+
+    #[test]
+    fn debug_var_location_min_serialized_size_matches_shortest_variant() {
+        let locations = [DebugVarLocation::Stack(0), DebugVarLocation::Expression(Vec::new())];
+        let min_serialized_size = DebugVarLocation::min_serialized_size();
+
+        assert_eq!(min_serialized_size, 2);
+        for location in locations {
+            let mut bytes = Vec::new();
+            location.write_into(&mut bytes);
+            assert_eq!(bytes.len(), min_serialized_size);
         }
     }
 

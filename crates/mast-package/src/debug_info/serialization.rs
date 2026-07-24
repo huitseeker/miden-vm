@@ -532,6 +532,14 @@ impl Deserializable for DebugVariantInfo {
             discriminant: (hi << 64) | lo,
         })
     }
+
+    fn min_serialized_size() -> usize {
+        // The minimum encoding has no payload type or offset: one string-table index, two
+        // one-byte option discriminants, and the two halves of the discriminant value.
+        DebugStringIdx::min_serialized_size()
+            + 2 * u8::min_serialized_size()
+            + 2 * u64::min_serialized_size()
+    }
 }
 
 // DEBUG FILE INFO SERIALIZATION
@@ -669,6 +677,9 @@ impl<'a> AlignedSliceReader<'a> {
 }
 
 impl ByteReader for AlignedSliceReader<'_> {
+    fn max_alloc(&self, element_size: usize) -> usize {
+        (self.source.len() - self.pos) / element_size
+    }
     fn read_u8(&mut self) -> Result<u8, DeserializationError> {
         self.check_eor(1)?;
         let result = self.source[self.pos];
@@ -862,6 +873,25 @@ mod tests {
         let mut reader = AlignedSliceReader::new(data.as_slice());
 
         assert_eq!(reader.read_aligned_slice_of::<DebugErrorMessage>(1).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn debug_variant_min_serialized_size_is_accepted_by_aligned_reader() {
+        let variant = DebugVariantInfo {
+            name_idx: DebugStringIdx::from(0),
+            type_idx: None,
+            payload_offset: None,
+            discriminant: 0,
+        };
+        let mut bytes = Vec::new();
+        variant.write_into(&mut bytes);
+
+        assert_eq!(bytes.len(), DebugVariantInfo::min_serialized_size());
+
+        let mut reader = AlignedSliceReader::new(&bytes);
+        let mut variants = reader.read_many_iter::<DebugVariantInfo>(1).unwrap();
+        assert_eq!(variants.next().unwrap().unwrap(), variant);
+        assert!(variants.next().is_none());
     }
 
     fn roundtrip_debug_info(value: &PackageDebugInfo) -> PackageDebugInfo {
@@ -1281,7 +1311,7 @@ mod tests {
             panic!("expected InvalidValue error");
         };
         assert!(message.contains("debug_info strings count 2"));
-        assert!(message.contains("exceeds remaining input"));
+        assert!(message.contains("exceeds budget"));
     }
 
     #[test]
