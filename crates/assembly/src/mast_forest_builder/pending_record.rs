@@ -5,7 +5,9 @@ use miden_core::{
     mast::{MastNode, OpBatch},
     utils::newtype_id,
 };
-use miden_mast_package::debug_info::{DebugSourceAsmOp, DebugSourceVar, SourceNodeIdMarker};
+use miden_mast_package::debug_info::{
+    DebugSourceAsmOp, DebugSourceVar, FunctionInfo, SourceNodeIdMarker,
+};
 
 /// Content-equivalence key used while interning pending MAST nodes.
 ///
@@ -111,6 +113,7 @@ pub(super) struct PendingMastNodeDraft {
     pub(super) child_refs: Vec<MastNodeRef>,
     pub(super) asm_ops: Vec<DebugSourceAsmOp>,
     pub(super) debug_vars: Vec<DebugSourceVar>,
+    pub(super) functions: Vec<FunctionInfo<SourceNodeRef>>,
 }
 
 impl PendingMastNodeDraft {
@@ -125,6 +128,7 @@ impl PendingMastNodeDraft {
             child_refs,
             asm_ops: Vec::new(),
             debug_vars: Vec::new(),
+            functions: Vec::new(),
         }
     }
 }

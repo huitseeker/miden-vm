@@ -473,6 +473,7 @@ impl MastForestBuilder {
             op_end,
             draft.asm_ops.clone(),
             draft.debug_vars.clone(),
+            draft.functions.clone(),
             true,
         )
     }
@@ -501,6 +502,7 @@ impl MastForestBuilder {
         op_end: usize,
         asm_ops: Vec<DebugSourceAsmOp>,
         debug_vars: Vec<DebugSourceVar>,
+        functions: Vec<FunctionInfo<SourceNodeRef>>,
         update_latest: bool,
     ) -> Result<SourceNodeRef, Report> {
         let source_ref = self
@@ -516,6 +518,10 @@ impl MastForestBuilder {
             })
             .into_diagnostic()
             .wrap_err("assembler created too many source MAST node refs")?;
+        for mut function in functions {
+            function.source_node = Some(source_ref).into();
+            self.debug_info.add_function(function);
+        }
         if update_latest {
             self.latest_source_ref_by_node_ref.insert(exec_ref, source_ref);
         }
@@ -996,6 +1002,13 @@ impl MastForestBuilder {
                         debug_var
                     })
                     .collect(),
+                self.debug_info
+                    .debug_info()
+                    .functions()
+                    .iter()
+                    .filter(|f| f.source_node.into_option().is_some_and(|snid| snid == source_ref))
+                    .cloned()
+                    .collect(),
                 false,
             )?;
         }
@@ -1104,6 +1117,7 @@ impl MastForestBuilder {
             child_refs: Vec::new(),
             asm_ops,
             debug_vars,
+            functions: vec![],
         })
     }
 }

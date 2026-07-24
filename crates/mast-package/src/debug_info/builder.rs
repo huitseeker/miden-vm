@@ -335,6 +335,19 @@ impl<Exec: Idx, Src: Idx> DebugInfoBuilder<Exec, Src> {
 // ================================================================================================
 
 impl<Exec: Idx, Src: Idx> DebugInfoBuilder<Exec, Src> {
+    /// Look up the index of a function info record by it's [`miden_assembly_syntax::Path`].
+    pub fn get_function_index_by_path(
+        &self,
+        path: &miden_assembly_syntax::Path,
+    ) -> Option<DebugFunctionIdx> {
+        let path = path.as_str();
+        self.debug_info
+            .functions
+            .iter()
+            .position(|f| self.debug_info[f.name_idx].as_ref() == path)
+            .map(|pos| DebugFunctionIdx::from(pos as u32))
+    }
+
     /// Adds a function to the function table.
     pub fn add_function(&mut self, func: FunctionInfo<Src>) -> DebugFunctionIdx {
         self.debug_info.functions.push(func).expect("too many functions")
