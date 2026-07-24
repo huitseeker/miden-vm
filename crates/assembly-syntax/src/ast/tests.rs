@@ -1450,8 +1450,8 @@ fn test_roundtrip_formatting() {
 #!
 #! with spaces
 
-
 namespace test::formatting
+
 #! constant doc
 #!
 #! with spaces
@@ -1503,8 +1503,8 @@ end
 #!
 #! with spaces
 
-
 namespace test::formatting
+
 #! constant doc
 #!
 #! with spaces
@@ -1577,8 +1577,9 @@ end
     let module = context.parse_program_source_file(source).unwrap();
 
     let formatted = module.to_string();
-    let expected = "
+    let expected = "\
 namespace test::words
+
 const A = [2,3,4,5]
 
 const B = [2,3,4,5]
