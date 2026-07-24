@@ -687,7 +687,12 @@ impl Package {
                 self.validate_string_index(row.op_name_idx, debug_info, || {
                     format!("debug source node {source_id:?} assembly op name")
                 })?;
-                if let Some(location_idx) = row.location_idx.into_option() {
+                if let Some(location_idx) = row.location_idx.try_into_option().map_err(|err| {
+                    PackageDebugInfoError::InvalidOptionField {
+                        err,
+                        context: format!("debug source node {source_id:?} assembly op location"),
+                    }
+                })? {
                     self.validate_location_index(location_idx, debug_info, || {
                         format!("debug source node {source_id:?} assembly op location")
                     })?;
@@ -896,7 +901,14 @@ impl Package {
         self.validate_string_index(function.name_idx, debug_info, || {
             format!("debug function {function_index} name")
         })?;
-        if let Some(linkage_name_idx) = function.linkage_name_idx.into_option() {
+        if let Some(linkage_name_idx) =
+            function.linkage_name_idx.try_into_option().map_err(|err| {
+                PackageDebugInfoError::InvalidOptionField {
+                    err,
+                    context: format!("debug function {function_index} linkage name"),
+                }
+            })?
+        {
             self.validate_string_index(linkage_name_idx, debug_info, || {
                 format!("debug function {function_index} linkage name")
             })?;
@@ -910,7 +922,13 @@ impl Package {
                 ),
             });
         }
-        if let Some(source_node) = function.source_node.into_option()
+        let source_node = function.source_node.try_into_option().map_err(|err| {
+            PackageDebugInfoError::InvalidOptionField {
+                err,
+                context: format!("debug function {function_index} source node"),
+            }
+        })?;
+        if let Some(source_node) = source_node
             && debug_info.source_node(source_node).is_none()
         {
             return Err(PackageDebugInfoError::InvalidReference {
@@ -920,7 +938,12 @@ impl Package {
                 ),
             });
         }
-        if let Some(type_idx) = function.type_idx.into_option() {
+        if let Some(type_idx) = function.type_idx.try_into_option().map_err(|err| {
+            PackageDebugInfoError::InvalidOptionField {
+                err,
+                context: format!("debug function {function_index} type"),
+            }
+        })? {
             self.validate_type_index(type_idx, debug_info, || {
                 format!("debug function {function_index} type")
             })?;
