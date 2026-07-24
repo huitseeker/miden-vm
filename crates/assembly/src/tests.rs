@@ -2897,6 +2897,44 @@ fn removed_debug_instructions_are_rejected_by_assembler() {
     }
 }
 
+#[cfg(target_pointer_width = "64")]
+#[test]
+fn invalid_debug_variable_type_returns_error_instead_of_panicking() -> TestResult {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
+    use miden_assembly_syntax::{
+        ast::{
+            DebugVarInfo, DebugVarLocation, Instruction, Op,
+            types::{ArrayType, Type},
+        },
+        debuginfo::{SourceSpan, Span},
+    };
+
+    let context = TestContext::default();
+    let source = source_file!(&context, "begin nop end");
+    let mut module = context.parse_module(source)?;
+    let entrypoint = module
+        .procedures_mut()
+        .find(|procedure| procedure.is_entrypoint())
+        .expect("executable module should contain an entrypoint");
+
+    let oversized_len =
+        usize::try_from(u64::from(u32::MAX) + 1).expect("test requires a 64-bit target");
+    let mut debug_var = DebugVarInfo::new("value", DebugVarLocation::Stack(0));
+    debug_var.set_ty(Type::Array(Arc::new(ArrayType::new(Type::U8, oversized_len))), None);
+    entrypoint
+        .body_mut()
+        .push(Op::Inst(Span::new(SourceSpan::default(), Instruction::DebugVar(debug_var))));
+
+    let assembled = catch_unwind(AssertUnwindSafe(|| context.assemble(module)));
+    let err = assembled
+        .expect("assembly panicked, expected a structured error")
+        .expect_err("invalid debug variable type should be rejected");
+    assert_diagnostic!(&err, "array type is too large");
+
+    Ok(())
+}
+
 #[test]
 fn invalid_proc_missing_end_unexpected_begin() {
     let context = TestContext::default();

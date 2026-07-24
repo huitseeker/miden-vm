@@ -211,17 +211,13 @@ impl BasicBlockBuilder<'_> {
     /// Debug variables are stored in dedicated CSR storage (not as decorators) and are
     /// only accessed by the debugger. They track source-level variable locations at
     /// specific points in program execution.
-    pub fn push_debug_var(&mut self, debug_var: DebugVarInfo) {
+    pub fn push_debug_var(&mut self, debug_var: DebugVarInfo) -> Result<(), Report> {
         let debug_info = self.mast_forest_builder.debug_info_mut();
         let name_idx = debug_info.add_string(debug_var.name().clone());
         let location_idx = debug_var.location().cloned().map(|loc| debug_info.add_location(loc));
         let type_id = if let Some(ty) = debug_var.ty() {
             let declared_ty = debug_var.declared_type();
-            Some(
-                debug_info
-                    .register_debug_type(None, declared_ty.as_deref(), ty)
-                    .expect("invalid debug var info"),
-            )
+            Some(debug_info.register_debug_type(None, declared_ty.as_deref(), ty)?)
         } else {
             None
         };
@@ -234,6 +230,7 @@ impl BasicBlockBuilder<'_> {
             value_location: debug_var.value_location().clone(),
         };
         self.debug_vars.push(debug_var);
+        Ok(())
     }
 }
 

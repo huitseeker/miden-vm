@@ -588,7 +588,7 @@ impl Assembler {
             Instruction::ProcRef(callee) => self.procref(callee, proc_ctx.id(), block_builder)?,
 
             Instruction::DebugVar(debug_var_info) => {
-                block_builder.push_debug_var(debug_var_info.clone());
+                block_builder.push_debug_var(debug_var_info.clone())?;
             },
 
             // ----- emit instruction -------------------------------------------------------------

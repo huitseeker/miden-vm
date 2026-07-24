@@ -459,7 +459,7 @@ impl<Exec: Idx, Src: Idx> DebugInfoBuilder<Exec, Src> {
                 });
                 let element_name = element_name.map(|name| self.add_string(name));
                 let element_decl = declared_ty.and_then(|t| match t {
-                    TypeExpr::Ptr(p) => Some(p.pointee.as_ref()),
+                    TypeExpr::Array(p) => Some(p.elem.as_ref()),
                     _ => None,
                 });
                 let element_type_idx =

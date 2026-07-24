@@ -703,6 +703,11 @@ impl Package {
                 self.validate_string_index(row.name_idx, debug_info, || {
                     format!("debug source node {source_id:?} variable name")
                 })?;
+                if let Some(type_idx) = row.type_id {
+                    self.validate_type_index(type_idx, debug_info, || {
+                        format!("debug source node {source_id:?} variable")
+                    })?;
+                }
                 if let Some(location_idx) = row.location_idx {
                     self.validate_location_index(location_idx, debug_info, || {
                         format!("debug source node {source_id:?} variable location")
@@ -1767,10 +1772,17 @@ mod tests {
             assert_invalid_debug_reference(&mut package, debug_info.as_ref(), expected);
         }
 
-        for (name_idx, location_idx, expected) in [
-            (DebugStringIdx::from(99), None, "variable name string index 99"),
+        for (name_idx, type_id, location_idx, expected) in [
+            (DebugStringIdx::from(99), None, None, "variable name string index 99"),
             (
                 DebugStringIdx::from(0),
+                Some(DebugTypeIdx::from(99)),
+                None,
+                "variable type index 99",
+            ),
+            (
+                DebugStringIdx::from(0),
+                None,
                 Some(DebugLocIdx::from(99)),
                 "variable location index 99",
             ),
@@ -1781,7 +1793,7 @@ mod tests {
             node.debug_vars.push(DebugSourceVar {
                 op_idx: 0,
                 name_idx,
-                type_id: None,
+                type_id,
                 arg_idx: None,
                 location_idx,
                 value_location: DebugVarLocation::Stack(0),
