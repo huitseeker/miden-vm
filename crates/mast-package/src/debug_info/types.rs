@@ -549,6 +549,8 @@ pub struct DebugErrorMessage {
     pub err_code: u64,
     /// String table index of the error message content
     pub message: DebugStringIdx,
+    /// Pads out this struct to a multiple of its alignment
+    _padding: [u8; 4],
 }
 
 impl DebugErrorMessage {
@@ -562,7 +564,7 @@ impl DebugErrorMessage {
     };
 
     pub fn new(err_code: u64, message: DebugStringIdx) -> Self {
-        Self { err_code, message }
+        Self { err_code, message, _padding: [0; _] }
     }
 }
 
