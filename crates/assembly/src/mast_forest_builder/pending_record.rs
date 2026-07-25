@@ -6,7 +6,7 @@ use miden_core::{
     utils::newtype_id,
 };
 use miden_mast_package::debug_info::{
-    DebugSourceAsmOp, DebugSourceVar, FunctionInfo, SourceNodeIdMarker,
+    DebugFunctionIdx, DebugSourceAsmOp, DebugSourceInlineCall, DebugSourceVar, SourceNodeIdMarker,
 };
 
 /// Content-equivalence key used while interning pending MAST nodes.
@@ -35,8 +35,8 @@ impl SourceNodeIdMarker for SourceNodeRef {}
 
 /// Builder-owned node record used before final [`MastNodeId`]s exist.
 ///
-/// The record keeps the node content, child refs, and debug metadata refs together so
-/// cloning, merging, and finalization do not need to coordinate side tables.
+/// The record keeps execution-node content, child refs, and operation metadata together.
+/// Occurrence-specific inline calls and function associations remain on source nodes.
 #[derive(Clone, Debug)]
 pub(super) struct PendingMastNode {
     pub(super) key: MastNodeKey,
@@ -49,8 +49,8 @@ pub(super) struct PendingMastNode {
 
 /// Compact representation of a pending node's structural variant.
 ///
-/// Child and metadata references live on [`PendingMastNode`]; this enum stores only the data
-/// needed to materialize the final node variant.
+/// Child and operation-metadata references live on [`PendingMastNode`]; this enum stores only the
+/// data needed to materialize the final node variant.
 #[derive(Clone, Debug)]
 pub(super) enum PendingMastNodeKind {
     BasicBlock { op_batches: Vec<OpBatch> },
@@ -113,7 +113,8 @@ pub(super) struct PendingMastNodeDraft {
     pub(super) child_refs: Vec<MastNodeRef>,
     pub(super) asm_ops: Vec<DebugSourceAsmOp>,
     pub(super) debug_vars: Vec<DebugSourceVar>,
-    pub(super) functions: Vec<FunctionInfo<SourceNodeRef>>,
+    pub(super) inline_calls: Vec<DebugSourceInlineCall>,
+    pub(super) functions: Vec<DebugFunctionIdx>,
 }
 
 impl PendingMastNodeDraft {
@@ -128,6 +129,7 @@ impl PendingMastNodeDraft {
             child_refs,
             asm_ops: Vec::new(),
             debug_vars: Vec::new(),
+            inline_calls: Vec::new(),
             functions: Vec::new(),
         }
     }

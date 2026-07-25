@@ -248,8 +248,13 @@ impl BasicBlockBuilder<'_> {
             let asm_ops = core::mem::take(&mut self.asm_ops);
             let debug_vars = self.debug_vars.drain(..).collect();
 
-            let basic_block_node_ref =
-                self.mast_forest_builder.ensure_block_ref(ops, asm_ops, debug_vars)?;
+            let basic_block_node_ref = self.mast_forest_builder.ensure_block_ref(
+                ops,
+                asm_ops,
+                debug_vars,
+                vec![],
+                vec![],
+            )?;
 
             Ok(Some(basic_block_node_ref))
         } else {

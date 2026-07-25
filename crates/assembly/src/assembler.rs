@@ -1510,6 +1510,8 @@ impl Assembler {
                         vec![Operation::Noop],
                         vec![],
                         vec![],
+                        vec![],
+                        vec![],
                     )?;
 
                     let split_node_ref = block_builder
@@ -1562,7 +1564,13 @@ impl Assembler {
         }
 
         let procedure_body_ref = if body_node_refs.is_empty() {
-            mast_forest_builder.ensure_block_ref(vec![Operation::Noop], vec![], vec![])?
+            mast_forest_builder.ensure_block_ref(
+                vec![Operation::Noop],
+                vec![],
+                vec![],
+                vec![],
+                vec![],
+            )?
         } else {
             let asm_op = self.create_asm_op(&proc_ctx.span(), "begin", proc_ctx);
             mast_forest_builder.join_node_refs(body_node_refs, Some(asm_op))?

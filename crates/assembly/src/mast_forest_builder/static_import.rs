@@ -9,8 +9,8 @@ use miden_core::{
     },
 };
 use miden_mast_package::debug_info::{
-    DebugInfoTableRemapping, DebugSourceAsmOp, DebugSourceNodeId, DebugSourceVar, FunctionInfo,
-    PackageDebugInfo,
+    DebugFunctionIdx, DebugInfoTableRemapping, DebugSourceAsmOp, DebugSourceInlineCall,
+    DebugSourceNodeId, DebugSourceVar, PackageDebugInfo,
 };
 
 use super::{
@@ -35,7 +35,8 @@ pub(super) struct StaticSourceMetadata {
     op_range: Option<(usize, usize)>,
     asm_ops: Vec<DebugSourceAsmOp>,
     debug_vars: Vec<DebugSourceVar>,
-    functions: Vec<FunctionInfo<SourceNodeRef>>,
+    inline_calls: Vec<DebugSourceInlineCall>,
+    functions: Vec<DebugFunctionIdx>,
 }
 
 struct StaticPendingDraft {
@@ -65,11 +66,14 @@ impl MastForestBuilder {
     ) -> StaticPendingDraft {
         let digest = source_node.digest();
         let kind = PendingMastNodeKind::from_node(source_node);
-        let (asm_ops, debug_vars, op_range, functions) = source_metadata
-            .map(|metadata| {
-                (metadata.asm_ops, metadata.debug_vars, metadata.op_range, metadata.functions)
-            })
-            .unwrap_or_else(|| (Vec::new(), Vec::new(), None, Vec::new()));
+
+        let StaticSourceMetadata {
+            op_range,
+            asm_ops,
+            debug_vars,
+            inline_calls,
+            functions,
+        } = source_metadata.unwrap_or_default();
 
         StaticPendingDraft {
             draft: PendingMastNodeDraft {
@@ -78,6 +82,7 @@ impl MastForestBuilder {
                 child_refs,
                 asm_ops,
                 debug_vars,
+                inline_calls,
                 functions,
             },
             source_op_range: op_range,
@@ -127,7 +132,8 @@ impl MastForestBuilder {
             op_end,
             draft.asm_ops.clone(),
             draft.debug_vars.clone(),
-            draft.functions.clone(),
+            draft.inline_calls.clone(),
+            &draft.functions,
             true,
         )
     }
@@ -510,6 +516,19 @@ impl MastForestBuilder {
                 })
             })
             .collect::<Result<Vec<_>, Report>>()?;
+        let inline_calls = package_debug_info
+            .inline_calls_for_source_node(source_node_id)
+            .map(|row| {
+                let loc_idx =
+                    remapped_debug_index(tables.location(row.loc_idx), row.loc_idx, "location")?;
+                let callee_idx = remapped_debug_index(
+                    tables.function(row.callee_idx),
+                    row.callee_idx,
+                    "function",
+                )?;
+                Ok(DebugSourceInlineCall { op_idx: row.op_idx, callee_idx, loc_idx })
+            })
+            .collect::<Result<Vec<_>, Report>>()?;
         let op_range = package_debug_info.source_node(source_node_id).map(|source_node| {
             self.unadjust_source_block_range(
                 source_forest,
@@ -520,44 +539,24 @@ impl MastForestBuilder {
         });
 
         let mast_root = source_forest.get_digest_by_id(source_exec_node_id).unwrap();
-        let mut functions = Vec::new();
-        for function in package_debug_info.functions() {
-            let function_source_node = function.source_node.into_option();
-            if function_source_node.is_some_and(|snid| snid == source_node_id)
-                || (function_source_node.is_none() && function.mast_root == mast_root)
-            {
-                let name_idx = remapped_debug_index(
-                    tables.string(function.name_idx),
-                    function.name_idx,
-                    "string",
-                )?;
-                let linkage_name_idx = match function.linkage_name_idx.into_option() {
-                    Some(lnid) => Some(remapped_debug_index(tables.string(lnid), lnid, "string")?),
-                    None => None,
-                };
-                let file_idx = remapped_debug_index(
-                    tables.file(function.file_idx),
-                    function.file_idx,
-                    "file",
-                )?;
-                let type_idx = match function.type_idx.into_option() {
-                    Some(tid) => Some(remapped_debug_index(tables.ty(tid), tid, "type")?),
-                    None => None,
-                };
-                let line = function.line;
-                let column = function.column;
-                functions.push(FunctionInfo {
-                    source_node: None.into(),
-                    name_idx,
-                    linkage_name_idx: linkage_name_idx.into(),
-                    type_idx: type_idx.into(),
-                    file_idx,
-                    line,
-                    column,
-                    mast_root,
-                });
-            }
-        }
+        let functions = package_debug_info
+            .functions()
+            .iter()
+            .enumerate()
+            .filter_map(|(index, function)| {
+                let function_source_node = function.source_node.into_option();
+                if function_source_node.is_some_and(|snid| snid == source_node_id)
+                    || function_source_node.is_none() && function.mast_root == mast_root
+                {
+                    let function_index = DebugFunctionIdx::from(
+                        u32::try_from(index).expect("invalid function index"),
+                    );
+                    tables.function(function_index)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
 
         Ok(StaticSourceMetadata {
             op_range,
@@ -572,6 +571,12 @@ impl MastForestBuilder {
                 source_exec_node_id,
                 debug_vars,
                 |debug_var| &mut debug_var.op_idx,
+            ),
+            inline_calls: self.unadjust_source_block_indices(
+                source_forest,
+                source_exec_node_id,
+                inline_calls,
+                |inline_call| &mut inline_call.op_idx,
             ),
             functions,
         })

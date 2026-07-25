@@ -14,8 +14,8 @@ use miden_core::{
     utils::{IndexVec, bytes_to_packed_u32_elements},
 };
 use miden_mast_package::debug_info::{
-    DebugInfoBuilder, DebugInfoTableRemapping, DebugSourceAsmOp, DebugSourceVar, FunctionInfo,
-    PackageDebugInfo,
+    DebugFunctionIdx, DebugInfoBuilder, DebugInfoTableRemapping, DebugSourceAsmOp,
+    DebugSourceInlineCall, DebugSourceVar, FunctionInfo, PackageDebugInfo,
 };
 
 use super::{GlobalItemIndex, LinkerError, Procedure};
@@ -82,7 +82,10 @@ pub struct MastForestBuilder {
     nodes: IndexVec<MastNodeRef, PendingMastNode>,
     /// Most recent source occurrence for each execution node ref.
     latest_source_ref_by_node_ref: BTreeMap<MastNodeRef, SourceNodeRef>,
-    /// Source occurrences recorded for each execution node ref, in creation order.
+    /// Selectable source occurrences recorded for each execution node ref, in creation order.
+    ///
+    /// Supplemental range records created while merging blocks are excluded because they do not
+    /// represent a complete occurrence of the execution node.
     source_refs_by_node_ref: BTreeMap<MastNodeRef, Vec<SourceNodeRef>>,
     /// A MastForest that contains the MAST of all statically-linked libraries, it's used to find
     /// precompiled procedures and copy their subtrees instead of inserting external nodes.
@@ -473,7 +476,8 @@ impl MastForestBuilder {
             op_end,
             draft.asm_ops.clone(),
             draft.debug_vars.clone(),
-            draft.functions.clone(),
+            draft.inline_calls.clone(),
+            &draft.functions,
             true,
         )
     }
@@ -502,7 +506,8 @@ impl MastForestBuilder {
         op_end: usize,
         asm_ops: Vec<DebugSourceAsmOp>,
         debug_vars: Vec<DebugSourceVar>,
-        functions: Vec<FunctionInfo<SourceNodeRef>>,
+        inline_calls: Vec<DebugSourceInlineCall>,
+        functions: &[DebugFunctionIdx],
         update_latest: bool,
     ) -> Result<SourceNodeRef, Report> {
         let source_ref = self
@@ -514,19 +519,36 @@ impl MastForestBuilder {
                 op_end: op_end.try_into().expect("invalid op end"),
                 asm_ops,
                 debug_vars,
-                inline_calls: vec![],
+                inline_calls,
             })
             .into_diagnostic()
             .wrap_err("assembler created too many source MAST node refs")?;
-        for mut function in functions {
-            function.source_node = Some(source_ref).into();
-            self.debug_info.add_function(function);
+        for function in functions {
+            self.debug_info.set_function_source_node(*function, source_ref);
         }
         if update_latest {
             self.latest_source_ref_by_node_ref.insert(exec_ref, source_ref);
+            self.source_refs_by_node_ref.entry(exec_ref).or_default().push(source_ref);
         }
-        self.source_refs_by_node_ref.entry(exec_ref).or_default().push(source_ref);
         Ok(source_ref)
+    }
+
+    fn function_indices_for_source_ref(&self, source_ref: SourceNodeRef) -> Vec<DebugFunctionIdx> {
+        self.debug_info
+            .debug_info()
+            .functions()
+            .iter()
+            .enumerate()
+            .filter(|(_, function)| {
+                function
+                    .source_node
+                    .into_option()
+                    .is_some_and(|function_source_ref| function_source_ref == source_ref)
+            })
+            .map(|(index, _)| {
+                DebugFunctionIdx::from(u32::try_from(index).expect("too many functions"))
+            })
+            .collect()
     }
 
     /// Removes the unused nodes that were created as part of the assembly process, and returns the
@@ -1002,13 +1024,16 @@ impl MastForestBuilder {
                         debug_var
                     })
                     .collect(),
-                self.debug_info
-                    .debug_info()
-                    .functions()
-                    .iter()
-                    .filter(|f| f.source_node.into_option().is_some_and(|snid| snid == source_ref))
-                    .cloned()
+                source_node
+                    .inline_calls
+                    .into_iter()
+                    .map(|mut inline_call| {
+                        inline_call.op_idx = remap_op_idx(inline_call.op_idx);
+                        inline_call
+                    })
                     .collect(),
+                // The functions now belong to the aggregate merged occurrence created above.
+                &[],
                 false,
             )?;
         }
@@ -1031,6 +1056,8 @@ impl MastForestBuilder {
         // Track asm_ops and debug_vars being accumulated for merged blocks, with adjusted indices
         let mut merged_asm_ops: Vec<DebugSourceAsmOp> = Vec::new();
         let mut merged_debug_vars: Vec<DebugSourceVar> = Vec::new();
+        let mut merged_inline_calls: Vec<DebugSourceInlineCall> = Vec::new();
+        let mut merged_functions: Vec<DebugFunctionIdx> = Vec::new();
         let mut merged_source_occurrences: Vec<(SourceNodeRef, usize)> = Vec::new();
 
         let mut merged_basic_block_refs: Vec<MastNodeRef> = Vec::new();
@@ -1069,6 +1096,14 @@ impl MastForestBuilder {
                     debug_var.op_idx += u32::try_from(ops_offset).unwrap();
                     debug_var
                 }));
+                merged_inline_calls.extend(self.debug_info[source_ref].inline_calls.iter().map(
+                    |inline_call| {
+                        let mut inline_call = *inline_call;
+                        inline_call.op_idx += u32::try_from(ops_offset).unwrap();
+                        inline_call
+                    },
+                ));
+                merged_functions.extend(self.function_indices_for_source_ref(source_ref));
 
                 operations.extend(block_ops);
             } else {
@@ -1078,9 +1113,16 @@ impl MastForestBuilder {
                     let block_ops = core::mem::take(&mut operations);
                     let block_asm_ops = core::mem::take(&mut merged_asm_ops);
                     let block_debug_vars = core::mem::take(&mut merged_debug_vars);
+                    let block_inline_calls = core::mem::take(&mut merged_inline_calls);
+                    let block_functions = core::mem::take(&mut merged_functions);
                     let block_source_occurrences = core::mem::take(&mut merged_source_occurrences);
-                    let merged_basic_block_ref =
-                        self.ensure_block_ref(block_ops, block_asm_ops, block_debug_vars)?;
+                    let merged_basic_block_ref = self.ensure_block_ref(
+                        block_ops,
+                        block_asm_ops,
+                        block_debug_vars,
+                        block_inline_calls,
+                        block_functions,
+                    )?;
                     self.record_merged_source_occurrences(
                         merged_basic_block_ref,
                         &block_source_occurrences,
@@ -1093,8 +1135,13 @@ impl MastForestBuilder {
         }
 
         if !operations.is_empty() {
-            let merged_basic_block =
-                self.ensure_block_ref(operations, merged_asm_ops, merged_debug_vars)?;
+            let merged_basic_block = self.ensure_block_ref(
+                operations,
+                merged_asm_ops,
+                merged_debug_vars,
+                merged_inline_calls,
+                merged_functions,
+            )?;
             self.record_merged_source_occurrences(merged_basic_block, &merged_source_occurrences)?;
             merged_basic_block_refs.push(merged_basic_block);
         }
@@ -1108,6 +1155,8 @@ impl MastForestBuilder {
         operations: Vec<Operation>,
         asm_ops: Vec<DebugSourceAsmOp>,
         debug_vars: Vec<DebugSourceVar>,
+        inline_calls: Vec<DebugSourceInlineCall>,
+        functions: Vec<DebugFunctionIdx>,
     ) -> Result<MastNodeRef, Report> {
         let (op_batches, digest) = batch_basic_block_operations(operations)?;
         let kind = PendingMastNodeKind::BasicBlock { op_batches };
@@ -1117,7 +1166,8 @@ impl MastForestBuilder {
             child_refs: Vec::new(),
             asm_ops,
             debug_vars,
-            functions: vec![],
+            inline_calls,
+            functions,
         })
     }
 }
@@ -1364,6 +1414,8 @@ mod tests {
                     vec![Operation::Add, Operation::Mul],
                     vec![shared_asm_op, with_asm_op_idx(shared_asm_op, 1)],
                     vec![shared_debug_var],
+                    vec![],
+                    vec![],
                 )
                 .unwrap();
             record_test_root(&mut builder, seed_ref);
@@ -1383,6 +1435,8 @@ mod tests {
                             .ensure_block_ref(
                                 vec![Operation::Add],
                                 vec![asm_op],
+                                vec![],
+                                vec![],
                                 vec![],
                             )
                             .unwrap()
@@ -1431,7 +1485,9 @@ mod tests {
     fn test_build_without_roots_prunes_all_nodes() {
         let mut builder = MastForestBuilder::new(&[]).unwrap();
 
-        let dead_ref = builder.ensure_block_ref(vec![Operation::Add], vec![], vec![]).unwrap();
+        let dead_ref = builder
+            .ensure_block_ref(vec![Operation::Add], vec![], vec![], vec![], vec![])
+            .unwrap();
 
         let (forest, remapping) = builder.build().unwrap().into_parts();
 
@@ -1444,8 +1500,12 @@ mod tests {
     fn test_build_prunes_unreachable_nodes() {
         let mut builder = MastForestBuilder::new(&[]).unwrap();
 
-        let root_ref = builder.ensure_block_ref(vec![Operation::Add], vec![], vec![]).unwrap();
-        let dead_ref = builder.ensure_block_ref(vec![Operation::Mul], vec![], vec![]).unwrap();
+        let root_ref = builder
+            .ensure_block_ref(vec![Operation::Add], vec![], vec![], vec![], vec![])
+            .unwrap();
+        let dead_ref = builder
+            .ensure_block_ref(vec![Operation::Mul], vec![], vec![], vec![], vec![])
+            .unwrap();
         builder.record_procedure_root_ref(root_ref);
 
         let (forest, remapping) = builder.build().unwrap().into_parts();
@@ -1462,11 +1522,13 @@ mod tests {
 
         let num_ops = PROCEDURE_INLINING_THRESHOLD * 1024;
         let large_ops = vec![Operation::Add; num_ops];
-        let large_block_ref = builder.ensure_block_ref(large_ops, vec![], vec![]).unwrap();
+        let large_block_ref =
+            builder.ensure_block_ref(large_ops, vec![], vec![], vec![], vec![]).unwrap();
         builder.record_procedure_root_ref(large_block_ref);
 
-        let small_block_ref =
-            builder.ensure_block_ref(vec![Operation::Add], vec![], vec![]).unwrap();
+        let small_block_ref = builder
+            .ensure_block_ref(vec![Operation::Add], vec![], vec![], vec![], vec![])
+            .unwrap();
 
         let merged_blocks =
             builder.merge_basic_block_refs(&[large_block_ref, small_block_ref]).unwrap();
@@ -1480,13 +1542,15 @@ mod tests {
     fn test_build_keeps_existing_forest_root_after_merge() {
         let mut builder = MastForestBuilder::new(&[]).unwrap();
 
-        let root_block_ref =
-            builder.ensure_block_ref(vec![Operation::Add], vec![], vec![]).unwrap();
+        let root_block_ref = builder
+            .ensure_block_ref(vec![Operation::Add], vec![], vec![], vec![], vec![])
+            .unwrap();
         builder.record_procedure_root_ref(root_block_ref);
         let root_digest = builder.nodes[root_block_ref].digest;
 
-        let tail_block_ref =
-            builder.ensure_block_ref(vec![Operation::Mul], vec![], vec![]).unwrap();
+        let tail_block_ref = builder
+            .ensure_block_ref(vec![Operation::Mul], vec![], vec![], vec![], vec![])
+            .unwrap();
 
         let merged_blocks =
             builder.merge_basic_block_refs(&[root_block_ref, tail_block_ref]).unwrap();
@@ -1507,10 +1571,10 @@ mod tests {
         let first_asm_op = add_test_asm_op(&mut builder, test_asm_op("merge::first", "add"));
         let second_asm_op = add_test_asm_op(&mut builder, test_asm_op("merge::second", "mul"));
         let first_block_ref = builder
-            .ensure_block_ref(vec![Operation::Add], vec![first_asm_op], vec![])
+            .ensure_block_ref(vec![Operation::Add], vec![first_asm_op], vec![], vec![], vec![])
             .unwrap();
         let second_block_ref = builder
-            .ensure_block_ref(vec![Operation::Mul], vec![second_asm_op], vec![])
+            .ensure_block_ref(vec![Operation::Mul], vec![second_asm_op], vec![], vec![], vec![])
             .unwrap();
 
         let merged_blocks =
@@ -1556,10 +1620,10 @@ mod tests {
         let first_asm_op = add_test_asm_op(&mut builder, test_asm_op("merge::first", "add"));
         let second_asm_op = add_test_asm_op(&mut builder, test_asm_op("merge::second", "add"));
         let first_block_ref = builder
-            .ensure_block_ref(vec![Operation::Add], vec![first_asm_op], vec![])
+            .ensure_block_ref(vec![Operation::Add], vec![first_asm_op], vec![], vec![], vec![])
             .unwrap();
         let second_block_ref = builder
-            .ensure_block_ref(vec![Operation::Add], vec![second_asm_op], vec![])
+            .ensure_block_ref(vec![Operation::Add], vec![second_asm_op], vec![], vec![], vec![])
             .unwrap();
 
         assert_eq!(
@@ -1599,10 +1663,146 @@ mod tests {
     }
 
     #[test]
+    fn test_block_merge_uses_selected_occurrence_inline_calls_and_functions() {
+        let mut builder = MastForestBuilder::new(&[]).unwrap();
+        let mast_root = BasicBlockNodeBuilder::new(vec![Operation::Add]).build().unwrap().digest();
+
+        let (function_a, function_b, location_a, location_b) = {
+            let debug_info = builder.debug_info_mut();
+            let uri = Uri::from("file:///same-digest-aliases.masm");
+            let location_a = debug_info.add_location(Location::new(
+                uri.clone(),
+                ByteIndex::from(0u32),
+                ByteIndex::from(1u32),
+            ));
+            let location_b = debug_info.add_location(Location::new(
+                uri,
+                ByteIndex::from(2u32),
+                ByteIndex::from(3u32),
+            ));
+            let file_idx = debug_info.debug_info().locations()[location_a].file_idx;
+            let function_a_name = debug_info.add_string("alias_a");
+            let function_b_name = debug_info.add_string("alias_b");
+            let function_a = debug_info.add_function(FunctionInfo::new(
+                None,
+                function_a_name,
+                file_idx,
+                LineNumber::new(1).unwrap(),
+                ColumnNumber::new(1).unwrap(),
+                mast_root,
+            ));
+            let function_b = debug_info.add_function(FunctionInfo::new(
+                None,
+                function_b_name,
+                file_idx,
+                LineNumber::new(2).unwrap(),
+                ColumnNumber::new(1).unwrap(),
+                mast_root,
+            ));
+            (function_a, function_b, location_a, location_b)
+        };
+
+        let alias_a_ref = builder
+            .ensure_block_ref(
+                vec![Operation::Add],
+                vec![],
+                vec![],
+                vec![DebugSourceInlineCall {
+                    op_idx: 0,
+                    callee_idx: function_a,
+                    loc_idx: location_a,
+                }],
+                vec![function_a],
+            )
+            .unwrap();
+        let alias_a_source_ref = builder.latest_source_ref_for_node_ref(alias_a_ref).unwrap();
+        let alias_b_ref = builder
+            .ensure_block_ref(
+                vec![Operation::Add],
+                vec![],
+                vec![],
+                vec![DebugSourceInlineCall {
+                    op_idx: 0,
+                    callee_idx: function_b,
+                    loc_idx: location_b,
+                }],
+                vec![function_b],
+            )
+            .unwrap();
+        let alias_b_source_ref = builder.latest_source_ref_for_node_ref(alias_b_ref).unwrap();
+
+        assert_eq!(alias_a_ref, alias_b_ref, "same-digest aliases must share execution identity");
+        assert_ne!(alias_a_source_ref, alias_b_source_ref);
+
+        let tail_ref = builder
+            .ensure_block_ref(vec![Operation::Mul], vec![], vec![], vec![], vec![])
+            .unwrap();
+        let merged_refs = builder.merge_basic_block_refs(&[alias_b_ref, tail_ref]).unwrap();
+        assert_eq!(merged_refs.len(), 1);
+        let merged_source_ref = builder
+            .latest_source_ref_for_node_ref(merged_refs[0])
+            .expect("merged source occurrence");
+        let merged_source = &builder.debug_info[merged_source_ref];
+
+        assert_eq!(
+            merged_source.inline_calls,
+            vec![DebugSourceInlineCall {
+                op_idx: 0,
+                callee_idx: function_b,
+                loc_idx: location_b,
+            }],
+            "the merged occurrence must use the selected alias's inline-call metadata",
+        );
+        assert_eq!(
+            builder.debug_info[function_a].source_node.into_option(),
+            Some(alias_a_source_ref),
+            "merging alias B must not retarget alias A's function",
+        );
+        assert_eq!(
+            builder.debug_info[function_b].source_node.into_option(),
+            Some(merged_source_ref),
+            "the selected alias's function must follow the merged occurrence",
+        );
+
+        let second_tail_ref = builder
+            .ensure_block_ref(vec![Operation::Neg], vec![], vec![], vec![], vec![])
+            .unwrap();
+        let remerged_refs =
+            builder.merge_basic_block_refs(&[merged_refs[0], second_tail_ref]).unwrap();
+        assert_eq!(remerged_refs.len(), 1);
+        let remerged_source_ref = builder
+            .latest_source_ref_for_node_ref(remerged_refs[0])
+            .expect("remerged source occurrence");
+        let remerged_source = &builder.debug_info[remerged_source_ref];
+
+        assert_eq!(
+            remerged_source.inline_calls,
+            vec![DebugSourceInlineCall {
+                op_idx: 0,
+                callee_idx: function_b,
+                loc_idx: location_b,
+            }],
+            "re-merging must continue from the aggregate occurrence rather than a supplemental range",
+        );
+        assert_eq!(
+            builder.debug_info[function_a].source_node.into_option(),
+            Some(alias_a_source_ref),
+            "re-merging alias B must not retarget alias A's function",
+        );
+        assert_eq!(
+            builder.debug_info[function_b].source_node.into_option(),
+            Some(remerged_source_ref),
+            "the selected alias's function must follow repeated merges",
+        );
+    }
+
+    #[test]
     fn test_build_orders_external_nodes_before_non_external_nodes() {
         let mut builder = MastForestBuilder::new(&[]).unwrap();
 
-        let block_ref = builder.ensure_block_ref(vec![Operation::Add], vec![], vec![]).unwrap();
+        let block_ref = builder
+            .ensure_block_ref(vec![Operation::Add], vec![], vec![], vec![], vec![])
+            .unwrap();
         record_test_root(&mut builder, block_ref);
 
         let external_a = builder
@@ -1639,7 +1839,9 @@ mod tests {
             .unwrap();
         builder.record_procedure_root_ref(external_ref);
 
-        let concrete_ref = builder.ensure_block_ref(vec![Operation::Add], vec![], vec![]).unwrap();
+        let concrete_ref = builder
+            .ensure_block_ref(vec![Operation::Add], vec![], vec![], vec![], vec![])
+            .unwrap();
         assert_eq!(external_ref, concrete_ref);
         assert!(!builder.nodes[external_ref].kind.is_external());
 
@@ -1656,11 +1858,13 @@ mod tests {
 
         let num_ops = PROCEDURE_INLINING_THRESHOLD * 1024;
         let large_ops = vec![Operation::Add; num_ops];
-        let large_block_ref = builder.ensure_block_ref(large_ops, vec![], vec![]).unwrap();
+        let large_block_ref =
+            builder.ensure_block_ref(large_ops, vec![], vec![], vec![], vec![]).unwrap();
         builder.record_procedure_root_ref(large_block_ref);
 
-        let small_block_ref =
-            builder.ensure_block_ref(vec![Operation::Add], vec![], vec![]).unwrap();
+        let small_block_ref = builder
+            .ensure_block_ref(vec![Operation::Add], vec![], vec![], vec![], vec![])
+            .unwrap();
 
         let merged_blocks =
             builder.merge_basic_block_refs(&[large_block_ref, small_block_ref]).unwrap();
@@ -1682,10 +1886,10 @@ mod tests {
 
         // Same ops, different debug vars dedup to the same execution node.
         let block_a_ref = builder
-            .ensure_block_ref(vec![Operation::Add], Vec::new(), vec![var_x_ref])
+            .ensure_block_ref(vec![Operation::Add], Vec::new(), vec![var_x_ref], vec![], vec![])
             .unwrap();
         let block_b_ref = builder
-            .ensure_block_ref(vec![Operation::Add], Vec::new(), vec![var_y_ref])
+            .ensure_block_ref(vec![Operation::Add], Vec::new(), vec![var_y_ref], vec![], vec![])
             .unwrap();
 
         assert_eq!(block_a_ref, block_b_ref);
@@ -1711,10 +1915,10 @@ mod tests {
             add_test_debug_var(&mut builder, DebugVarInfo::new("y", DebugVarLocation::Stack(1)));
 
         let block_a_ref = builder
-            .ensure_block_ref(vec![Operation::Add], Vec::new(), vec![var_x_ref])
+            .ensure_block_ref(vec![Operation::Add], Vec::new(), vec![var_x_ref], vec![], vec![])
             .unwrap();
         let block_b_ref = builder
-            .ensure_block_ref(vec![Operation::Add], Vec::new(), vec![var_y_ref])
+            .ensure_block_ref(vec![Operation::Add], Vec::new(), vec![var_y_ref], vec![], vec![])
             .unwrap();
 
         assert_eq!(block_a_ref, block_b_ref);
@@ -1750,10 +1954,12 @@ mod tests {
         let var_b =
             add_test_debug_var(&mut builder, DebugVarInfo::new("x", DebugVarLocation::Stack(0)));
 
-        let block_a =
-            builder.ensure_block_ref(vec![Operation::Add], Vec::new(), vec![var_a]).unwrap();
-        let block_b =
-            builder.ensure_block_ref(vec![Operation::Add], Vec::new(), vec![var_b]).unwrap();
+        let block_a = builder
+            .ensure_block_ref(vec![Operation::Add], Vec::new(), vec![var_a], vec![], vec![])
+            .unwrap();
+        let block_b = builder
+            .ensure_block_ref(vec![Operation::Add], Vec::new(), vec![var_b], vec![], vec![])
+            .unwrap();
 
         assert_eq!(
             block_a, block_b,
@@ -1767,8 +1973,9 @@ mod tests {
         let event = Felt::from_u32(7);
         let emitted_event = vec![Operation::Push(event), Operation::Emit, Operation::Drop];
 
-        let block_ref =
-            builder.ensure_block_ref(emitted_event.clone(), Vec::new(), Vec::new()).unwrap();
+        let block_ref = builder
+            .ensure_block_ref(emitted_event.clone(), Vec::new(), Vec::new(), vec![], vec![])
+            .unwrap();
         let debug_var = add_test_debug_var(
             &mut builder,
             DebugVarInfo::new("result", DebugVarLocation::Stack(0)),
@@ -1780,6 +1987,8 @@ mod tests {
                 trailing_noop_ops.clone(),
                 Vec::new(),
                 vec![with_debug_var_idx(debug_var, 3)],
+                vec![],
+                vec![],
             )
             .unwrap();
 
@@ -1808,8 +2017,9 @@ mod tests {
             builder.pending_node_mast_root(trailing_noop_call_ref),
         );
 
-        let duplicate_trailing_noop_ref =
-            builder.ensure_block_ref(trailing_noop_ops, Vec::new(), Vec::new()).unwrap();
+        let duplicate_trailing_noop_ref = builder
+            .ensure_block_ref(trailing_noop_ops, Vec::new(), Vec::new(), vec![], vec![])
+            .unwrap();
         assert_eq!(
             trailing_noop_ref, duplicate_trailing_noop_ref,
             "identical raw-to-padded layouts should still deduplicate",
@@ -1910,10 +2120,22 @@ mod tests {
             DebugVarInfo::new("second", DebugVarLocation::Stack(0)),
         );
         let first_ref = builder
-            .ensure_block_ref(first_ops, Vec::new(), vec![with_debug_var_idx(first_var, 7)])
+            .ensure_block_ref(
+                first_ops,
+                Vec::new(),
+                vec![with_debug_var_idx(first_var, 7)],
+                vec![],
+                vec![],
+            )
             .unwrap();
         let second_ref = builder
-            .ensure_block_ref(second_ops, Vec::new(), vec![with_debug_var_idx(second_var, 7)])
+            .ensure_block_ref(
+                second_ops,
+                Vec::new(),
+                vec![with_debug_var_idx(second_var, 7)],
+                vec![],
+                vec![],
+            )
             .unwrap();
         assert_ne!(
             first_ref, second_ref,
@@ -1964,13 +2186,19 @@ mod tests {
             let second_code = Felt::from_u32(2);
 
             let first_ref = builder
-                .ensure_block_ref(vec![make_op(first_code)], Vec::new(), Vec::new())
+                .ensure_block_ref(vec![make_op(first_code)], Vec::new(), Vec::new(), vec![], vec![])
                 .unwrap();
             let duplicate_first_ref = builder
-                .ensure_block_ref(vec![make_op(first_code)], Vec::new(), Vec::new())
+                .ensure_block_ref(vec![make_op(first_code)], Vec::new(), Vec::new(), vec![], vec![])
                 .unwrap();
             let second_ref = builder
-                .ensure_block_ref(vec![make_op(second_code)], Vec::new(), Vec::new())
+                .ensure_block_ref(
+                    vec![make_op(second_code)],
+                    Vec::new(),
+                    Vec::new(),
+                    vec![],
+                    vec![],
+                )
                 .unwrap();
 
             assert_eq!(first_ref, duplicate_first_ref);
@@ -1997,10 +2225,22 @@ mod tests {
         let mut builder = MastForestBuilder::new(&[]).unwrap();
 
         let first_block = builder
-            .ensure_block_ref(vec![Operation::Assert(Felt::from_u32(1))], Vec::new(), Vec::new())
+            .ensure_block_ref(
+                vec![Operation::Assert(Felt::from_u32(1))],
+                Vec::new(),
+                Vec::new(),
+                vec![],
+                vec![],
+            )
             .unwrap();
         let second_block = builder
-            .ensure_block_ref(vec![Operation::Assert(Felt::from_u32(2))], Vec::new(), Vec::new())
+            .ensure_block_ref(
+                vec![Operation::Assert(Felt::from_u32(2))],
+                Vec::new(),
+                Vec::new(),
+                vec![],
+                vec![],
+            )
             .unwrap();
 
         assert_eq!(
@@ -2032,7 +2272,7 @@ mod tests {
         let used_var =
             add_test_debug_var(&mut builder, DebugVarInfo::new("used", DebugVarLocation::Stack(1)));
         let block_ref = builder
-            .ensure_block_ref(vec![Operation::Add], Vec::new(), vec![used_var])
+            .ensure_block_ref(vec![Operation::Add], Vec::new(), vec![used_var], vec![], vec![])
             .unwrap();
 
         record_test_root(&mut builder, block_ref);
@@ -2047,12 +2287,15 @@ mod tests {
     #[test]
     fn test_build_preserves_function_debug_info_and_references() {
         let mut builder = MastForestBuilder::new(&[]).unwrap();
-        let block_ref = builder.ensure_block_ref(vec![Operation::Add], vec![], vec![]).unwrap();
+        let block_ref = builder
+            .ensure_block_ref(vec![Operation::Add], vec![], vec![], vec![], vec![])
+            .unwrap();
         record_test_root(&mut builder, block_ref);
         let source_ref = builder.latest_source_ref_for_node_ref(block_ref).unwrap();
         let mast_root = builder.mast_root_for_ref(block_ref).unwrap();
-        let dead_block_ref =
-            builder.ensure_block_ref(vec![Operation::Mul], vec![], vec![]).unwrap();
+        let dead_block_ref = builder
+            .ensure_block_ref(vec![Operation::Mul], vec![], vec![], vec![], vec![])
+            .unwrap();
         let dead_source_ref = builder.latest_source_ref_for_node_ref(dead_block_ref).unwrap();
         let dead_mast_root = builder.mast_root_for_ref(dead_block_ref).unwrap();
 
@@ -2122,8 +2365,9 @@ mod tests {
         let (_forest, node_ids, debug_info, source_ids) =
             builder.build().unwrap().into_parts_with_debug_info();
         let source_id = source_ids[&source_ref];
-        let function = &debug_info.functions()[0];
+        let function = debug_info.functions().iter().find(|f| f.mast_root == mast_root).unwrap();
 
+        assert_eq!(debug_info.functions().len(), 2);
         assert_eq!(function.source_node.into_option(), Some(source_id));
         assert_eq!(function.mast_root, mast_root);
         assert_eq!(debug_info[source_id].exec_node, node_ids[&block_ref]);
@@ -2139,7 +2383,8 @@ mod tests {
         assert_eq!(debug_info.get_location(location_idx), Some(location.clone()));
         assert_eq!(debug_info.error_message(7).as_deref(), Some("debug failure"));
 
-        let dead_function = &debug_info.functions()[1];
+        let dead_function =
+            debug_info.functions().iter().find(|f| f.mast_root == dead_mast_root).unwrap();
         assert_eq!(dead_function.source_node.into_option(), None);
         assert_eq!(dead_function.mast_root, dead_mast_root);
 
@@ -2176,10 +2421,10 @@ mod tests {
         let asm_op_b = add_test_asm_op(&mut builder, AssemblyOp::new(None, "ctx_b", 1, "add"));
 
         let block_a_ref = builder
-            .ensure_block_ref(vec![Operation::Add], vec![asm_op_a], Vec::new())
+            .ensure_block_ref(vec![Operation::Add], vec![asm_op_a], Vec::new(), vec![], vec![])
             .unwrap();
         let block_b_ref = builder
-            .ensure_block_ref(vec![Operation::Add], vec![asm_op_b], Vec::new())
+            .ensure_block_ref(vec![Operation::Add], vec![asm_op_b], Vec::new(), vec![], vec![])
             .unwrap();
 
         assert_eq!(
@@ -2203,10 +2448,10 @@ mod tests {
         let asm_op_b = add_test_asm_op(&mut builder, AssemblyOp::new(None, "ctx_b", 1, "add"));
 
         let block_a_ref = builder
-            .ensure_block_ref(vec![Operation::Add], vec![asm_op_a], Vec::new())
+            .ensure_block_ref(vec![Operation::Add], vec![asm_op_a], Vec::new(), vec![], vec![])
             .unwrap();
         let block_b_ref = builder
-            .ensure_block_ref(vec![Operation::Add], vec![asm_op_b], Vec::new())
+            .ensure_block_ref(vec![Operation::Add], vec![asm_op_b], Vec::new(), vec![], vec![])
             .unwrap();
 
         assert_eq!(block_a_ref, block_b_ref);
@@ -2238,10 +2483,10 @@ mod tests {
         let asm_op_a = add_test_asm_op(&mut builder, AssemblyOp::new(None, "ctx_a", 1, "add"));
         let asm_op_b = add_test_asm_op(&mut builder, AssemblyOp::new(None, "ctx_b", 1, "add"));
         let block_a_ref = builder
-            .ensure_block_ref(vec![Operation::Add], vec![asm_op_a], Vec::new())
+            .ensure_block_ref(vec![Operation::Add], vec![asm_op_a], Vec::new(), vec![], vec![])
             .unwrap();
         let block_b_ref = builder
-            .ensure_block_ref(vec![Operation::Add], vec![asm_op_b], Vec::new())
+            .ensure_block_ref(vec![Operation::Add], vec![asm_op_b], Vec::new(), vec![], vec![])
             .unwrap();
         assert_eq!(block_a_ref, block_b_ref);
 
@@ -2272,8 +2517,9 @@ mod tests {
     fn test_source_graph_reuses_source_occurrence_for_duplicate_child_refs() {
         let mut builder = MastForestBuilder::new(&[]).unwrap();
 
-        let block_ref =
-            builder.ensure_block_ref(vec![Operation::Add], Vec::new(), Vec::new()).unwrap();
+        let block_ref = builder
+            .ensure_block_ref(vec![Operation::Add], Vec::new(), Vec::new(), vec![], vec![])
+            .unwrap();
         let split_ref = builder
             .ensure_split_node_ref(
                 [block_ref, block_ref],
@@ -2296,7 +2542,9 @@ mod tests {
     fn test_non_block_nodes_keep_different_asm_ops_distinct() {
         let mut builder = MastForestBuilder::new(&[]).unwrap();
 
-        let callee_ref = builder.ensure_block_ref(vec![Operation::Add], vec![], vec![]).unwrap();
+        let callee_ref = builder
+            .ensure_block_ref(vec![Operation::Add], vec![], vec![], vec![], vec![])
+            .unwrap();
         let call_a_ref = builder
             .ensure_call_node_ref(callee_ref, false, AssemblyOp::new(None, "ctx_a", 1, "call.foo"))
             .unwrap();
@@ -2349,7 +2597,13 @@ mod tests {
         let local_asm_op_ref =
             add_test_asm_op(&mut builder, AssemblyOp::new(None, "local_ctx", 1, "add"));
         let local_block_ref = builder
-            .ensure_block_ref(vec![Operation::Add], vec![local_asm_op_ref], vec![local_var_ref])
+            .ensure_block_ref(
+                vec![Operation::Add],
+                vec![local_asm_op_ref],
+                vec![local_var_ref],
+                vec![],
+                vec![],
+            )
             .unwrap();
 
         assert_eq!(
@@ -2395,6 +2649,8 @@ mod tests {
                 ops.clone(),
                 vec![with_asm_op_idx(static_asm_op_ref, 8)],
                 vec![with_debug_var_idx(static_debug_var_ref, 8)],
+                vec![],
+                vec![],
             )
             .unwrap();
         record_test_root(&mut source_builder, static_block_ref);
@@ -2425,7 +2681,13 @@ mod tests {
             .unwrap();
         let local_asm_op_ref = add_test_asm_op(&mut builder, asm_op);
         let local_block_ref = builder
-            .ensure_block_ref(ops, vec![with_asm_op_idx(local_asm_op_ref, 8)], vec![])
+            .ensure_block_ref(
+                ops,
+                vec![with_asm_op_idx(local_asm_op_ref, 8)],
+                vec![],
+                vec![],
+                vec![],
+            )
             .unwrap();
 
         assert_eq!(
@@ -2464,7 +2726,7 @@ mod tests {
         );
         static_var.type_id = Some(static_type);
         let static_block_ref = source_builder
-            .ensure_block_ref(vec![Operation::Add], vec![], vec![static_var])
+            .ensure_block_ref(vec![Operation::Add], vec![], vec![static_var], vec![], vec![])
             .unwrap();
         record_test_root(&mut source_builder, static_block_ref);
         let (static_forest, source_remapping, static_debug_info, _) =
@@ -2514,7 +2776,13 @@ mod tests {
         let asm_op = AssemblyOp::new(None, "partial_ctx", 1, "push.2");
         let static_asm_op_ref = add_test_asm_op(&mut source_builder, asm_op);
         let static_block_ref = source_builder
-            .ensure_block_ref(ops, vec![with_asm_op_idx(static_asm_op_ref, 4)], vec![])
+            .ensure_block_ref(
+                ops,
+                vec![with_asm_op_idx(static_asm_op_ref, 4)],
+                vec![],
+                vec![],
+                vec![],
+            )
             .unwrap();
         record_test_root(&mut source_builder, static_block_ref);
 
@@ -2565,10 +2833,12 @@ mod tests {
     #[test]
     fn test_static_link_rejects_package_debug_child_exec_mismatch() {
         let mut source_builder = MastForestBuilder::new(&[]).unwrap();
-        let left_ref =
-            source_builder.ensure_block_ref(vec![Operation::Add], vec![], vec![]).unwrap();
-        let right_ref =
-            source_builder.ensure_block_ref(vec![Operation::Mul], vec![], vec![]).unwrap();
+        let left_ref = source_builder
+            .ensure_block_ref(vec![Operation::Add], vec![], vec![], vec![], vec![])
+            .unwrap();
+        let right_ref = source_builder
+            .ensure_block_ref(vec![Operation::Mul], vec![], vec![], vec![], vec![])
+            .unwrap();
         let split_ref = source_builder
             .ensure_split_node_ref(
                 [left_ref, right_ref],
@@ -2617,13 +2887,14 @@ mod tests {
         // Small block that will be a procedure root -- should_merge returns true for
         // small roots, so it will be folded into the merged block.
         let root_block_ref = builder
-            .ensure_block_ref(vec![Operation::Add], vec![asm_op_ref], vec![var_ref])
+            .ensure_block_ref(vec![Operation::Add], vec![asm_op_ref], vec![var_ref], vec![], vec![])
             .unwrap();
         builder.record_procedure_root_ref(root_block_ref);
 
         // Second block to merge with.
-        let other_block_ref =
-            builder.ensure_block_ref(vec![Operation::Mul], vec![], vec![]).unwrap();
+        let other_block_ref = builder
+            .ensure_block_ref(vec![Operation::Mul], vec![], vec![], vec![], vec![])
+            .unwrap();
 
         let merged = builder.merge_basic_block_refs(&[root_block_ref, other_block_ref]).unwrap();
         // Root was small enough to merge, so we get one merged block.
@@ -2659,10 +2930,10 @@ mod tests {
         let alias_b_asm_op =
             add_test_asm_op(&mut source_builder, AssemblyOp::new(None, "alias_b", 1, "add"));
         let alias_a_ref = source_builder
-            .ensure_block_ref(vec![Operation::Add], vec![alias_a_asm_op], vec![])
+            .ensure_block_ref(vec![Operation::Add], vec![alias_a_asm_op], vec![], vec![], vec![])
             .unwrap();
         let alias_b_ref = source_builder
-            .ensure_block_ref(vec![Operation::Add], vec![alias_b_asm_op], vec![])
+            .ensure_block_ref(vec![Operation::Add], vec![alias_b_asm_op], vec![], vec![], vec![])
             .unwrap();
         record_test_root(&mut source_builder, alias_a_ref);
         record_test_root(&mut source_builder, alias_b_ref);
@@ -2701,10 +2972,10 @@ mod tests {
         let alias_b_asm_op =
             add_test_asm_op(&mut builder, AssemblyOp::new(None, "alias_b", 1, "add"));
         let alias_a_ref = builder
-            .ensure_block_ref(vec![Operation::Add], vec![alias_a_asm_op], vec![])
+            .ensure_block_ref(vec![Operation::Add], vec![alias_a_asm_op], vec![], vec![], vec![])
             .unwrap();
         let alias_b_ref = builder
-            .ensure_block_ref(vec![Operation::Add], vec![alias_b_asm_op], vec![])
+            .ensure_block_ref(vec![Operation::Add], vec![alias_b_asm_op], vec![], vec![], vec![])
             .unwrap();
         record_test_root(&mut builder, alias_a_ref);
         record_test_root(&mut builder, alias_b_ref);
@@ -2737,10 +3008,10 @@ mod tests {
         let alias_b_asm_op =
             add_test_asm_op(&mut source_builder, AssemblyOp::new(None, "alias_b", 1, "add"));
         let alias_a_ref = source_builder
-            .ensure_block_ref(vec![Operation::Add], vec![alias_a_asm_op], vec![])
+            .ensure_block_ref(vec![Operation::Add], vec![alias_a_asm_op], vec![], vec![], vec![])
             .unwrap();
         let alias_b_ref = source_builder
-            .ensure_block_ref(vec![Operation::Add], vec![alias_b_asm_op], vec![])
+            .ensure_block_ref(vec![Operation::Add], vec![alias_b_asm_op], vec![], vec![], vec![])
             .unwrap();
         record_test_root(&mut source_builder, alias_a_ref);
         record_test_root(&mut source_builder, alias_b_ref);
@@ -2772,7 +3043,7 @@ mod tests {
         let source_a_asm_op =
             add_test_asm_op(&mut source_a_builder, AssemblyOp::new(None, "source_a", 1, "add"));
         let source_a_ref = source_a_builder
-            .ensure_block_ref(vec![Operation::Add], vec![source_a_asm_op], vec![])
+            .ensure_block_ref(vec![Operation::Add], vec![source_a_asm_op], vec![], vec![], vec![])
             .unwrap();
         record_test_root(&mut source_a_builder, source_a_ref);
         let (source_a_forest, source_a_remapping) = source_a_builder.build().unwrap().into_parts();
@@ -2782,7 +3053,7 @@ mod tests {
         let source_b_asm_op =
             add_test_asm_op(&mut source_b_builder, AssemblyOp::new(None, "source_b", 1, "add"));
         let source_b_ref = source_b_builder
-            .ensure_block_ref(vec![Operation::Add], vec![source_b_asm_op], vec![])
+            .ensure_block_ref(vec![Operation::Add], vec![source_b_asm_op], vec![], vec![], vec![])
             .unwrap();
         record_test_root(&mut source_b_builder, source_b_ref);
         let (source_b_forest, source_b_remapping) = source_b_builder.build().unwrap().into_parts();
@@ -2825,7 +3096,7 @@ mod tests {
         let source_a_asm_op =
             add_test_asm_op(&mut source_a_builder, AssemblyOp::new(None, "source_a", 1, "add"));
         let source_a_ref = source_a_builder
-            .ensure_block_ref(vec![Operation::Add], vec![source_a_asm_op], vec![])
+            .ensure_block_ref(vec![Operation::Add], vec![source_a_asm_op], vec![], vec![], vec![])
             .unwrap();
         record_test_root(&mut source_a_builder, source_a_ref);
         let (source_a_forest, source_a_remapping, source_a_graph, _) =
@@ -2836,7 +3107,7 @@ mod tests {
         let source_b_asm_op =
             add_test_asm_op(&mut source_b_builder, AssemblyOp::new(None, "source_b", 1, "add"));
         let source_b_ref = source_b_builder
-            .ensure_block_ref(vec![Operation::Add], vec![source_b_asm_op], vec![])
+            .ensure_block_ref(vec![Operation::Add], vec![source_b_asm_op], vec![], vec![], vec![])
             .unwrap();
         record_test_root(&mut source_b_builder, source_b_ref);
         let (source_b_forest, source_b_remapping, source_b_graph, _) =
@@ -2886,10 +3157,10 @@ mod tests {
         let alias_b_asm_op =
             add_test_asm_op(&mut source_builder, AssemblyOp::new(None, "alias_b", 1, "add"));
         let alias_a_ref = source_builder
-            .ensure_block_ref(vec![Operation::Add], vec![alias_a_asm_op], vec![])
+            .ensure_block_ref(vec![Operation::Add], vec![alias_a_asm_op], vec![], vec![], vec![])
             .unwrap();
         let alias_b_ref = source_builder
-            .ensure_block_ref(vec![Operation::Add], vec![alias_b_asm_op], vec![])
+            .ensure_block_ref(vec![Operation::Add], vec![alias_b_asm_op], vec![], vec![], vec![])
             .unwrap();
         record_test_root(&mut source_builder, alias_a_ref);
         record_test_root(&mut source_builder, alias_b_ref);

@@ -352,6 +352,11 @@ impl<Exec: Idx, Src: Idx> DebugInfoBuilder<Exec, Src> {
     pub fn add_function(&mut self, func: FunctionInfo<Src>) -> DebugFunctionIdx {
         self.debug_info.functions.push(func).expect("too many functions")
     }
+
+    /// Sets the `source_node` field of the [`FunctionInfo`] referred to by `index`
+    pub fn set_function_source_node(&mut self, index: DebugFunctionIdx, node: Src) {
+        self.debug_info.functions[index].source_node = Some(node).into();
+    }
 }
 
 // ERROR MESSAGES

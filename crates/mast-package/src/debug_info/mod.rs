@@ -84,14 +84,17 @@ pub struct DebugInfo<Exec: Idx, Src: Idx> {
 
 /// Index remapping produced when importing the shared tables of one [`DebugInfo`] into another.
 ///
-/// Source nodes and functions are intentionally excluded because their indices depend on how the
-/// caller maps or filters the source graph.
+/// Source nodes are intentionally excluded because their indices depend on how the caller maps or
+/// filters the source graph.
 #[derive(Clone, Debug, Default)]
 pub struct DebugInfoTableRemapping {
     strings: IndexVec<DebugStringIdx, DebugStringIdx>,
     files: IndexVec<DebugFileIdx, DebugFileIdx>,
     locations: IndexVec<DebugLocIdx, DebugLocIdx>,
     types: IndexVec<DebugTypeIdx, DebugTypeIdx>,
+    /// While function records link a source node, for purposes of remapping, we strip the source
+    /// node information, and then restore it later when finalizing the debug info
+    functions: IndexVec<DebugFunctionIdx, DebugFunctionIdx>,
 }
 
 impl DebugInfoTableRemapping {
@@ -113,6 +116,11 @@ impl DebugInfoTableRemapping {
     /// Returns the destination index for a source type index.
     pub fn ty(&self, index: DebugTypeIdx) -> Option<DebugTypeIdx> {
         self.types.get(index).copied()
+    }
+
+    /// Returns the destination index for a function index.
+    pub fn function(&self, index: DebugFunctionIdx) -> Option<DebugFunctionIdx> {
+        self.functions.get(index).copied()
     }
 }
 
@@ -583,6 +591,47 @@ impl<Exec: Idx, Src: Idx> DebugInfo<Exec, Src> {
             target.add_error_message_with_index(error_message.err_code, message);
         }
 
+        for (index, function) in self.functions().iter().enumerate() {
+            let source = DebugFunctionIdx::from(
+                u32::try_from(index).expect("invalid source function table index"),
+            );
+            let name_idx = remapping.string(function.name_idx).ok_or(
+                DebugInfoTableRemapError::MissingSourceString { string_idx: function.name_idx },
+            )?;
+            let linkage_name_idx = function
+                .linkage_name_idx
+                .into_option()
+                .map(|index| {
+                    remapping
+                        .string(index)
+                        .ok_or(DebugInfoTableRemapError::MissingSourceString { string_idx: index })
+                })
+                .transpose()?;
+            let type_idx = function
+                .type_idx
+                .into_option()
+                .map(|tid| {
+                    remapping.ty(tid).ok_or(DebugInfoTableRemapError::MissingType { type_idx: tid })
+                })
+                .transpose()?;
+            let file_idx = remapping.file(function.file_idx).ok_or(
+                DebugInfoTableRemapError::MissingSourceFile { file_idx: function.file_idx },
+            )?;
+            let function_idx = target.add_function(FunctionInfo {
+                mast_root: function.mast_root,
+                source_node: None.into(),
+                type_idx: type_idx.into(),
+                linkage_name_idx: linkage_name_idx.into(),
+                name_idx,
+                file_idx,
+                line: function.line,
+                column: function.column,
+            });
+            let inserted =
+                remapping.functions.push(function_idx).expect("too many remapped functions");
+            debug_assert_eq!(inserted, source);
+        }
+
         Ok(remapping)
     }
 
@@ -608,6 +657,30 @@ impl<Exec: Idx, Src: Idx> DebugInfo<Exec, Src> {
             if self.strings.get(error_message.message).is_none() {
                 return Err(DebugInfoTableRemapError::MissingSourceString {
                     string_idx: error_message.message,
+                });
+            }
+        }
+        for function in self.functions.iter() {
+            if self.files.get(function.file_idx).is_none() {
+                return Err(DebugInfoTableRemapError::MissingSourceFile {
+                    file_idx: function.file_idx,
+                });
+            }
+            if let Ok(Some(tid)) = function.type_idx.try_into_option()
+                && self.types.get(tid).is_none()
+            {
+                return Err(DebugInfoTableRemapError::MissingType { type_idx: tid });
+            }
+            if self.strings.get(function.name_idx).is_none() {
+                return Err(DebugInfoTableRemapError::MissingSourceString {
+                    string_idx: function.name_idx,
+                });
+            }
+            if let Ok(Some(linkage_name_idx)) = function.linkage_name_idx.try_into_option()
+                && self.strings.get(linkage_name_idx).is_none()
+            {
+                return Err(DebugInfoTableRemapError::MissingSourceString {
+                    string_idx: linkage_name_idx,
                 });
             }
         }
@@ -767,72 +840,6 @@ impl<Src: SourceNodeIdMarker> DebugInfo<MastNodeId, Src> {
                 )?);
             }
 
-            let mut remapped_functions = FxHashMap::<DebugFunctionIdx, DebugFunctionIdx>::default();
-            for (i, function) in debug_info.functions.iter().enumerate() {
-                let prev_index =
-                    DebugFunctionIdx::from(u32::try_from(i).expect("too many functions"));
-
-                let source_node = function
-                    .source_node
-                    .into_option()
-                    .map(|id| {
-                        remapped_nodes.get(&id).copied().ok_or(
-                            DebugInfoMergeError::MissingSourceNodeMapping {
-                                forest_index,
-                                source_node: id,
-                            },
-                        )
-                    })
-                    .transpose()?;
-                let name_idx = tables.string(function.name_idx).ok_or(
-                    DebugInfoMergeError::MissingSourceStringMapping {
-                        forest_index,
-                        string_idx: function.name_idx,
-                    },
-                )?;
-                let linkage_name_idx = function
-                    .linkage_name_idx
-                    .into_option()
-                    .map(|idx| {
-                        tables.string(idx).ok_or(DebugInfoMergeError::MissingSourceStringMapping {
-                            forest_index,
-                            string_idx: idx,
-                        })
-                    })
-                    .transpose()?;
-                let file_idx = tables.file(function.file_idx).ok_or(
-                    DebugInfoMergeError::MissingSourceFileMapping {
-                        forest_index,
-                        file_idx: function.file_idx,
-                    },
-                )?;
-                let type_idx = function
-                    .type_idx
-                    .into_option()
-                    .map(|idx| {
-                        tables.ty(idx).ok_or(DebugInfoMergeError::MissingTypeMapping {
-                            forest_index,
-                            type_idx: idx,
-                        })
-                    })
-                    .transpose()?;
-                let new_index = builder
-                    .debug_info_mut()
-                    .functions
-                    .push(FunctionInfo {
-                        source_node: source_node.into(),
-                        name_idx,
-                        linkage_name_idx: linkage_name_idx.into(),
-                        file_idx,
-                        line: function.line,
-                        column: function.column,
-                        type_idx: type_idx.into(),
-                        mast_root: function.mast_root,
-                    })
-                    .expect("too many functions");
-                remapped_functions.insert(prev_index, new_index);
-            }
-
             for (prev, new) in remapped_nodes.iter() {
                 let source_node = debug_info.source_node(*prev).unwrap();
                 if source_node.inline_calls.is_empty() {
@@ -840,7 +847,7 @@ impl<Src: SourceNodeIdMarker> DebugInfo<MastNodeId, Src> {
                 }
                 let target_node = &mut builder[*new];
                 for row in source_node.inline_calls.iter() {
-                    let callee_idx = remapped_functions.get(&row.callee_idx).copied().ok_or(
+                    let callee_idx = tables.function(row.callee_idx).ok_or(
                         DebugInfoMergeError::MissingFunctionMapping {
                             forest_index,
                             function_idx: row.callee_idx,

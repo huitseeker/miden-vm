@@ -12,7 +12,7 @@ use miden_core::{
 };
 use miden_mast_package::debug_info::{
     DebugFunctionIdx, DebugInfoBuilder, DebugSourceAsmOp, DebugSourceInlineCall, DebugSourceNodeId,
-    DebugSourceVar, FunctionInfo, PackageDebugInfo, PackageDebugInfoBuilder, SourceNode,
+    DebugSourceVar, PackageDebugInfo, PackageDebugInfoBuilder, SourceNode,
 };
 
 use super::{
@@ -352,40 +352,6 @@ impl MastForestFinalizer {
             debug_info.add_root(source_id);
         }
 
-        let mut function_ids = BTreeMap::new();
-        for (index, function) in source_debug_info.functions().iter().enumerate() {
-            let old_function_idx = DebugFunctionIdx::from(index as u32);
-            // A function can outlive its source occurrence when unreachable MAST is pruned. Keep
-            // the function record anchored by its MAST root, but clear the stale source-node link.
-            let source_node = function
-                .source_node
-                .into_option()
-                .and_then(|source_ref| source_id_by_ref.get(&source_ref).copied());
-            let name_idx = remapped(tables.string(function.name_idx), function.name_idx, "string")?;
-            let linkage_name_idx = function
-                .linkage_name_idx
-                .into_option()
-                .map(|index| remapped(tables.string(index), index, "string"))
-                .transpose()?;
-            let file_idx = remapped(tables.file(function.file_idx), function.file_idx, "file")?;
-            let type_idx = function
-                .type_idx
-                .into_option()
-                .map(|index| remapped(tables.ty(index), index, "type"))
-                .transpose()?;
-            let new_function_idx = debug_info.add_function(FunctionInfo {
-                source_node: source_node.into(),
-                name_idx,
-                linkage_name_idx: linkage_name_idx.into(),
-                file_idx,
-                line: function.line,
-                column: function.column,
-                type_idx: type_idx.into(),
-                mast_root: function.mast_root,
-            });
-            function_ids.insert(old_function_idx, new_function_idx);
-        }
-
         for &source_ref in &live_source_refs {
             let pending_source_node = &source_debug_info[source_ref];
             if pending_source_node.inline_calls.is_empty() {
@@ -410,7 +376,7 @@ impl MastForestFinalizer {
                     Ok(DebugSourceInlineCall {
                         op_idx: u32::try_from(op_idx).unwrap(),
                         callee_idx: remapped(
-                            function_ids.get(&inline_call.callee_idx).copied(),
+                            tables.function(inline_call.callee_idx),
                             inline_call.callee_idx,
                             "function",
                         )?,
@@ -423,6 +389,19 @@ impl MastForestFinalizer {
                 })
                 .collect::<Result<Vec<_>, Report>>()?;
             debug_info[source_id].inline_calls = inline_calls;
+        }
+
+        for (index, function) in source_debug_info.functions().iter().enumerate() {
+            let Some(function_source_node) = function.source_node.into_option() else {
+                continue;
+            };
+            let Some(source_id) = source_id_by_ref.get(&function_source_node) else {
+                continue;
+            };
+            let index = tables
+                .function(DebugFunctionIdx::from(index as u32))
+                .expect("expected function to have been remapped");
+            debug_info.set_function_source_node(index, *source_id);
         }
 
         Ok((debug_info.build(), source_id_by_ref))
