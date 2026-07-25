@@ -507,8 +507,9 @@ impl<Exec: Idx, Src: Idx> DebugInfo<Exec, Src> {
     ///
     /// The returned map translates every source table index to its destination index. Type rows
     /// are reserved as a complete batch before their payloads are rewritten, which preserves
-    /// forward and cyclic references. Source nodes and functions must be imported separately once
-    /// the caller has established its source-node mapping.
+    /// forward and cyclic references. Functions are imported with their source-node associations
+    /// cleared; callers which also import source nodes must restore those associations after
+    /// establishing the source-node mapping.
     pub fn merge_tables_into<TargetExec: Idx, TargetSrc: Idx>(
         &self,
         target: &mut DebugInfoBuilder<TargetExec, TargetSrc>,
@@ -600,7 +601,11 @@ impl<Exec: Idx, Src: Idx> DebugInfo<Exec, Src> {
             )?;
             let linkage_name_idx = function
                 .linkage_name_idx
-                .into_option()
+                .try_into_option()
+                .map_err(|err| DebugInfoTableRemapError::InvalidOptionField {
+                    context: "debug function linkage name",
+                    err,
+                })?
                 .map(|index| {
                     remapping
                         .string(index)
@@ -609,7 +614,11 @@ impl<Exec: Idx, Src: Idx> DebugInfo<Exec, Src> {
                 .transpose()?;
             let type_idx = function
                 .type_idx
-                .into_option()
+                .try_into_option()
+                .map_err(|err| DebugInfoTableRemapError::InvalidOptionField {
+                    context: "debug function type",
+                    err,
+                })?
                 .map(|tid| {
                     remapping.ty(tid).ok_or(DebugInfoTableRemapError::MissingType { type_idx: tid })
                 })
@@ -666,8 +675,9 @@ impl<Exec: Idx, Src: Idx> DebugInfo<Exec, Src> {
                     file_idx: function.file_idx,
                 });
             }
-            if let Ok(Some(tid)) = function.type_idx.try_into_option()
-                && self.types.get(tid).is_none()
+            if let Some(tid) = function.type_idx.try_into_option().map_err(|err| {
+                DebugInfoTableRemapError::InvalidOptionField { context: "debug function type", err }
+            })? && self.types.get(tid).is_none()
             {
                 return Err(DebugInfoTableRemapError::MissingType { type_idx: tid });
             }
@@ -676,7 +686,13 @@ impl<Exec: Idx, Src: Idx> DebugInfo<Exec, Src> {
                     string_idx: function.name_idx,
                 });
             }
-            if let Ok(Some(linkage_name_idx)) = function.linkage_name_idx.try_into_option()
+            if let Some(linkage_name_idx) =
+                function.linkage_name_idx.try_into_option().map_err(|err| {
+                    DebugInfoTableRemapError::InvalidOptionField {
+                        context: "debug function linkage name",
+                        err,
+                    }
+                })?
                 && self.strings.get(linkage_name_idx).is_none()
             {
                 return Err(DebugInfoTableRemapError::MissingSourceString {
@@ -746,7 +762,12 @@ impl<Src: SourceNodeIdMarker> DebugInfo<MastNodeId, Src> {
                 for row in source_node.asm_ops.iter() {
                     let location_idx = row
                         .location_idx
-                        .into_option()
+                        .try_into_option()
+                        .map_err(|err| DebugInfoMergeError::InvalidOptionField {
+                            forest_index,
+                            context: "debug source assembly op location",
+                            err,
+                        })?
                         .map(|location_idx| {
                             tables.location(location_idx).ok_or(
                                 DebugInfoMergeError::MissingSourceLocationMapping {
@@ -1033,6 +1054,9 @@ fn table_remap_error<Exec: Idx, Src: Idx>(
     error: DebugInfoTableRemapError,
 ) -> DebugInfoMergeError<Exec, Src> {
     match error {
+        DebugInfoTableRemapError::InvalidOptionField { context, err } => {
+            DebugInfoMergeError::InvalidOptionField { forest_index, context, err }
+        },
         DebugInfoTableRemapError::MissingTypeString { string_idx } => {
             DebugInfoMergeError::MissingTypeStringMapping { forest_index, string_idx }
         },

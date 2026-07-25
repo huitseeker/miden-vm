@@ -57,6 +57,13 @@ pub type PackageDebugInfoMergeError = DebugInfoMergeError<MastNodeId, DebugSourc
 /// another.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum DebugInfoTableRemapError {
+    /// A stable-layout optional field has an invalid discriminant.
+    #[error("invalid optional field discriminant for {context}: {err}")]
+    InvalidOptionField {
+        context: &'static str,
+        #[source]
+        err: InvalidOptionCError,
+    },
     /// A type row refers to a string that is not present in the source string table.
     #[error(
         "debug type references string index {string_idx}, which is not present in the string table"
@@ -83,6 +90,16 @@ pub enum DebugInfoTableRemapError {
 /// [`miden_core::mast::MastForest`] merge.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum DebugInfoMergeError<Exec: Idx, Src: Idx> {
+    /// A stable-layout optional field has an invalid discriminant.
+    #[error(
+        "debug info for forest {forest_index} has an invalid optional field discriminant for {context}: {err}"
+    )]
+    InvalidOptionField {
+        forest_index: usize,
+        context: &'static str,
+        #[source]
+        err: InvalidOptionCError,
+    },
     /// The package has source-keyed metadata rows without a source graph to define source IDs.
     #[error("debug info for forest {forest_index} has source-map rows but no source graph")]
     SourceMapWithoutGraph { forest_index: usize },
@@ -337,7 +354,7 @@ impl<T: Copy> From<Option<T>> for OptionC<T> {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("invalid optional value - discriminant tag of {0} is invalid (expected 0 or 1)")]
 pub struct InvalidOptionCError(u32);
 
@@ -1246,6 +1263,21 @@ mod tests {
         }
     }
 
+    fn debug_info_builder_with_function() -> (PackageDebugInfoBuilder, DebugFunctionIdx) {
+        let mut builder = PackageDebugInfoBuilder::default();
+        let file_idx = builder.add_file(Uri::new("invalid-option.masm"), None);
+        let name_idx = builder.add_string("function");
+        let function_idx = builder.add_function(DebugFunctionInfo::new(
+            None,
+            name_idx,
+            file_idx,
+            LineNumber::new(1).unwrap(),
+            ColumnNumber::new(1).unwrap(),
+            Word::default(),
+        ));
+        (builder, function_idx)
+    }
+
     #[test]
     fn recover_registered_pointer_caches_its_pointee() {
         let mut builder = PackageDebugInfoBuilder::default();
@@ -1525,6 +1557,110 @@ mod tests {
     }
 
     #[test]
+    fn merge_tables_into_rejects_invalid_function_options_before_mutating_target() {
+        let (mut invalid_type, function_idx) = debug_info_builder_with_function();
+        invalid_type.debug_info_mut().functions[function_idx].type_idx = OptionC::invalid(2);
+        let invalid_type = invalid_type.build();
+
+        let (mut invalid_linkage, function_idx) = debug_info_builder_with_function();
+        invalid_linkage.debug_info_mut().functions[function_idx].linkage_name_idx =
+            OptionC::invalid(3);
+        let invalid_linkage = invalid_linkage.build();
+
+        for (source, expected_context, expected_err) in [
+            (invalid_type, "debug function type", InvalidOptionCError(2)),
+            (invalid_linkage, "debug function linkage name", InvalidOptionCError(3)),
+        ] {
+            let mut target = PackageDebugInfoBuilder::default();
+            target.add_string("existing target string");
+            let before = (
+                target.debug_info().strings().len(),
+                target.debug_info().files().len(),
+                target.debug_info().functions().len(),
+            );
+
+            let error = source.merge_tables_into(&mut target).unwrap_err();
+
+            assert_eq!(
+                error,
+                DebugInfoTableRemapError::InvalidOptionField {
+                    context: expected_context,
+                    err: expected_err,
+                },
+            );
+            assert_eq!(
+                (
+                    target.debug_info().strings().len(),
+                    target.debug_info().files().len(),
+                    target.debug_info().functions().len(),
+                ),
+                before,
+            );
+        }
+    }
+
+    #[test]
+    fn merge_source_debug_rejects_invalid_function_source_option() {
+        let (mut source, function_idx) = debug_info_builder_with_function();
+        source.debug_info_mut().functions[function_idx].source_node = OptionC::invalid(4);
+        let source = source.build();
+
+        let error = PackageDebugInfo::merge_source_debug(
+            [(0, source.as_ref())],
+            &miden_core::mast::MastForestRootMap::default(),
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error,
+            DebugInfoMergeError::InvalidOptionField {
+                forest_index: 0,
+                context: "debug function source node",
+                err: InvalidOptionCError(4),
+            },
+        );
+    }
+
+    #[test]
+    fn merge_source_debug_rejects_invalid_asm_location_option() {
+        use miden_core::{
+            mast::{BasicBlockNodeBuilder, DenseMastForestBuilder, MastForest},
+            operations::Operation,
+        };
+
+        let mut forest_builder = DenseMastForestBuilder::new();
+        let block = forest_builder
+            .push_node(BasicBlockNodeBuilder::new(vec![Operation::Add]))
+            .unwrap();
+        forest_builder.mark_root(block);
+        let (forest, remapping) = forest_builder.finish_with_id_map().unwrap();
+        let block = remapping.get(block).unwrap();
+        let (_merged_forest, root_map) = MastForest::merge([&forest]).unwrap();
+
+        let mut source = PackageDebugInfoBuilder::default();
+        let context_name_idx = source.add_string("context");
+        let op_name_idx = source.add_string("add");
+        let mut asm_op = DebugSourceAsmOp::new(0, None, context_name_idx, op_name_idx, 1);
+        asm_op.location_idx = OptionC::invalid(5);
+        let mut node = source_node(block, Vec::new(), 0, 1);
+        node.asm_ops.push(asm_op);
+        source.add_node(node).unwrap();
+        let source = source.build();
+
+        let error =
+            PackageDebugInfo::merge_source_debug([(0, source.as_ref())], &root_map).unwrap_err();
+
+        assert_eq!(
+            error,
+            DebugInfoMergeError::InvalidOptionField {
+                forest_index: 0,
+                context: "debug source assembly op location",
+                err: InvalidOptionCError(5),
+            },
+        );
+    }
+
+    #[test]
     fn merge_tables_into_keeps_builder_type_cache_coherent() {
         let mut source = PackageDebugInfoBuilder::default();
         let source_type = source.add_type(DebugTypeInfo::Primitive(DebugPrimitiveType::U32));
@@ -1659,6 +1795,7 @@ mod tests {
 
         let call_loc_a = merged_debug.locations()[inline_a[0].loc_idx];
         let function_a = merged_debug.get_function(inline_a[0].callee_idx).unwrap();
+        assert_eq!(function_a.source_node.into_option(), Some(source_a));
         let file_a = merged_debug.get_file(function_a.file_idx).unwrap();
         let path_a = merged_debug.get_string(file_a.path_idx).unwrap();
         let function_name_a = merged_debug.get_string(function_a.name_idx).unwrap();
@@ -1668,6 +1805,7 @@ mod tests {
 
         let call_loc_b = merged_debug.locations()[inline_b[0].loc_idx];
         let function_b = merged_debug.get_function(inline_b[0].callee_idx).unwrap();
+        assert_eq!(function_b.source_node.into_option(), Some(source_b));
         let file_b = merged_debug.get_file(function_b.file_idx).unwrap();
         let path_b = merged_debug.get_string(file_b.path_idx).unwrap();
         let function_name_b = merged_debug.get_string(function_b.name_idx).unwrap();
