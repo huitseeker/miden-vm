@@ -59,6 +59,7 @@ const _: () = {
 /// extracted to an aligned buffer in memory, we are guaranteed to be able to directly reference
 /// the encoded rows as a slice of the desired type, and uphold the requirements Rust imposes on
 /// references.
+#[cfg(target_endian = "little")]
 impl Serializable for PackageDebugInfo {
     fn write_into<W: ByteWriter>(&self, target: &mut W) {
         // We serialize to a temporary buffer in memory with a starting size of 16k
@@ -110,6 +111,7 @@ impl Serializable for PackageDebugInfo {
     }
 }
 
+#[cfg(target_endian = "little")]
 impl Deserializable for PackageDebugInfo {
     fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
         let version = source.read_u8()?;
@@ -179,6 +181,7 @@ impl Deserializable for PackageDebugInfo {
 /// to the node.
 ///
 /// See the doc on the `Serializable` impl of `PackageDebugInfo` for details
+#[cfg(target_endian = "little")]
 impl Serializable for DebugSourceNode {
     fn write_into<W: ByteWriter>(&self, target: &mut W) {
         // We serialize to a temporary buffer in memory with sufficient minimum capacity to hold
@@ -219,6 +222,7 @@ impl Serializable for DebugSourceNode {
     }
 }
 
+#[cfg(target_endian = "little")]
 impl Deserializable for DebugSourceNode {
     fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
         // Read the serialized data into a temporary allocation specifically aligned so that we
