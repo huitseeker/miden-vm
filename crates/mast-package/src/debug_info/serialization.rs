@@ -682,7 +682,7 @@ impl<'a> AlignedSliceReader<'a> {
 
 impl ByteReader for AlignedSliceReader<'_> {
     fn max_alloc(&self, element_size: usize) -> usize {
-        (self.source.len() - self.pos) / element_size
+        (self.source.len() - self.pos).checked_div(element_size).unwrap_or(usize::MAX)
     }
     fn read_u8(&mut self) -> Result<u8, DeserializationError> {
         self.check_eor(1)?;
@@ -767,6 +767,8 @@ fn read_debug_type_indices<R: ByteReader>(
 
 #[cfg(test)]
 mod tests {
+    use core::cell::Cell;
+
     use miden_assembly_syntax::ast::DebugVarLocation;
     use miden_core::Word;
     use miden_debug_types::{ByteIndex, ColumnNumber, LineNumber, Location, Uri};
@@ -777,6 +779,7 @@ mod tests {
     struct FixedBudgetReader<'a> {
         inner: miden_core::serde::SliceReader<'a>,
         max_bytes: usize,
+        largest_requested_element_size: Cell<usize>,
     }
 
     impl<'a> FixedBudgetReader<'a> {
@@ -784,6 +787,7 @@ mod tests {
             Self {
                 inner: miden_core::serde::SliceReader::new(bytes),
                 max_bytes,
+                largest_requested_element_size: Cell::new(0),
             }
         }
     }
@@ -814,6 +818,8 @@ mod tests {
         }
 
         fn max_alloc(&self, element_size: usize) -> usize {
+            self.largest_requested_element_size
+                .set(self.largest_requested_element_size.get().max(element_size));
             if element_size == 0 {
                 usize::MAX
             } else {
@@ -896,6 +902,26 @@ mod tests {
         let mut variants = reader.read_many_iter::<DebugVariantInfo>(1).unwrap();
         assert_eq!(variants.next().unwrap().unwrap(), variant);
         assert!(variants.next().is_none());
+    }
+
+    #[test]
+    fn debug_type_initial_capacity_is_bounded_by_in_memory_size() {
+        const PAYLOAD_BYTES: usize = 256;
+
+        let mut bytes = Vec::new();
+        bytes.write_usize(PAYLOAD_BYTES);
+        bytes.resize(bytes.len() + PAYLOAD_BYTES, u8::MAX);
+        let mut reader = FixedBudgetReader::new(&bytes, PAYLOAD_BYTES);
+
+        let result =
+            IndexVec::<DebugTypeIdx, DebugTypeInfo>::read_from_bounded(&mut reader, "debug types");
+
+        assert!(result.is_err(), "the first invalid type tag should stop decoding");
+        assert_eq!(
+            reader.largest_requested_element_size.get(),
+            size_of::<DebugTypeInfo>(),
+            "the speculative capacity must be bounded using the in-memory row size",
+        );
     }
 
     fn roundtrip_debug_info(value: &PackageDebugInfo) -> PackageDebugInfo {

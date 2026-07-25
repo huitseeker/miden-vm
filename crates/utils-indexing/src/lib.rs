@@ -9,7 +9,7 @@ extern crate alloc;
 mod csr;
 #[doc = include_str!("../README.md")]
 use alloc::{collections::BTreeMap, vec, vec::Vec};
-use core::{fmt::Debug, marker::PhantomData, ops};
+use core::{fmt::Debug, marker::PhantomData, mem::size_of, ops};
 
 pub use csr::{CsrMatrix, CsrValidationError};
 #[doc(hidden)]
@@ -462,7 +462,7 @@ where
             ));
         }
 
-        let mut vec = Vec::<T>::with_capacity(len);
+        let mut vec = Vec::<T>::with_capacity(bounded_initial_capacity::<T, _>(source, len));
         for element in source.read_many_iter(len)? {
             vec.push(element?);
         }
@@ -490,7 +490,7 @@ where
             ));
         }
 
-        let mut vec = Vec::<T>::with_capacity(len);
+        let mut vec = Vec::<T>::with_capacity(bounded_initial_capacity::<T, _>(source, len));
         for _ in 0..len {
             vec.push(deserializer(source)?);
         }
@@ -537,15 +537,42 @@ fn validate_bounded_len<R: ByteReader>(
     })
 }
 
+/// Bounds speculative collection capacity by both the declared length and the reader's remaining
+/// budget expressed in bytes of the in-memory element type.
+///
+/// Variable-width values can have a much smaller minimum serialized size than their in-memory
+/// representation. Reserving their full declared length before decoding the first value would
+/// amplify a compact malformed payload into a much larger allocation. A valid input can still grow
+/// the vector as each element is successfully decoded.
+fn bounded_initial_capacity<T, R: ByteReader>(source: &R, len: usize) -> usize {
+    let element_size = size_of::<T>();
+    if element_size == 0 {
+        len
+    } else {
+        len.min(source.max_alloc(element_size))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use alloc::string::{String, ToString};
+
+    use miden_serde_utils::{BudgetedReader, SliceReader};
 
     use super::*;
 
     // Test ID types
     newtype_id!(TestId);
     newtype_id!(TestId2);
+
+    #[test]
+    fn bounded_initial_capacity_uses_in_memory_element_size() {
+        let reader = BudgetedReader::new(SliceReader::new(&[]), 256);
+
+        assert_eq!(bounded_initial_capacity::<[u8; 64], _>(&reader, 100), 4);
+        assert_eq!(bounded_initial_capacity::<[u8; 64], _>(&reader, 2), 2);
+        assert_eq!(bounded_initial_capacity::<(), _>(&reader, 100), 100);
+    }
 
     #[test]
     fn test_indexvec_basic() {
