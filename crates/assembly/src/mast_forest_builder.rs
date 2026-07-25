@@ -108,6 +108,8 @@ pub struct MastForestBuilder {
 /// Statically-linked library data used by [`MastForestBuilder`].
 pub(crate) struct StaticLibrary<'a> {
     pub(crate) mast: &'a MastForest,
+    /// This field is expected to hold _validated_ package debug info - invalid debug info may
+    /// cause panics during assembly.
     pub(crate) debug_info: Option<PackageDebugInfo>,
     pub(crate) source_library_commitment: Word,
     pub(crate) alternate_source_library_commitment: Option<Word>,
