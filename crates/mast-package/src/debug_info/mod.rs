@@ -852,6 +852,36 @@ impl<Src: SourceNodeIdMarker> DebugInfo<MastNodeId, Src> {
                 debug_assert_eq!(new_index, remapped_nodes[&prev_index],);
             }
 
+            for (index, function) in debug_info.functions().iter().enumerate() {
+                let Some(previous_source_node) =
+                    function.source_node.try_into_option().map_err(|err| {
+                        DebugInfoMergeError::InvalidOptionField {
+                            forest_index,
+                            context: "debug function source node",
+                            err,
+                        }
+                    })?
+                else {
+                    continue;
+                };
+                let source_node = remapped_nodes.get(&previous_source_node).copied().ok_or(
+                    DebugInfoMergeError::MissingSourceNodeMapping {
+                        forest_index,
+                        source_node: previous_source_node,
+                    },
+                )?;
+                let previous_function = DebugFunctionIdx::from(
+                    u32::try_from(index).expect("invalid source function table index"),
+                );
+                let function = tables.function(previous_function).ok_or(
+                    DebugInfoMergeError::MissingFunctionMapping {
+                        forest_index,
+                        function_idx: previous_function,
+                    },
+                )?;
+                builder.set_function_source_node(function, source_node);
+            }
+
             for root in debug_info.roots().iter().copied() {
                 builder.debug_info_mut().roots.push(remapped_nodes.get(&root).copied().ok_or(
                     DebugInfoMergeError::MissingSourceNodeMapping {
