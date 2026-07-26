@@ -16,7 +16,7 @@
 //! variable inspection, stepping, and call stack visualization.
 
 use alloc::{sync::Arc, vec::Vec};
-use core::{mem::MaybeUninit, num::NonZeroU32};
+use core::{marker::PhantomData, num::NonZeroU32};
 
 use miden_assembly_syntax::ast::{DebugVarInfo, DebugVarLocation, TypeExpr, types::Type};
 use miden_core::{Word, mast::MastNodeId, operations::AssemblyOp};
@@ -177,6 +177,9 @@ pub enum DebugInfoMergeError<Exec: Idx, Src: Idx> {
 }
 
 newtype_id!(
+    #[derive(
+        zerocopy::FromBytes, zerocopy::Immutable, zerocopy::IntoBytes, zerocopy::KnownLayout,
+    )]
     /// A strongly-typed index into the strings table of [`PackageDebugInfo`].
     ///
     /// This prevents accidental misuse of raw `u32` indices (e.g., using a string index
@@ -185,6 +188,9 @@ newtype_id!(
 );
 
 newtype_id!(
+    #[derive(
+        zerocopy::FromBytes, zerocopy::Immutable, zerocopy::IntoBytes, zerocopy::KnownLayout,
+    )]
     /// A strongly-typed index into the type table of [`PackageDebugInfo`].
     ///
     /// This prevents accidental misuse of raw `u32` indices (e.g., using a string index
@@ -193,6 +199,9 @@ newtype_id!(
 );
 
 newtype_id!(
+    #[derive(
+        zerocopy::FromBytes, zerocopy::Immutable, zerocopy::IntoBytes, zerocopy::KnownLayout,
+    )]
     /// A strongly-typed index into the sources table of [`PackageDebugInfo`].
     ///
     /// This prevents accidental misuse of raw `u32` indices (e.g., using a string index
@@ -201,6 +210,9 @@ newtype_id!(
 );
 
 newtype_id!(
+    #[derive(
+        zerocopy::FromBytes, zerocopy::Immutable, zerocopy::IntoBytes, zerocopy::KnownLayout,
+    )]
     /// A strongly-typed index into the functions table of [`PackageDebugInfo`].
     ///
     /// This prevents accidental misuse of raw `u32` indices (e.g., using a string index
@@ -209,6 +221,9 @@ newtype_id!(
 );
 
 newtype_id!(
+    #[derive(
+        zerocopy::FromBytes, zerocopy::Immutable, zerocopy::IntoBytes, zerocopy::KnownLayout,
+    )]
     /// A strongly-typed index into the locations table of [`PackageDebugInfo`].
     ///
     /// This prevents accidental misuse of raw `u32` indices (e.g., using a string index
@@ -217,6 +232,9 @@ newtype_id!(
 );
 
 newtype_id!(
+    #[derive(
+        zerocopy::FromBytes, zerocopy::Immutable, zerocopy::IntoBytes, zerocopy::KnownLayout,
+    )]
     /// A strongly-typed index into the assembly source nodes table of [`PackageDebugInfo`].
     ///
     /// This prevents accidental misuse of raw `u32` indices (e.g., using a string index
@@ -234,50 +252,44 @@ impl SourceNodeIdMarker for DebugSourceNodeId {}
 /// A custom `Option<T>` type that has a stable memory layout
 ///
 /// This type is meant to be converted to/from an `Option<T>` for actual use
-#[repr(C)]
-pub struct OptionC<T> {
-    discriminant: u32,
-    payload: MaybeUninit<T>,
+#[repr(transparent)]
+#[derive(
+    Copy,
+    Clone,
+    zerocopy::FromBytes,
+    zerocopy::Immutable,
+    zerocopy::IntoBytes,
+    zerocopy::KnownLayout,
+)]
+pub struct OptionC<T: Idx> {
+    raw: [u32; 2],
+    marker: PhantomData<fn() -> T>,
 }
 
-impl<T> Default for OptionC<T> {
+impl<T: Idx> Default for OptionC<T> {
     #[inline(always)]
     fn default() -> Self {
         Self::none()
     }
 }
 
-impl<T> OptionC<T> {
-    const fn none() -> Self {
+impl<T: Idx> OptionC<T> {
+    fn none() -> Self {
+        Self { raw: [0, 0], marker: PhantomData }
+    }
+
+    fn some(value: T) -> Self {
         Self {
-            discriminant: 0,
-            payload: MaybeUninit::zeroed(),
+            raw: [1, value.into()],
+            marker: PhantomData,
         }
     }
 
-    const fn some(value: T) -> Self {
+    #[cfg(test)]
+    fn invalid(discriminant: u32) -> Self {
         Self {
-            discriminant: 1,
-            payload: MaybeUninit::new(value),
-        }
-    }
-
-    const fn invalid(discriminant: u32) -> Self {
-        Self {
-            discriminant,
-            payload: MaybeUninit::zeroed(),
-        }
-    }
-
-    /// Get an [`Option<&T>`] from this value.
-    ///
-    /// NOTE: This function will panic if the discriminant tag is invalid, you must use
-    /// `try_into_option` to obtain a non-panicking equivalent.
-    pub fn as_ref(&self) -> Option<&T> {
-        match self.discriminant {
-            0 => None,
-            1 => Some(unsafe { self.payload() }),
-            _ => panic!("attempted to unwrap invalid {}", core::any::type_name::<Self>()),
+            raw: [discriminant, 0],
+            marker: PhantomData,
         }
     }
 
@@ -298,54 +310,42 @@ impl<T> OptionC<T> {
         self.try_into()
     }
 
-    /// Get a reference to the payload value of this option.
-    ///
-    /// This function will panic if:
-    ///
-    /// * The discriminant tag is invalid
-    /// * The discriminant is `None`
-    unsafe fn payload(&self) -> &T {
-        assert_eq!(self.discriminant, 1, "attempted to access payload of None/Invalid variant");
-        unsafe { MaybeUninit::assume_init_ref(&self.payload) }
-    }
-}
-
-impl<T: Copy> Copy for OptionC<T> {}
-
-impl<T: Clone> Clone for OptionC<T> {
-    fn clone(&self) -> Self {
-        match self.discriminant {
-            0 => Self::none(),
-            1 => Self::some(unsafe { self.payload() }.clone()),
-            invalid => Self::invalid(invalid),
+    pub(super) fn from_raw_parts(discriminant: u32, payload: u32) -> Self {
+        Self {
+            raw: [discriminant, payload],
+            marker: PhantomData,
         }
     }
+
+    pub(super) fn into_raw_parts(self) -> (u32, u32) {
+        (self.raw[0], self.raw[1])
+    }
 }
 
-impl<T: Eq> Eq for OptionC<T> {}
+impl<T: Idx> Eq for OptionC<T> {}
 
-impl<T: PartialEq> PartialEq for OptionC<T> {
+impl<T: Idx> PartialEq for OptionC<T> {
     fn eq(&self, other: &Self) -> bool {
-        match (self.discriminant, other.discriminant) {
+        match (self.raw[0], other.raw[0]) {
             (0, 0) => true,
             (1, 0) | (0, 1) => false,
-            (1, 1) => unsafe { self.payload().eq(other.payload()) },
+            (1, 1) => self.raw[1] == other.raw[1],
             (invalid1, invalid2) => invalid1 == invalid2,
         }
     }
 }
 
-impl<T: core::fmt::Debug> core::fmt::Debug for OptionC<T> {
+impl<T: Idx> core::fmt::Debug for OptionC<T> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self.discriminant {
+        match self.raw[0] {
             0 => write!(f, "None"),
-            1 => f.debug_tuple("Some").field(unsafe { self.payload() }).finish(),
+            1 => f.debug_tuple("Some").field(&T::from(self.raw[1])).finish(),
             invalid => write!(f, "Invalid(discriminant={invalid})"),
         }
     }
 }
 
-impl<T: Copy> From<Option<T>> for OptionC<T> {
+impl<T: Idx> From<Option<T>> for OptionC<T> {
     fn from(value: Option<T>) -> Self {
         match value {
             Some(t) => Self::some(t),
@@ -358,12 +358,12 @@ impl<T: Copy> From<Option<T>> for OptionC<T> {
 #[error("invalid optional value - discriminant tag of {0} is invalid (expected 0 or 1)")]
 pub struct InvalidOptionCError(u32);
 
-impl<T> TryFrom<OptionC<T>> for Option<T> {
+impl<T: Idx> TryFrom<OptionC<T>> for Option<T> {
     type Error = InvalidOptionCError;
     fn try_from(value: OptionC<T>) -> Result<Self, Self::Error> {
-        match value.discriminant {
+        match value.raw[0] {
             0 => Ok(None),
-            1 => Ok(Some(unsafe { MaybeUninit::assume_init(value.payload) })),
+            1 => Ok(Some(T::from(value.raw[1]))),
             invalid => Err(InvalidOptionCError(invalid)),
         }
     }
@@ -373,7 +373,20 @@ impl<T> TryFrom<OptionC<T>> for Option<T> {
 // ================================================================================================
 
 /// Trusted package-owned debug information decoded from well-known debug sections.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    zerocopy::FromBytes,
+    zerocopy::Immutable,
+    zerocopy::IntoBytes,
+    zerocopy::KnownLayout,
+)]
 #[repr(C)]
 pub struct DebugLoc {
     pub file_idx: DebugFileIdx,
@@ -473,7 +486,17 @@ impl<Exec: Idx, Src: Idx> SourceNode<Exec, Src> {
 }
 
 /// Assembly operation metadata keyed by a source/debug MAST occurrence.
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    PartialEq,
+    Eq,
+    zerocopy::FromBytes,
+    zerocopy::Immutable,
+    zerocopy::IntoBytes,
+    zerocopy::KnownLayout,
+)]
 #[repr(C)]
 pub struct DebugSourceAsmOp {
     /// Operation index local to the reduced execution node.
@@ -559,7 +582,17 @@ pub struct DebugSourceInlineCall {
 // ================================================================================================
 
 /// Assertion error message keyed by its runtime error code.
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    PartialEq,
+    Eq,
+    zerocopy::FromBytes,
+    zerocopy::Immutable,
+    zerocopy::IntoBytes,
+    zerocopy::KnownLayout,
+)]
 #[repr(C)]
 pub struct DebugErrorMessage {
     /// Runtime error code emitted by the assembled assertion operation.
@@ -1084,7 +1117,17 @@ fn checked_align_up_usize(value: usize, alignment: usize) -> Option<usize> {
 /// When `directory_idx` is set, `path_idx` would be a relative path; otherwise `path_idx`
 /// is expected to be absolute. This would allow sharing common directory prefixes across
 /// multiple files.
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    PartialEq,
+    Eq,
+    zerocopy::FromBytes,
+    zerocopy::Immutable,
+    zerocopy::IntoBytes,
+    zerocopy::KnownLayout,
+)]
 #[repr(C)]
 pub struct DebugFileInfo {
     /// Full path to the source file (index into string table).
