@@ -116,7 +116,7 @@ impl Deserializable for PackageDebugInfo {
     fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
         let version = source.read_u8()?;
         if version != DEBUG_INFO_VERSION {
-            return Err(DeserializationError::InvalidValue(alloc::format!(
+            return Err(DeserializationError::InvalidValue(format!(
                 "unsupported debug_info version: {version}, expected {DEBUG_INFO_VERSION}"
             )));
         }
@@ -158,6 +158,13 @@ impl Deserializable for PackageDebugInfo {
         let error_messages_len = source.read_u32()? as usize;
         let error_messages =
             source.read_aligned_slice_of::<DebugErrorMessage>(error_messages_len)?.to_vec();
+
+        if source.has_more_bytes() {
+            let remaining_len = data_len.saturating_sub(data_len);
+            return Err(DeserializationError::InvalidValue(format!(
+                "expected {data_len} bytes to have been read, but {remaining_len} remain in the buffer"
+            )));
+        }
 
         Ok(PackageDebugInfo {
             version,
@@ -250,6 +257,13 @@ impl Deserializable for DebugSourceNode {
 
         let debug_vars = Vec::read_from(&mut source)?;
         let inline_calls = Vec::read_from(&mut source)?;
+
+        if source.has_more_bytes() {
+            let remaining_len = data_len.saturating_sub(data_len);
+            return Err(DeserializationError::InvalidValue(format!(
+                "expected {data_len} bytes to have been read, but {remaining_len} remain in the buffer"
+            )));
+        }
 
         Ok(Self {
             exec_node,
