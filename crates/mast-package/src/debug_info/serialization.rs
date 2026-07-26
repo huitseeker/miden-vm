@@ -116,7 +116,7 @@ impl Deserializable for PackageDebugInfo {
     fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
         let version = source.read_u8()?;
         if version != DEBUG_INFO_VERSION {
-            return Err(DeserializationError::InvalidValue(alloc::format!(
+            return Err(DeserializationError::InvalidValue(format!(
                 "unsupported debug_info version: {version}, expected {DEBUG_INFO_VERSION}"
             )));
         }
@@ -158,6 +158,13 @@ impl Deserializable for PackageDebugInfo {
         let error_messages_len = source.read_u32()? as usize;
         let error_messages =
             source.read_aligned_slice_of::<DebugErrorMessage>(error_messages_len)?.to_vec();
+
+        let remaining_len = source.remaining_len();
+        if remaining_len != 0 {
+            return Err(DeserializationError::InvalidValue(format!(
+                "expected {data_len} bytes to have been read, but {remaining_len} remain in the buffer"
+            )));
+        }
 
         Ok(PackageDebugInfo {
             version,
@@ -250,6 +257,13 @@ impl Deserializable for DebugSourceNode {
 
         let debug_vars = Vec::read_from(&mut source)?;
         let inline_calls = Vec::read_from(&mut source)?;
+
+        let remaining_len = source.remaining_len();
+        if remaining_len != 0 {
+            return Err(DeserializationError::InvalidValue(format!(
+                "expected {data_len} bytes to have been read, but {remaining_len} remain in the buffer"
+            )));
+        }
 
         Ok(Self {
             exec_node,
@@ -642,6 +656,10 @@ impl<'a> AlignedSliceReader<'a> {
         AlignedSliceReader { source, pos: 0 }
     }
 
+    fn remaining_len(&self) -> usize {
+        self.source.len() - self.pos
+    }
+
     fn read_aligned_slice_of<T>(&mut self, len: usize) -> Result<&[T], DeserializationError> {
         self.skip_alignment_padding::<T>()?;
         let byte_len = len.checked_mul(size_of::<T>()).ok_or_else(|| {
@@ -720,7 +738,7 @@ impl ByteReader for AlignedSliceReader<'_> {
     }
 
     fn has_more_bytes(&self) -> bool {
-        self.pos < self.source.len()
+        self.remaining_len() != 0
     }
 }
 
@@ -922,6 +940,65 @@ mod tests {
             size_of::<DebugTypeInfo>(),
             "the speculative capacity must be bounded using the in-memory row size",
         );
+    }
+
+    #[test]
+    fn package_debug_info_trailing_data_error_reports_remaining_bytes() {
+        const TRAILING: &[u8] = &[0xaa, 0xbb, 0xcc];
+
+        let serialized = PackageDebugInfo::default().to_bytes();
+        let mut reader = miden_core::serde::SliceReader::new(&serialized);
+        let version = reader.read_u8().unwrap();
+        let data_len = reader.read_usize().unwrap();
+        let data = reader.read_slice(data_len).unwrap().to_vec();
+        assert!(!reader.has_more_bytes());
+
+        let mut malformed = Vec::new();
+        malformed.write_u8(version);
+        malformed.write_usize(data_len + TRAILING.len());
+        malformed.write_bytes(&data);
+        malformed.write_bytes(TRAILING);
+
+        let error =
+            PackageDebugInfo::read_from(&mut miden_core::serde::SliceReader::new(&malformed))
+                .unwrap_err();
+        let DeserializationError::InvalidValue(message) = error else {
+            panic!("expected InvalidValue error");
+        };
+        assert!(message.contains("but 3 remain in the buffer"), "{message}");
+    }
+
+    #[test]
+    fn debug_source_node_trailing_data_error_reports_remaining_bytes() {
+        const TRAILING: &[u8] = &[0xaa, 0xbb];
+
+        let source_node = DebugSourceNode {
+            exec_node: MastNodeId::new_unchecked(0),
+            children: Vec::new(),
+            op_start: 0,
+            op_end: 0,
+            asm_ops: Vec::new(),
+            debug_vars: Vec::new(),
+            inline_calls: Vec::new(),
+        };
+        let serialized = source_node.to_bytes();
+        let mut reader = miden_core::serde::SliceReader::new(&serialized);
+        let data_len = reader.read_usize().unwrap();
+        let data = reader.read_slice(data_len).unwrap().to_vec();
+        assert!(!reader.has_more_bytes());
+
+        let mut malformed = Vec::new();
+        malformed.write_usize(data_len + TRAILING.len());
+        malformed.write_bytes(&data);
+        malformed.write_bytes(TRAILING);
+
+        let error =
+            DebugSourceNode::read_from(&mut miden_core::serde::SliceReader::new(&malformed))
+                .unwrap_err();
+        let DeserializationError::InvalidValue(message) = error else {
+            panic!("expected InvalidValue error");
+        };
+        assert!(message.contains("but 2 remain in the buffer"), "{message}");
     }
 
     fn roundtrip_debug_info(value: &PackageDebugInfo) -> PackageDebugInfo {
