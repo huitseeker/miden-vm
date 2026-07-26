@@ -265,7 +265,7 @@ impl<T> OptionC<T> {
     const fn invalid(discriminant: u32) -> Self {
         Self {
             discriminant,
-            payload: MaybeUninit::uninit(),
+            payload: MaybeUninit::zeroed(),
         }
     }
 
