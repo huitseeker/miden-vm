@@ -23,6 +23,8 @@ use super::{
     DebugTypeIdx, DebugTypeInfo, DebugVariantInfo, PackageDebugInfo,
 };
 
+/// Base alignment for copied payloads. The assertions below ensure that this is sufficient for
+/// every row type decoded directly from the payload.
 const POD_BUFFER_ALIGNMENT: usize = align_of::<u64>();
 
 const _: () = {
@@ -34,6 +36,8 @@ const _: () = {
     assert!(align_of::<DebugSourceAsmOp>() <= POD_BUFFER_ALIGNMENT);
 };
 
+/// Wire form of an optional index. Byte arrays make little-endian encoding explicit, while keeping
+/// invalid discriminants representable for later validation.
 #[repr(C)]
 #[derive(Clone, Copy, zerocopy::FromBytes, Immutable, IntoBytes, KnownLayout)]
 struct WireOptionU32 {
@@ -58,6 +62,8 @@ impl WireOptionU32 {
     }
 }
 
+/// Wire form of [`DebugFunctionInfo`]. The domain type cannot be decoded from arbitrary bytes
+/// because its field elements must be validated before constructing a [`Word`].
 #[repr(C, align(8))]
 #[derive(Clone, Copy, zerocopy::FromBytes, Immutable, IntoBytes, KnownLayout)]
 struct WireDebugFunctionInfo {
@@ -74,7 +80,9 @@ struct WireDebugFunctionInfo {
 // PACKAGE DEBUG INFO SERIALIZATION
 // ================================================================================================
 
-/// Fixed-size tables use `zerocopy`-certified POD rows. The function table uses an explicit POD
+/// Fixed-size tables are padded to their row alignment and written as `zerocopy`-certified rows.
+/// Deserialization copies each payload into an aligned allocation because the padding preserves row
+/// alignment only when measured from an aligned payload base. The function table uses an explicit
 /// wire row because its field elements require validation before constructing domain values.
 #[cfg(target_endian = "little")]
 impl Serializable for PackageDebugInfo {
@@ -208,8 +216,8 @@ impl Deserializable for PackageDebugInfo {
 // DEBUG SOURCE NODE SERIALIZATION
 // ================================================================================================
 
-/// Fixed-size child and assembly-op rows use the same explicit POD wire representation as
-/// [PackageDebugInfo].
+/// Fixed-size child and assembly-op tables use the same certified row format as
+/// [`PackageDebugInfo`].
 #[cfg(target_endian = "little")]
 impl Serializable for DebugSourceNode {
     fn write_into<W: ByteWriter>(&self, target: &mut W) {
@@ -628,7 +636,8 @@ impl AlignedBytes {
         let Some(ptr) = self.ptr else {
             return &[];
         };
-        // SAFETY: the allocation remains owned by `self` for the returned borrow.
+        // SAFETY: `ptr` was allocated with `self.layout`, every byte was initialized by the copy in
+        // `copy_from_slice`, and the allocation remains owned by `self` for the returned borrow.
         unsafe { core::slice::from_raw_parts(ptr.as_ptr(), self.layout.size()) }
     }
 }

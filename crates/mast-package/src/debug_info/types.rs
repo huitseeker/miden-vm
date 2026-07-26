@@ -249,9 +249,10 @@ impl SourceNodeIdMarker for DebugSourceNodeId {}
 // STABLE OPTION TYPE
 // ================================================================================================
 
-/// A custom `Option<T>` type that has a stable memory layout
+/// An optional index with a stable, fully initialized memory layout.
 ///
-/// This type is meant to be converted to/from an `Option<T>` for actual use
+/// The first `u32` is the discriminant: zero means `None`, one means `Some`, and other values are
+/// invalid. The second `u32` holds the index payload and is initialized for every discriminant.
 #[repr(transparent)]
 #[derive(
     Copy,
