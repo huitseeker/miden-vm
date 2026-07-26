@@ -1,5 +1,7 @@
 mod masm;
 
+use core::ops::ControlFlow;
+
 use miden_assembly_syntax::debuginfo::SourceManager;
 use miden_package_registry::PackageRegistryAndProvider;
 use miden_project::ProjectDependencyGraph;
@@ -103,6 +105,15 @@ pub trait ProjectSourceProvider {
         &self,
         context: &TargetAssemblyContext<'_>,
     ) -> Result<ProjectSourceInputs, Report>;
+
+    /// Same as `provide_sources`, but allows the provider to interrupt the build and exit early
+    fn provide_sources_interruptible(
+        &self,
+        context: &TargetAssemblyContext<'_>,
+    ) -> Result<ControlFlow<(), ProjectSourceInputs>, Report> {
+        self.provide_sources(context).map(ControlFlow::Continue)
+    }
+
     /// Called to request the source files that are inputs to assembly of the current target, so
     /// that source provenance hash for the target can be computed.
     ///
