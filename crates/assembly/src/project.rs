@@ -869,16 +869,25 @@ where
         target: &'this Target,
         profile: &'this Profile,
     ) -> Result<(&'this dyn ProjectSourceProvider, TargetAssemblyContext<'this>), Report> {
-        let manifest_path = project.expect_manifest_path()?;
-        let mut context = TargetAssemblyContext::new(
-            project.clone(),
-            manifest_path,
-            target,
-            profile,
-            self.dependency_graph.as_ref(),
-            self.store,
-            self.assembler.source_manager(),
-        )?;
+        let mut context = match project.manifest_path() {
+            Some(manifest_path) => TargetAssemblyContext::new(
+                project.clone(),
+                manifest_path,
+                target,
+                profile,
+                self.dependency_graph.as_ref(),
+                self.store,
+                self.assembler.source_manager(),
+            )?,
+            None => TargetAssemblyContext::new_virtual(
+                project.clone(),
+                target,
+                profile,
+                self.dependency_graph.as_ref(),
+                self.store,
+                self.assembler.source_manager(),
+            )?,
+        };
         context.with_warnings_as_errors(self.assembler.warnings_as_errors());
 
         let extension = context.resolved_target_root.extension().ok_or_else(|| {
