@@ -16,7 +16,7 @@
 //! variable inspection, stepping, and call stack visualization.
 
 use alloc::{sync::Arc, vec::Vec};
-use core::{mem::MaybeUninit, num::NonZeroU32};
+use core::{marker::PhantomData, num::NonZeroU32};
 
 use miden_assembly_syntax::ast::{DebugVarInfo, DebugVarLocation, TypeExpr, types::Type};
 use miden_core::{Word, mast::MastNodeId, operations::AssemblyOp};
@@ -62,7 +62,7 @@ pub enum DebugInfoTableRemapError {
     InvalidOptionField {
         context: &'static str,
         #[source]
-        err: InvalidOptionCError,
+        err: InvalidOptionalIndexError,
     },
     /// A type row refers to a string that is not present in the source string table.
     #[error(
@@ -98,7 +98,7 @@ pub enum DebugInfoMergeError<Exec: Idx, Src: Idx> {
         forest_index: usize,
         context: &'static str,
         #[source]
-        err: InvalidOptionCError,
+        err: InvalidOptionalIndexError,
     },
     /// The package has source-keyed metadata rows without a source graph to define source IDs.
     #[error("debug info for forest {forest_index} has source-map rows but no source graph")]
@@ -177,6 +177,9 @@ pub enum DebugInfoMergeError<Exec: Idx, Src: Idx> {
 }
 
 newtype_id!(
+    #[derive(
+        zerocopy::FromBytes, zerocopy::Immutable, zerocopy::IntoBytes, zerocopy::KnownLayout,
+    )]
     /// A strongly-typed index into the strings table of [`PackageDebugInfo`].
     ///
     /// This prevents accidental misuse of raw `u32` indices (e.g., using a string index
@@ -185,6 +188,9 @@ newtype_id!(
 );
 
 newtype_id!(
+    #[derive(
+        zerocopy::FromBytes, zerocopy::Immutable, zerocopy::IntoBytes, zerocopy::KnownLayout,
+    )]
     /// A strongly-typed index into the type table of [`PackageDebugInfo`].
     ///
     /// This prevents accidental misuse of raw `u32` indices (e.g., using a string index
@@ -193,6 +199,9 @@ newtype_id!(
 );
 
 newtype_id!(
+    #[derive(
+        zerocopy::FromBytes, zerocopy::Immutable, zerocopy::IntoBytes, zerocopy::KnownLayout,
+    )]
     /// A strongly-typed index into the sources table of [`PackageDebugInfo`].
     ///
     /// This prevents accidental misuse of raw `u32` indices (e.g., using a string index
@@ -201,6 +210,9 @@ newtype_id!(
 );
 
 newtype_id!(
+    #[derive(
+        zerocopy::FromBytes, zerocopy::Immutable, zerocopy::IntoBytes, zerocopy::KnownLayout,
+    )]
     /// A strongly-typed index into the functions table of [`PackageDebugInfo`].
     ///
     /// This prevents accidental misuse of raw `u32` indices (e.g., using a string index
@@ -209,6 +221,9 @@ newtype_id!(
 );
 
 newtype_id!(
+    #[derive(
+        zerocopy::FromBytes, zerocopy::Immutable, zerocopy::IntoBytes, zerocopy::KnownLayout,
+    )]
     /// A strongly-typed index into the locations table of [`PackageDebugInfo`].
     ///
     /// This prevents accidental misuse of raw `u32` indices (e.g., using a string index
@@ -217,6 +232,9 @@ newtype_id!(
 );
 
 newtype_id!(
+    #[derive(
+        zerocopy::FromBytes, zerocopy::Immutable, zerocopy::IntoBytes, zerocopy::KnownLayout,
+    )]
     /// A strongly-typed index into the assembly source nodes table of [`PackageDebugInfo`].
     ///
     /// This prevents accidental misuse of raw `u32` indices (e.g., using a string index
@@ -231,53 +249,48 @@ impl SourceNodeIdMarker for DebugSourceNodeId {}
 // STABLE OPTION TYPE
 // ================================================================================================
 
-/// A custom `Option<T>` type that has a stable memory layout
+/// An optional index with a stable, fully initialized memory layout.
 ///
-/// This type is meant to be converted to/from an `Option<T>` for actual use
-#[repr(C)]
-pub struct OptionC<T> {
-    discriminant: u32,
-    payload: MaybeUninit<T>,
+/// The first `u32` is the discriminant: zero means `None`, one means `Some`, and other values are
+/// invalid. The second `u32` holds the index payload and is initialized for every discriminant.
+#[repr(transparent)]
+#[derive(
+    Copy,
+    Clone,
+    zerocopy::FromBytes,
+    zerocopy::Immutable,
+    zerocopy::IntoBytes,
+    zerocopy::KnownLayout,
+)]
+pub struct OptionalIndex<T: Idx> {
+    raw: [u32; 2],
+    marker: PhantomData<fn() -> T>,
 }
 
-impl<T> Default for OptionC<T> {
+impl<T: Idx> Default for OptionalIndex<T> {
     #[inline(always)]
     fn default() -> Self {
         Self::none()
     }
 }
 
-impl<T> OptionC<T> {
-    const fn none() -> Self {
+impl<T: Idx> OptionalIndex<T> {
+    fn none() -> Self {
+        Self { raw: [0, 0], marker: PhantomData }
+    }
+
+    fn some(value: T) -> Self {
         Self {
-            discriminant: 0,
-            payload: MaybeUninit::zeroed(),
+            raw: [1, value.into()],
+            marker: PhantomData,
         }
     }
 
-    const fn some(value: T) -> Self {
+    #[cfg(test)]
+    fn invalid(discriminant: u32) -> Self {
         Self {
-            discriminant: 1,
-            payload: MaybeUninit::new(value),
-        }
-    }
-
-    const fn invalid(discriminant: u32) -> Self {
-        Self {
-            discriminant,
-            payload: MaybeUninit::zeroed(),
-        }
-    }
-
-    /// Get an [`Option<&T>`] from this value.
-    ///
-    /// NOTE: This function will panic if the discriminant tag is invalid, you must use
-    /// `try_into_option` to obtain a non-panicking equivalent.
-    pub fn as_ref(&self) -> Option<&T> {
-        match self.discriminant {
-            0 => None,
-            1 => Some(unsafe { self.payload() }),
-            _ => panic!("attempted to unwrap invalid {}", core::any::type_name::<Self>()),
+            raw: [discriminant, 0],
+            marker: PhantomData,
         }
     }
 
@@ -294,58 +307,35 @@ impl<T> OptionC<T> {
     /// Convert this value into an [`Option<T>`] without panicking if the underlying discriminant
     /// is out of range.
     #[inline(always)]
-    pub fn try_into_option(self) -> Result<Option<T>, InvalidOptionCError> {
+    pub fn try_into_option(self) -> Result<Option<T>, InvalidOptionalIndexError> {
         self.try_into()
     }
-
-    /// Get a reference to the payload value of this option.
-    ///
-    /// This function will panic if:
-    ///
-    /// * The discriminant tag is invalid
-    /// * The discriminant is `None`
-    unsafe fn payload(&self) -> &T {
-        assert_eq!(self.discriminant, 1, "attempted to access payload of None/Invalid variant");
-        unsafe { MaybeUninit::assume_init_ref(&self.payload) }
-    }
 }
 
-impl<T: Copy> Copy for OptionC<T> {}
+impl<T: Idx> Eq for OptionalIndex<T> {}
 
-impl<T: Clone> Clone for OptionC<T> {
-    fn clone(&self) -> Self {
-        match self.discriminant {
-            0 => Self::none(),
-            1 => Self::some(unsafe { self.payload() }.clone()),
-            invalid => Self::invalid(invalid),
-        }
-    }
-}
-
-impl<T: Eq> Eq for OptionC<T> {}
-
-impl<T: PartialEq> PartialEq for OptionC<T> {
+impl<T: Idx> PartialEq for OptionalIndex<T> {
     fn eq(&self, other: &Self) -> bool {
-        match (self.discriminant, other.discriminant) {
+        match (self.raw[0], other.raw[0]) {
             (0, 0) => true,
             (1, 0) | (0, 1) => false,
-            (1, 1) => unsafe { self.payload().eq(other.payload()) },
+            (1, 1) => self.raw[1] == other.raw[1],
             (invalid1, invalid2) => invalid1 == invalid2,
         }
     }
 }
 
-impl<T: core::fmt::Debug> core::fmt::Debug for OptionC<T> {
+impl<T: Idx> core::fmt::Debug for OptionalIndex<T> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self.discriminant {
+        match self.raw[0] {
             0 => write!(f, "None"),
-            1 => f.debug_tuple("Some").field(unsafe { self.payload() }).finish(),
+            1 => f.debug_tuple("Some").field(&T::from(self.raw[1])).finish(),
             invalid => write!(f, "Invalid(discriminant={invalid})"),
         }
     }
 }
 
-impl<T: Copy> From<Option<T>> for OptionC<T> {
+impl<T: Idx> From<Option<T>> for OptionalIndex<T> {
     fn from(value: Option<T>) -> Self {
         match value {
             Some(t) => Self::some(t),
@@ -356,15 +346,15 @@ impl<T: Copy> From<Option<T>> for OptionC<T> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("invalid optional value - discriminant tag of {0} is invalid (expected 0 or 1)")]
-pub struct InvalidOptionCError(u32);
+pub struct InvalidOptionalIndexError(u32);
 
-impl<T> TryFrom<OptionC<T>> for Option<T> {
-    type Error = InvalidOptionCError;
-    fn try_from(value: OptionC<T>) -> Result<Self, Self::Error> {
-        match value.discriminant {
+impl<T: Idx> TryFrom<OptionalIndex<T>> for Option<T> {
+    type Error = InvalidOptionalIndexError;
+    fn try_from(value: OptionalIndex<T>) -> Result<Self, Self::Error> {
+        match value.raw[0] {
             0 => Ok(None),
-            1 => Ok(Some(unsafe { MaybeUninit::assume_init(value.payload) })),
-            invalid => Err(InvalidOptionCError(invalid)),
+            1 => Ok(Some(T::from(value.raw[1]))),
+            invalid => Err(InvalidOptionalIndexError(invalid)),
         }
     }
 }
@@ -373,7 +363,20 @@ impl<T> TryFrom<OptionC<T>> for Option<T> {
 // ================================================================================================
 
 /// Trusted package-owned debug information decoded from well-known debug sections.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    zerocopy::FromBytes,
+    zerocopy::Immutable,
+    zerocopy::IntoBytes,
+    zerocopy::KnownLayout,
+)]
 #[repr(C)]
 pub struct DebugLoc {
     pub file_idx: DebugFileIdx,
@@ -473,13 +476,23 @@ impl<Exec: Idx, Src: Idx> SourceNode<Exec, Src> {
 }
 
 /// Assembly operation metadata keyed by a source/debug MAST occurrence.
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    PartialEq,
+    Eq,
+    zerocopy::FromBytes,
+    zerocopy::Immutable,
+    zerocopy::IntoBytes,
+    zerocopy::KnownLayout,
+)]
 #[repr(C)]
 pub struct DebugSourceAsmOp {
     /// Operation index local to the reduced execution node.
     pub op_idx: u32,
     /// Source location index in the locations table
-    pub location_idx: OptionC<DebugLocIdx>,
+    pub location_idx: OptionalIndex<DebugLocIdx>,
     /// Assembly context name index in the strings table
     pub context_name_idx: DebugStringIdx,
     /// Assembly operation text index in the strings table
@@ -559,7 +572,17 @@ pub struct DebugSourceInlineCall {
 // ================================================================================================
 
 /// Assertion error message keyed by its runtime error code.
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    PartialEq,
+    Eq,
+    zerocopy::FromBytes,
+    zerocopy::Immutable,
+    zerocopy::IntoBytes,
+    zerocopy::KnownLayout,
+)]
 #[repr(C)]
 pub struct DebugErrorMessage {
     /// Runtime error code emitted by the assembled assertion operation.
@@ -1084,7 +1107,17 @@ fn checked_align_up_usize(value: usize, alignment: usize) -> Option<usize> {
 /// When `directory_idx` is set, `path_idx` would be a relative path; otherwise `path_idx`
 /// is expected to be absolute. This would allow sharing common directory prefixes across
 /// multiple files.
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    PartialEq,
+    Eq,
+    zerocopy::FromBytes,
+    zerocopy::Immutable,
+    zerocopy::IntoBytes,
+    zerocopy::KnownLayout,
+)]
 #[repr(C)]
 pub struct DebugFileInfo {
     /// Full path to the source file (index into string table).
@@ -1148,11 +1181,11 @@ pub struct FunctionInfo<N: Idx> {
     /// This links the debug info to the compiled code if `source_node` is unknown
     pub mast_root: Word,
     /// The source occurrance this function is linked to, if known
-    pub source_node: OptionC<N>,
+    pub source_node: OptionalIndex<N>,
     /// Type signature of this function (index into type table, optional)
-    pub type_idx: OptionC<DebugTypeIdx>,
+    pub type_idx: OptionalIndex<DebugTypeIdx>,
     /// Linkage name / mangled name (index into string table, optional)
-    pub linkage_name_idx: OptionC<DebugStringIdx>,
+    pub linkage_name_idx: OptionalIndex<DebugStringIdx>,
     /// Name of the function (index into string table)
     pub name_idx: DebugStringIdx,
     /// File containing this function (index into file table)
@@ -1184,24 +1217,24 @@ impl<N: Idx> FunctionInfo<N> {
         Self {
             source_node: source_node.into(),
             name_idx,
-            linkage_name_idx: OptionC::none(),
+            linkage_name_idx: OptionalIndex::none(),
             file_idx,
             line: line.to_index(),
             column: column.to_index(),
-            type_idx: OptionC::none(),
+            type_idx: OptionalIndex::none(),
             mast_root,
         }
     }
 
     /// Sets the linkage name.
     pub fn with_linkage_name(mut self, linkage_name_idx: DebugStringIdx) -> Self {
-        self.linkage_name_idx = OptionC::some(linkage_name_idx);
+        self.linkage_name_idx = OptionalIndex::some(linkage_name_idx);
         self
     }
 
     /// Sets the type index.
     pub fn with_type(mut self, type_idx: DebugTypeIdx) -> Self {
-        self.type_idx = OptionC::some(type_idx);
+        self.type_idx = OptionalIndex::some(type_idx);
         self
     }
 }
@@ -1559,17 +1592,17 @@ mod tests {
     #[test]
     fn merge_tables_into_rejects_invalid_function_options_before_mutating_target() {
         let (mut invalid_type, function_idx) = debug_info_builder_with_function();
-        invalid_type.debug_info_mut().functions[function_idx].type_idx = OptionC::invalid(2);
+        invalid_type.debug_info_mut().functions[function_idx].type_idx = OptionalIndex::invalid(2);
         let invalid_type = invalid_type.build();
 
         let (mut invalid_linkage, function_idx) = debug_info_builder_with_function();
         invalid_linkage.debug_info_mut().functions[function_idx].linkage_name_idx =
-            OptionC::invalid(3);
+            OptionalIndex::invalid(3);
         let invalid_linkage = invalid_linkage.build();
 
         for (source, expected_context, expected_err) in [
-            (invalid_type, "debug function type", InvalidOptionCError(2)),
-            (invalid_linkage, "debug function linkage name", InvalidOptionCError(3)),
+            (invalid_type, "debug function type", InvalidOptionalIndexError(2)),
+            (invalid_linkage, "debug function linkage name", InvalidOptionalIndexError(3)),
         ] {
             let mut target = PackageDebugInfoBuilder::default();
             target.add_string("existing target string");
@@ -1602,7 +1635,7 @@ mod tests {
     #[test]
     fn merge_source_debug_rejects_invalid_function_source_option() {
         let (mut source, function_idx) = debug_info_builder_with_function();
-        source.debug_info_mut().functions[function_idx].source_node = OptionC::invalid(4);
+        source.debug_info_mut().functions[function_idx].source_node = OptionalIndex::invalid(4);
         let source = source.build();
 
         let error = PackageDebugInfo::merge_source_debug(
@@ -1616,7 +1649,7 @@ mod tests {
             DebugInfoMergeError::InvalidOptionField {
                 forest_index: 0,
                 context: "debug function source node",
-                err: InvalidOptionCError(4),
+                err: InvalidOptionalIndexError(4),
             },
         );
     }
@@ -1641,7 +1674,7 @@ mod tests {
         let context_name_idx = source.add_string("context");
         let op_name_idx = source.add_string("add");
         let mut asm_op = DebugSourceAsmOp::new(0, None, context_name_idx, op_name_idx, 1);
-        asm_op.location_idx = OptionC::invalid(5);
+        asm_op.location_idx = OptionalIndex::invalid(5);
         let mut node = source_node(block, Vec::new(), 0, 1);
         node.asm_ops.push(asm_op);
         source.add_node(node).unwrap();
@@ -1655,7 +1688,7 @@ mod tests {
             DebugInfoMergeError::InvalidOptionField {
                 forest_index: 0,
                 context: "debug source assembly op location",
-                err: InvalidOptionCError(5),
+                err: InvalidOptionalIndexError(5),
             },
         );
     }

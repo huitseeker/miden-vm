@@ -38,6 +38,7 @@ hashbrown = "0.17"
 rustc-hash = { version = "2.1", default-features = false }
 serde = { workspace = true, optional = true }
 thiserror.workspace = true
+zerocopy.workspace = true
 
 [dev-dependencies]
 miden-assembly-syntax = { workspace = true, features = ["arbitrary"] }

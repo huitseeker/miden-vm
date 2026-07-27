@@ -5,105 +5,100 @@ use core::{alloc::Layout, ptr::NonNull};
 
 use miden_assembly_syntax::ast::DebugVarLocation;
 use miden_core::{
+    Felt, Word,
     mast::MastNodeId,
     serde::{
         ByteReader, ByteWriter, Deserializable, DeserializationError, Serializable,
         read_bounded_len,
     },
 };
+use miden_debug_types::{ColumnIndex, LineIndex};
 use miden_utils_indexing::IndexVec;
+use zerocopy::{Immutable, IntoBytes, KnownLayout};
 
 use super::{
-    DEBUG_INFO_VERSION, DebugErrorMessage, DebugFieldInfo, DebugFileInfo, DebugFunctionIdx,
-    DebugFunctionInfo, DebugLoc, DebugLocIdx, DebugPrimitiveType, DebugSourceAsmOp,
-    DebugSourceInlineCall, DebugSourceNode, DebugSourceNodeId, DebugSourceVar, DebugStringIdx,
-    DebugTypeIdx, DebugTypeInfo, DebugVariantInfo, PackageDebugInfo,
+    DEBUG_INFO_VERSION, DebugErrorMessage, DebugFieldInfo, DebugFileIdx, DebugFileInfo,
+    DebugFunctionIdx, DebugFunctionInfo, DebugLoc, DebugLocIdx, DebugPrimitiveType,
+    DebugSourceAsmOp, DebugSourceInlineCall, DebugSourceNode, DebugSourceNodeId, DebugSourceVar,
+    DebugStringIdx, DebugTypeIdx, DebugTypeInfo, DebugVariantInfo, OptionalIndex, PackageDebugInfo,
 };
 
-/// The minimum alignment required for buffers containing directly decoded debug-info rows.
-const DEBUG_INFO_BUFFER_ALIGNMENT: usize = max_alignment(
-    max_alignment(
-        max_alignment(align_of::<DebugFileInfo>(), align_of::<DebugLoc>()),
-        max_alignment(align_of::<DebugFunctionInfo>(), align_of::<DebugSourceNodeId>()),
-    ),
-    max_alignment(align_of::<DebugErrorMessage>(), align_of::<DebugSourceAsmOp>()),
-);
-
-const fn max_alignment(lhs: usize, rhs: usize) -> usize {
-    if lhs > rhs { lhs } else { rhs }
-}
+/// Base alignment for copied payloads. The assertions below ensure that this is sufficient for
+/// every row type decoded directly from the payload.
+const POD_BUFFER_ALIGNMENT: usize = align_of::<u64>();
 
 const _: () = {
-    assert!(DEBUG_INFO_BUFFER_ALIGNMENT.is_power_of_two());
-    assert!(DEBUG_INFO_BUFFER_ALIGNMENT >= align_of::<DebugFileInfo>());
-    assert!(DEBUG_INFO_BUFFER_ALIGNMENT >= align_of::<DebugLoc>());
-    assert!(DEBUG_INFO_BUFFER_ALIGNMENT >= align_of::<DebugFunctionInfo>());
-    assert!(DEBUG_INFO_BUFFER_ALIGNMENT >= align_of::<DebugSourceNodeId>());
-    assert!(DEBUG_INFO_BUFFER_ALIGNMENT >= align_of::<DebugErrorMessage>());
-    assert!(DEBUG_INFO_BUFFER_ALIGNMENT >= align_of::<DebugSourceAsmOp>());
+    assert!(align_of::<DebugFileInfo>() <= POD_BUFFER_ALIGNMENT);
+    assert!(align_of::<DebugLoc>() <= POD_BUFFER_ALIGNMENT);
+    assert!(align_of::<WireDebugFunctionInfo>() <= POD_BUFFER_ALIGNMENT);
+    assert!(align_of::<DebugSourceNodeId>() <= POD_BUFFER_ALIGNMENT);
+    assert!(align_of::<DebugErrorMessage>() <= POD_BUFFER_ALIGNMENT);
+    assert!(align_of::<DebugSourceAsmOp>() <= POD_BUFFER_ALIGNMENT);
 };
+
+/// Wire form of [`DebugFunctionInfo`]. The domain type cannot be decoded from arbitrary bytes
+/// because its field elements must be validated before constructing a [`Word`].
+#[repr(C, align(8))]
+#[derive(Clone, Copy, zerocopy::FromBytes, Immutable, IntoBytes, KnownLayout)]
+struct WireDebugFunctionInfo {
+    mast_root: [u64; 4],
+    source_node: OptionalIndex<DebugSourceNodeId>,
+    type_idx: OptionalIndex<DebugTypeIdx>,
+    linkage_name_idx: OptionalIndex<DebugStringIdx>,
+    name_idx: DebugStringIdx,
+    file_idx: DebugFileIdx,
+    line: LineIndex,
+    column: ColumnIndex,
+}
 
 // PACKAGE DEBUG INFO SERIALIZATION
 // ================================================================================================
 
-/// [PackageDebugInfo] is a very rich and information-dense structure, and so we need to use a few
-/// unsafe tricks in order to keep the (de)serialization performance within a reasonable bound).
-/// Most notably, we attempt to (de)serialize entire rows/tables of data to/from memory directly to
-/// the output buffer without invoking per-element (de)serializers. This allows us to avoid a
-/// significant amount of overhead, but the tradeoff is that it is much more fragile and highly
-/// unsafe - we mitigate this by imposing specific restrictions on types which can be serialized
-/// this way (primarily, the type must be `Copy`).
-///
-/// In order to ensure we can deserialize the data using the same process (copying data out of the
-/// buffer into memory directly), we ensure that the output data is padded in such a way that when
-/// extracted to an aligned buffer in memory, we are guaranteed to be able to directly reference
-/// the encoded rows as a slice of the desired type, and uphold the requirements Rust imposes on
-/// references.
+/// Fixed-size tables are padded to their row alignment and written as `zerocopy`-certified rows.
+/// Deserialization copies each payload into an aligned allocation because the padding preserves row
+/// alignment only when measured from an aligned payload base. The function table uses an explicit
+/// wire row because its field elements require validation before constructing domain values.
 #[cfg(target_endian = "little")]
 impl Serializable for PackageDebugInfo {
     fn write_into<W: ByteWriter>(&self, target: &mut W) {
-        // We serialize to a temporary buffer in memory with a starting size of 16k
-        //
-        // This allows us to emit padding bytes to keep specific parts of the serialized data
-        // aligned according to the required minimum alignment requirements of that data so that
-        // we can construct direct references to it during deserialization.
         let mut output = Vec::<u8>::with_capacity(16 * 1024);
 
         self.strings.write_into(&mut output);
 
         output.write_u32(self.files().len().try_into().unwrap());
-        pad_to_align::<DebugFileInfo>(&mut output);
-        unsafe {
-            copy_slice_memory_to_output(self.files().as_slice(), &mut output);
-        }
+        write_pod_slice(self.files().as_slice(), &mut output);
 
         output.write_u32(self.locations().len().try_into().unwrap());
-        pad_to_align::<DebugLoc>(&mut output);
-        unsafe {
-            copy_slice_memory_to_output(self.locations().as_slice(), &mut output);
-        }
+        write_pod_slice(self.locations().as_slice(), &mut output);
 
         self.types.write_into(&mut output);
 
         output.write_u32(self.functions().len().try_into().unwrap());
-        pad_to_align::<DebugFunctionInfo>(&mut output);
-        unsafe {
-            copy_slice_memory_to_output(self.functions(), &mut output);
-        }
+        pad_to_align::<WireDebugFunctionInfo>(&mut output);
+        write_pod_rows(
+            self.functions().iter().map(|row| {
+                let mast_root = row.mast_root.into_elements().map(|felt| felt.as_canonical_u64());
+                WireDebugFunctionInfo {
+                    mast_root,
+                    source_node: row.source_node,
+                    type_idx: row.type_idx,
+                    linkage_name_idx: row.linkage_name_idx,
+                    name_idx: row.name_idx,
+                    file_idx: row.file_idx,
+                    line: row.line,
+                    column: row.column,
+                }
+            }),
+            &mut output,
+        );
 
         self.nodes.write_into(&mut output);
 
         output.write_u32(self.roots().len().try_into().unwrap());
-        pad_to_align::<DebugSourceNodeId>(&mut output);
-        unsafe {
-            copy_slice_memory_to_output(self.roots(), &mut output);
-        }
+        write_pod_slice(self.roots(), &mut output);
 
         output.write_u32(self.error_messages().len().try_into().unwrap());
-        pad_to_align::<DebugErrorMessage>(&mut output);
-        unsafe {
-            copy_slice_memory_to_output(self.error_messages(), &mut output);
-        }
+        write_pod_slice(self.error_messages(), &mut output);
 
         target.write_u8(self.version());
         target.write_usize(output.len());
@@ -121,43 +116,54 @@ impl Deserializable for PackageDebugInfo {
             )));
         }
 
-        // Read the serialized data into a temporary allocation specifically aligned so that we
-        // can construct references directly into it for certain rows/tables. It is not safe to do
-        // so unless we guarantee the alignment of the entire buffer, because our padding bytes
-        // are emitted based relative to the start of the buffer.
         let data_len = read_bounded_len(source, "package debug info", 1)?;
         let data = source.read_slice(data_len)?;
-        // Copy the data to an allocation whose base alignment satisfies every row type decoded
-        // directly from this buffer. The owner retains the allocation layout so it can deallocate
-        // the buffer with the same layout later.
-        let data = AlignedBytes::copy_from_slice(data, DEBUG_INFO_BUFFER_ALIGNMENT)?;
-
-        let mut source = AlignedSliceReader::new(data.as_slice());
+        let aligned = AlignedBytes::copy_from_slice(data, POD_BUFFER_ALIGNMENT)?;
+        let mut source = PodSliceReader::new(aligned.as_slice());
 
         let strings =
             IndexVec::read_from_bounded_with(&mut source, "debug_info strings", 1, read_string)?;
 
         let files_len = source.read_u32()?;
-        let files = source.read_aligned_slice_of::<DebugFileInfo>(files_len as usize)?.to_vec();
+        let files = source.read_pod_rows::<DebugFileInfo>(files_len as usize, "debug files")?;
 
         let locations_len = source.read_u32()?;
-        let locations = source.read_aligned_slice_of::<DebugLoc>(locations_len as usize)?.to_vec();
+        let locations =
+            source.read_pod_rows::<DebugLoc>(locations_len as usize, "debug locations")?;
 
         let types = IndexVec::read_from_bounded(&mut source, "debug_info types")?;
 
         let functions_len = source.read_u32()?;
-        let functions = source
-            .read_aligned_slice_of::<DebugFunctionInfo>(functions_len as usize)?
-            .to_vec();
+        let functions = source.read_pod_rows_with::<WireDebugFunctionInfo, _, _>(
+            functions_len as usize,
+            "debug functions",
+            |row| {
+                Ok(DebugFunctionInfo {
+                    mast_root: Word::new([
+                        read_wire_felt(row.mast_root[0])?,
+                        read_wire_felt(row.mast_root[1])?,
+                        read_wire_felt(row.mast_root[2])?,
+                        read_wire_felt(row.mast_root[3])?,
+                    ]),
+                    source_node: row.source_node,
+                    type_idx: row.type_idx,
+                    linkage_name_idx: row.linkage_name_idx,
+                    name_idx: row.name_idx,
+                    file_idx: row.file_idx,
+                    line: row.line,
+                    column: row.column,
+                })
+            },
+        )?;
 
         let nodes = IndexVec::read_from_bounded(&mut source, "debug_info nodes")?;
 
         let roots_len = source.read_u32()? as usize;
-        let roots = source.read_aligned_slice_of::<DebugSourceNodeId>(roots_len)?.to_vec();
+        let roots = source.read_pod_rows::<DebugSourceNodeId>(roots_len, "debug source roots")?;
 
         let error_messages_len = source.read_u32()? as usize;
-        let error_messages =
-            source.read_aligned_slice_of::<DebugErrorMessage>(error_messages_len)?.to_vec();
+        let error_messages = source
+            .read_pod_rows::<DebugErrorMessage>(error_messages_len, "debug error messages")?;
 
         let remaining_len = source.remaining_len();
         if remaining_len != 0 {
@@ -183,20 +189,11 @@ impl Deserializable for PackageDebugInfo {
 // DEBUG SOURCE NODE SERIALIZATION
 // ================================================================================================
 
-/// We use the same techniques with [DebugSourceNode] as [PackageDebugInfo] itself, as it is a
-/// complex record in the debug info, the largest, and contains multiple sub-tables of data linked
-/// to the node.
-///
-/// See the doc on the `Serializable` impl of `PackageDebugInfo` for details
+/// Fixed-size child and assembly-op tables use the same certified row format as
+/// [`PackageDebugInfo`].
 #[cfg(target_endian = "little")]
 impl Serializable for DebugSourceNode {
     fn write_into<W: ByteWriter>(&self, target: &mut W) {
-        // We serialize to a temporary buffer in memory with sufficient minimum capacity to hold
-        // a single DebugSourceNode.
-        //
-        // This allows us to emit padding bytes to keep specific parts of the serialized data
-        // aligned according to the required minimum alignment requirements of that data so that
-        // we can construct direct references to it during deserialization.
         let mut output = Vec::<u8>::with_capacity(
             size_of::<DebugSourceNode>()
                 + (self.asm_ops.len() * size_of::<DebugSourceAsmOp>())
@@ -207,19 +204,13 @@ impl Serializable for DebugSourceNode {
         output.write_u32(self.exec_node.into());
 
         output.write_u32(self.children.len().try_into().unwrap());
-        pad_to_align::<DebugSourceNodeId>(&mut output);
-        unsafe {
-            copy_slice_memory_to_output(self.children.as_slice(), &mut output);
-        }
+        write_pod_slice(self.children.as_slice(), &mut output);
 
         output.write_u32(self.op_start);
         output.write_u32(self.op_end);
 
         output.write_u32(self.asm_ops.len().try_into().unwrap());
-        pad_to_align::<DebugSourceAsmOp>(&mut output);
-        unsafe {
-            copy_slice_memory_to_output(self.asm_ops.as_slice(), &mut output);
-        }
+        write_pod_slice(self.asm_ops.as_slice(), &mut output);
 
         self.debug_vars.write_into(&mut output);
         self.inline_calls.write_into(&mut output);
@@ -232,28 +223,23 @@ impl Serializable for DebugSourceNode {
 #[cfg(target_endian = "little")]
 impl Deserializable for DebugSourceNode {
     fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
-        // Read the serialized data into a temporary allocation specifically aligned so that we
-        // can construct references directly into it for certain rows/tables. It is not safe to do
-        // so unless we guarantee the alignment of the entire buffer, because our padding bytes
-        // are emitted based relative to the start of the buffer.
         let data_len = read_bounded_len(source, "debug source node", 1)?;
         let data = source.read_slice(data_len)?;
-        // Keep the same base-alignment guarantee as the package-level buffer so every directly
-        // decoded row remains aligned even if new row types are shared between the two payloads.
-        let data = AlignedBytes::copy_from_slice(data, DEBUG_INFO_BUFFER_ALIGNMENT)?;
-
-        let mut source = AlignedSliceReader::new(data.as_slice());
+        let aligned = AlignedBytes::copy_from_slice(data, POD_BUFFER_ALIGNMENT)?;
+        let mut source = PodSliceReader::new(aligned.as_slice());
 
         let exec_node = MastNodeId::new_unchecked(source.read_u32()?);
 
         let children_len = source.read_u32()? as usize;
-        let children = source.read_aligned_slice_of::<DebugSourceNodeId>(children_len)?.to_vec();
+        let children =
+            source.read_pod_rows::<DebugSourceNodeId>(children_len, "debug source children")?;
 
         let op_start = source.read_u32()?;
         let op_end = source.read_u32()?;
 
         let asm_ops_len = source.read_u32()? as usize;
-        let asm_ops = source.read_aligned_slice_of::<DebugSourceAsmOp>(asm_ops_len)?.to_vec();
+        let asm_ops =
+            source.read_pod_rows::<DebugSourceAsmOp>(asm_ops_len, "debug assembly operations")?;
 
         let debug_vars = Vec::read_from(&mut source)?;
         let inline_calls = Vec::read_from(&mut source)?;
@@ -589,7 +575,7 @@ impl Deserializable for DebugFileInfo {
 // HELPER FUNCTIONS
 // ================================================================================================
 
-/// An owned byte buffer whose allocation layout is preserved until deallocation.
+/// Owns a byte allocation with the alignment required by the certified POD row types.
 struct AlignedBytes {
     ptr: Option<NonNull<u8>>,
     layout: Layout,
@@ -599,27 +585,23 @@ impl AlignedBytes {
     fn copy_from_slice(source: &[u8], alignment: usize) -> Result<Self, DeserializationError> {
         let layout = Layout::from_size_align(source.len(), alignment).map_err(|_| {
             DeserializationError::InvalidValue(format!(
-                "debug info payload size {} is too large: unable to allocate aligned buffer of sufficient size",
+                "debug info payload size {} is too large",
                 source.len()
             ))
         })?;
-
         if source.is_empty() {
             return Ok(Self { ptr: None, layout });
         }
 
-        // SAFETY: `layout` has non-zero size in this branch and was constructed successfully above.
+        // SAFETY: `layout` is non-zero and valid in this branch.
         let ptr = unsafe { alloc::alloc::alloc(layout) };
         let Some(ptr) = NonNull::new(ptr) else {
             alloc::alloc::handle_alloc_error(layout)
         };
-        // SAFETY: `ptr` points to a newly allocated block of `source.len()` bytes and therefore
-        // does not overlap `source`. Both pointers are valid for reads/writes of
-        // `source.len()` bytes.
+        // SAFETY: `ptr` owns `source.len()` writable bytes and does not overlap `source`.
         unsafe {
             ptr.as_ptr().copy_from_nonoverlapping(source.as_ptr(), source.len());
         }
-
         Ok(Self { ptr: Some(ptr), layout })
     }
 
@@ -627,8 +609,8 @@ impl AlignedBytes {
         let Some(ptr) = self.ptr else {
             return &[];
         };
-        // SAFETY: `ptr` was allocated for `layout` and remains owned by `self`, so it is valid for
-        // reads of `layout.size()` bytes for the lifetime of this borrow.
+        // SAFETY: `ptr` was allocated with `self.layout`, every byte was initialized by the copy in
+        // `copy_from_slice`, and the allocation remains owned by `self` for the returned borrow.
         unsafe { core::slice::from_raw_parts(ptr.as_ptr(), self.layout.size()) }
     }
 }
@@ -636,8 +618,7 @@ impl AlignedBytes {
 impl Drop for AlignedBytes {
     fn drop(&mut self) {
         if let Some(ptr) = self.ptr {
-            // SAFETY: `ptr` was allocated with this exact layout in `copy_from_slice`, has not been
-            // deallocated, and is never present for the zero-sized layout.
+            // SAFETY: `ptr` was allocated with this exact layout and has not been freed.
             unsafe {
                 alloc::alloc::dealloc(ptr.as_ptr(), self.layout);
             }
@@ -645,46 +626,64 @@ impl Drop for AlignedBytes {
     }
 }
 
-struct AlignedSliceReader<'a> {
+struct PodSliceReader<'a> {
     source: &'a [u8],
     pos: usize,
 }
 
-impl<'a> AlignedSliceReader<'a> {
-    /// Creates a new slice reader from the specified slice.
+impl<'a> PodSliceReader<'a> {
     fn new(source: &'a [u8]) -> Self {
-        AlignedSliceReader { source, pos: 0 }
+        Self { source, pos: 0 }
     }
 
     fn remaining_len(&self) -> usize {
         self.source.len() - self.pos
     }
 
-    fn read_aligned_slice_of<T>(&mut self, len: usize) -> Result<&[T], DeserializationError> {
+    fn read_pod_rows<T>(&mut self, len: usize, label: &str) -> Result<Vec<T>, DeserializationError>
+    where
+        T: Copy + zerocopy::FromBytes + Immutable + KnownLayout,
+    {
         self.skip_alignment_padding::<T>()?;
         let byte_len = len.checked_mul(size_of::<T>()).ok_or_else(|| {
             DeserializationError::InvalidValue(alloc::format!(
-                "aligned slice count {len} overflows element size {}",
+                "{label} row count {len} overflows row size {}",
                 size_of::<T>()
             ))
         })?;
-        if len == 0 {
-            return Ok(&[]);
-        }
         let bytes = self.read_slice(byte_len)?;
-        let ptr = bytes.as_ptr().cast::<T>();
-        if !ptr.is_aligned() {
-            return Err(DeserializationError::InvalidValue(alloc::format!(
-                "aligned slice at byte offset {} does not satisfy alignment {}",
-                self.pos - byte_len,
-                align_of::<T>(),
-            )));
-        }
-        // SAFETY: The byte range was bounds-checked above, starts at an address aligned for `T`,
-        // and spans exactly `len * size_of::<T>()` bytes. The high-throughput wire format
-        // separately requires callers to use row types whose encoded bytes are valid values
-        // of `T`.
-        Ok(unsafe { core::slice::from_raw_parts(ptr, len) })
+        let rows: &[T] = <[T] as zerocopy::FromBytes>::ref_from_bytes(bytes).map_err(|_| {
+            DeserializationError::InvalidValue(alloc::format!(
+                "{label} bytes do not form aligned POD rows"
+            ))
+        })?;
+        Ok(rows.to_vec())
+    }
+
+    fn read_pod_rows_with<T, U, F>(
+        &mut self,
+        len: usize,
+        label: &str,
+        map: F,
+    ) -> Result<Vec<U>, DeserializationError>
+    where
+        T: Copy + zerocopy::FromBytes + Immutable + KnownLayout,
+        F: FnMut(T) -> Result<U, DeserializationError>,
+    {
+        self.skip_alignment_padding::<T>()?;
+        let byte_len = len.checked_mul(size_of::<T>()).ok_or_else(|| {
+            DeserializationError::InvalidValue(alloc::format!(
+                "{label} row count {len} overflows row size {}",
+                size_of::<T>()
+            ))
+        })?;
+        let bytes = self.read_slice(byte_len)?;
+        let rows: &[T] = <[T] as zerocopy::FromBytes>::ref_from_bytes(bytes).map_err(|_| {
+            DeserializationError::InvalidValue(alloc::format!(
+                "{label} bytes do not form aligned POD rows"
+            ))
+        })?;
+        rows.iter().copied().map(map).collect()
     }
 
     fn skip_alignment_padding<T>(&mut self) -> Result<(), DeserializationError> {
@@ -698,10 +697,11 @@ impl<'a> AlignedSliceReader<'a> {
     }
 }
 
-impl ByteReader for AlignedSliceReader<'_> {
+impl ByteReader for PodSliceReader<'_> {
     fn max_alloc(&self, element_size: usize) -> usize {
-        (self.source.len() - self.pos).checked_div(element_size).unwrap_or(usize::MAX)
+        self.remaining_len().checked_div(element_size).unwrap_or(usize::MAX)
     }
+
     fn read_u8(&mut self) -> Result<u8, DeserializationError> {
         self.check_eor(1)?;
         let result = self.source[self.pos];
@@ -744,26 +744,29 @@ impl ByteReader for AlignedSliceReader<'_> {
 
 fn pad_to_align<T>(output: &mut Vec<u8>) {
     let padding_required = output.len().next_multiple_of(align_of::<T>()) - output.len();
-    for _ in 0..padding_required {
-        output.write_u8(0);
-    }
+    output.resize(output.len() + padding_required, 0);
 }
 
-unsafe fn copy_slice_memory_to_output<T: Copy>(slice: &[T], output: &mut Vec<u8>) {
-    unsafe {
-        let ptr = slice.as_ptr() as *const u8;
-        let slice_layout = Layout::array::<T>(slice.len()).unwrap();
-        let range = slice.as_ptr_range();
-        let actual_size = range.end.byte_offset_from_unsigned(range.start);
-        let layout_size = slice_layout.size();
-        assert!(
-            actual_size >= layout_size,
-            "expected layout of slice of len {} ({layout_size} bytes) to be <= {actual_size} bytes",
-            slice.len()
-        );
-        let bytes = core::slice::from_raw_parts(ptr, actual_size);
-        output.write_bytes(bytes);
-    }
+fn write_pod_slice<T: IntoBytes + Immutable>(slice: &[T], target: &mut Vec<u8>) {
+    pad_to_align::<T>(target);
+    target.write_bytes(slice.as_bytes());
+}
+
+fn write_pod_rows<T, I>(rows: I, target: &mut Vec<u8>)
+where
+    T: IntoBytes + Immutable,
+    I: IntoIterator<Item = T>,
+{
+    let rows: Vec<T> = rows.into_iter().collect();
+    target.write_bytes(rows.as_bytes());
+}
+
+fn read_wire_felt(value: u64) -> Result<Felt, DeserializationError> {
+    Felt::new(value).map_err(|err| {
+        DeserializationError::InvalidValue(alloc::format!(
+            "invalid field element in debug function MAST root: {err}"
+        ))
+    })
 }
 
 fn read_string<R: ByteReader>(source: &mut R) -> Result<Arc<str>, DeserializationError> {
@@ -788,7 +791,7 @@ mod tests {
     use core::cell::Cell;
 
     use miden_assembly_syntax::ast::DebugVarLocation;
-    use miden_core::Word;
+    use miden_core::{Felt, Word};
     use miden_debug_types::{ByteIndex, ColumnNumber, LineNumber, Location, Uri};
 
     use super::*;
@@ -865,46 +868,31 @@ mod tests {
     }
 
     #[test]
-    fn aligned_bytes_preserves_contents_and_required_alignment() {
-        let payload = [1, 2, 3, 4, 5];
-        let data = AlignedBytes::copy_from_slice(&payload, DEBUG_INFO_BUFFER_ALIGNMENT).unwrap();
-
-        assert_eq!(data.as_slice(), payload);
-        assert_eq!(data.as_slice().as_ptr().addr() % DEBUG_INFO_BUFFER_ALIGNMENT, 0);
-    }
-
-    #[test]
-    fn aligned_bytes_handles_empty_payload() {
-        let data = AlignedBytes::copy_from_slice(&[], DEBUG_INFO_BUFFER_ALIGNMENT).unwrap();
-
-        assert!(data.ptr.is_none());
-        assert!(data.as_slice().is_empty());
-        assert_eq!(data.layout.size(), 0);
-        assert_eq!(data.layout.align(), DEBUG_INFO_BUFFER_ALIGNMENT);
-    }
-
-    #[test]
-    fn aligned_slice_reader_rejects_byte_length_overflow() {
-        let mut reader = AlignedSliceReader::new(&[]);
-        let error = reader.read_aligned_slice_of::<u64>(usize::MAX).unwrap_err();
+    fn pod_row_reader_rejects_byte_length_overflow() {
+        let mut reader = PodSliceReader::new(&[]);
+        let result = reader.read_pod_rows::<DebugErrorMessage>(usize::MAX, "test error messages");
+        let error = result.unwrap_err();
 
         let DeserializationError::InvalidValue(message) = error else {
             panic!("expected InvalidValue error");
         };
-        assert!(message.contains("overflows element size"));
+        assert!(message.contains("overflows row size"));
     }
 
     #[test]
-    fn aligned_slice_reader_supports_maximum_row_alignment() {
-        let bytes = [0u8; size_of::<DebugErrorMessage>()];
-        let data = AlignedBytes::copy_from_slice(&bytes, DEBUG_INFO_BUFFER_ALIGNMENT).unwrap();
-        let mut reader = AlignedSliceReader::new(data.as_slice());
+    fn pod_row_reader_decodes_certified_rows() {
+        let expected = DebugErrorMessage::new(42, DebugStringIdx::from(7));
+        let mut aligned = [0_u64; 2];
+        aligned.as_mut_bytes()[..size_of::<DebugErrorMessage>()]
+            .copy_from_slice(expected.as_bytes());
+        let mut reader = PodSliceReader::new(aligned.as_bytes());
+        let decoded = reader.read_pod_rows::<DebugErrorMessage>(1, "test error messages").unwrap();
 
-        assert_eq!(reader.read_aligned_slice_of::<DebugErrorMessage>(1).unwrap().len(), 1);
+        assert_eq!(decoded, [expected]);
     }
 
     #[test]
-    fn debug_variant_min_serialized_size_is_accepted_by_aligned_reader() {
+    fn debug_variant_min_serialized_size_is_accepted_by_slice_reader() {
         let variant = DebugVariantInfo {
             name_idx: DebugStringIdx::from(0),
             type_idx: None,
@@ -916,7 +904,7 @@ mod tests {
 
         assert_eq!(bytes.len(), DebugVariantInfo::min_serialized_size());
 
-        let mut reader = AlignedSliceReader::new(&bytes);
+        let mut reader = miden_core::serde::SliceReader::new(&bytes);
         let mut variants = reader.read_many_iter::<DebugVariantInfo>(1).unwrap();
         assert_eq!(variants.next().unwrap().unwrap(), variant);
         assert!(variants.next().is_none());
@@ -1111,6 +1099,45 @@ mod tests {
         let debug_info = *builder.build();
         let result = roundtrip_debug_info(&debug_info);
         assert_eq!(result.functions(), debug_info.functions());
+    }
+
+    #[test]
+    fn debug_function_v2_wire_bytes_are_stable() {
+        const EXPECTED_ROW: [u8; size_of::<WireDebugFunctionInfo>()] = [
+            1, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0,
+            0, 0, 0, 1, 0, 0, 0, 7, 0, 0, 0, 1, 0, 0, 0, 9, 0, 0, 0, 1, 0, 0, 0, 11, 0, 0, 0, 13,
+            0, 0, 0, 15, 0, 0, 0, 17, 0, 0, 0, 19, 0, 0, 0,
+        ];
+
+        let function = DebugFunctionInfo {
+            mast_root: Word::new([
+                Felt::new(1).unwrap(),
+                Felt::new(2).unwrap(),
+                Felt::new(3).unwrap(),
+                Felt::new(4).unwrap(),
+            ]),
+            source_node: Some(DebugSourceNodeId::from(7)).into(),
+            type_idx: Some(DebugTypeIdx::from(9)).into(),
+            linkage_name_idx: Some(DebugStringIdx::from(11)).into(),
+            name_idx: DebugStringIdx::from(13),
+            file_idx: DebugFileIdx::from(15),
+            line: LineIndex::from(17),
+            column: ColumnIndex::from(19),
+        };
+        let mut builder = PackageDebugInfoBuilder::default();
+        builder.add_function(function);
+        let debug_info = builder.build();
+
+        let bytes = debug_info.to_bytes();
+        assert_eq!(bytes[0], 2);
+        assert!(
+            bytes.windows(EXPECTED_ROW.len()).any(|window| window == EXPECTED_ROW),
+            "serialized debug info did not contain the expected function row",
+        );
+
+        let decoded =
+            PackageDebugInfo::read_from(&mut miden_core::serde::SliceReader::new(&bytes)).unwrap();
+        assert_eq!(decoded.functions(), [function]);
     }
 
     #[test]
