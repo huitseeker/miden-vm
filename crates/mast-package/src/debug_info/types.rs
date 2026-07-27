@@ -62,7 +62,7 @@ pub enum DebugInfoTableRemapError {
     InvalidOptionField {
         context: &'static str,
         #[source]
-        err: InvalidOptionCError,
+        err: InvalidOptionalIndexError,
     },
     /// A type row refers to a string that is not present in the source string table.
     #[error(
@@ -98,7 +98,7 @@ pub enum DebugInfoMergeError<Exec: Idx, Src: Idx> {
         forest_index: usize,
         context: &'static str,
         #[source]
-        err: InvalidOptionCError,
+        err: InvalidOptionalIndexError,
     },
     /// The package has source-keyed metadata rows without a source graph to define source IDs.
     #[error("debug info for forest {forest_index} has source-map rows but no source graph")]
@@ -262,19 +262,19 @@ impl SourceNodeIdMarker for DebugSourceNodeId {}
     zerocopy::IntoBytes,
     zerocopy::KnownLayout,
 )]
-pub struct OptionC<T: Idx> {
+pub struct OptionalIndex<T: Idx> {
     raw: [u32; 2],
     marker: PhantomData<fn() -> T>,
 }
 
-impl<T: Idx> Default for OptionC<T> {
+impl<T: Idx> Default for OptionalIndex<T> {
     #[inline(always)]
     fn default() -> Self {
         Self::none()
     }
 }
 
-impl<T: Idx> OptionC<T> {
+impl<T: Idx> OptionalIndex<T> {
     fn none() -> Self {
         Self { raw: [0, 0], marker: PhantomData }
     }
@@ -307,25 +307,14 @@ impl<T: Idx> OptionC<T> {
     /// Convert this value into an [`Option<T>`] without panicking if the underlying discriminant
     /// is out of range.
     #[inline(always)]
-    pub fn try_into_option(self) -> Result<Option<T>, InvalidOptionCError> {
+    pub fn try_into_option(self) -> Result<Option<T>, InvalidOptionalIndexError> {
         self.try_into()
-    }
-
-    pub(super) fn from_raw_parts(discriminant: u32, payload: u32) -> Self {
-        Self {
-            raw: [discriminant, payload],
-            marker: PhantomData,
-        }
-    }
-
-    pub(super) fn into_raw_parts(self) -> (u32, u32) {
-        (self.raw[0], self.raw[1])
     }
 }
 
-impl<T: Idx> Eq for OptionC<T> {}
+impl<T: Idx> Eq for OptionalIndex<T> {}
 
-impl<T: Idx> PartialEq for OptionC<T> {
+impl<T: Idx> PartialEq for OptionalIndex<T> {
     fn eq(&self, other: &Self) -> bool {
         match (self.raw[0], other.raw[0]) {
             (0, 0) => true,
@@ -336,7 +325,7 @@ impl<T: Idx> PartialEq for OptionC<T> {
     }
 }
 
-impl<T: Idx> core::fmt::Debug for OptionC<T> {
+impl<T: Idx> core::fmt::Debug for OptionalIndex<T> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self.raw[0] {
             0 => write!(f, "None"),
@@ -346,7 +335,7 @@ impl<T: Idx> core::fmt::Debug for OptionC<T> {
     }
 }
 
-impl<T: Idx> From<Option<T>> for OptionC<T> {
+impl<T: Idx> From<Option<T>> for OptionalIndex<T> {
     fn from(value: Option<T>) -> Self {
         match value {
             Some(t) => Self::some(t),
@@ -357,15 +346,15 @@ impl<T: Idx> From<Option<T>> for OptionC<T> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("invalid optional value - discriminant tag of {0} is invalid (expected 0 or 1)")]
-pub struct InvalidOptionCError(u32);
+pub struct InvalidOptionalIndexError(u32);
 
-impl<T: Idx> TryFrom<OptionC<T>> for Option<T> {
-    type Error = InvalidOptionCError;
-    fn try_from(value: OptionC<T>) -> Result<Self, Self::Error> {
+impl<T: Idx> TryFrom<OptionalIndex<T>> for Option<T> {
+    type Error = InvalidOptionalIndexError;
+    fn try_from(value: OptionalIndex<T>) -> Result<Self, Self::Error> {
         match value.raw[0] {
             0 => Ok(None),
             1 => Ok(Some(T::from(value.raw[1]))),
-            invalid => Err(InvalidOptionCError(invalid)),
+            invalid => Err(InvalidOptionalIndexError(invalid)),
         }
     }
 }
@@ -503,7 +492,7 @@ pub struct DebugSourceAsmOp {
     /// Operation index local to the reduced execution node.
     pub op_idx: u32,
     /// Source location index in the locations table
-    pub location_idx: OptionC<DebugLocIdx>,
+    pub location_idx: OptionalIndex<DebugLocIdx>,
     /// Assembly context name index in the strings table
     pub context_name_idx: DebugStringIdx,
     /// Assembly operation text index in the strings table
@@ -1192,11 +1181,11 @@ pub struct FunctionInfo<N: Idx> {
     /// This links the debug info to the compiled code if `source_node` is unknown
     pub mast_root: Word,
     /// The source occurrance this function is linked to, if known
-    pub source_node: OptionC<N>,
+    pub source_node: OptionalIndex<N>,
     /// Type signature of this function (index into type table, optional)
-    pub type_idx: OptionC<DebugTypeIdx>,
+    pub type_idx: OptionalIndex<DebugTypeIdx>,
     /// Linkage name / mangled name (index into string table, optional)
-    pub linkage_name_idx: OptionC<DebugStringIdx>,
+    pub linkage_name_idx: OptionalIndex<DebugStringIdx>,
     /// Name of the function (index into string table)
     pub name_idx: DebugStringIdx,
     /// File containing this function (index into file table)
@@ -1228,24 +1217,24 @@ impl<N: Idx> FunctionInfo<N> {
         Self {
             source_node: source_node.into(),
             name_idx,
-            linkage_name_idx: OptionC::none(),
+            linkage_name_idx: OptionalIndex::none(),
             file_idx,
             line: line.to_index(),
             column: column.to_index(),
-            type_idx: OptionC::none(),
+            type_idx: OptionalIndex::none(),
             mast_root,
         }
     }
 
     /// Sets the linkage name.
     pub fn with_linkage_name(mut self, linkage_name_idx: DebugStringIdx) -> Self {
-        self.linkage_name_idx = OptionC::some(linkage_name_idx);
+        self.linkage_name_idx = OptionalIndex::some(linkage_name_idx);
         self
     }
 
     /// Sets the type index.
     pub fn with_type(mut self, type_idx: DebugTypeIdx) -> Self {
-        self.type_idx = OptionC::some(type_idx);
+        self.type_idx = OptionalIndex::some(type_idx);
         self
     }
 }
@@ -1603,17 +1592,17 @@ mod tests {
     #[test]
     fn merge_tables_into_rejects_invalid_function_options_before_mutating_target() {
         let (mut invalid_type, function_idx) = debug_info_builder_with_function();
-        invalid_type.debug_info_mut().functions[function_idx].type_idx = OptionC::invalid(2);
+        invalid_type.debug_info_mut().functions[function_idx].type_idx = OptionalIndex::invalid(2);
         let invalid_type = invalid_type.build();
 
         let (mut invalid_linkage, function_idx) = debug_info_builder_with_function();
         invalid_linkage.debug_info_mut().functions[function_idx].linkage_name_idx =
-            OptionC::invalid(3);
+            OptionalIndex::invalid(3);
         let invalid_linkage = invalid_linkage.build();
 
         for (source, expected_context, expected_err) in [
-            (invalid_type, "debug function type", InvalidOptionCError(2)),
-            (invalid_linkage, "debug function linkage name", InvalidOptionCError(3)),
+            (invalid_type, "debug function type", InvalidOptionalIndexError(2)),
+            (invalid_linkage, "debug function linkage name", InvalidOptionalIndexError(3)),
         ] {
             let mut target = PackageDebugInfoBuilder::default();
             target.add_string("existing target string");
@@ -1646,7 +1635,7 @@ mod tests {
     #[test]
     fn merge_source_debug_rejects_invalid_function_source_option() {
         let (mut source, function_idx) = debug_info_builder_with_function();
-        source.debug_info_mut().functions[function_idx].source_node = OptionC::invalid(4);
+        source.debug_info_mut().functions[function_idx].source_node = OptionalIndex::invalid(4);
         let source = source.build();
 
         let error = PackageDebugInfo::merge_source_debug(
@@ -1660,7 +1649,7 @@ mod tests {
             DebugInfoMergeError::InvalidOptionField {
                 forest_index: 0,
                 context: "debug function source node",
-                err: InvalidOptionCError(4),
+                err: InvalidOptionalIndexError(4),
             },
         );
     }
@@ -1685,7 +1674,7 @@ mod tests {
         let context_name_idx = source.add_string("context");
         let op_name_idx = source.add_string("add");
         let mut asm_op = DebugSourceAsmOp::new(0, None, context_name_idx, op_name_idx, 1);
-        asm_op.location_idx = OptionC::invalid(5);
+        asm_op.location_idx = OptionalIndex::invalid(5);
         let mut node = source_node(block, Vec::new(), 0, 1);
         node.asm_ops.push(asm_op);
         source.add_node(node).unwrap();
@@ -1699,7 +1688,7 @@ mod tests {
             DebugInfoMergeError::InvalidOptionField {
                 forest_index: 0,
                 context: "debug source assembly op location",
-                err: InvalidOptionCError(5),
+                err: InvalidOptionalIndexError(5),
             },
         );
     }

@@ -17,10 +17,10 @@ use miden_utils_indexing::IndexVec;
 use zerocopy::{Immutable, IntoBytes, KnownLayout};
 
 use super::{
-    DEBUG_INFO_VERSION, DebugErrorMessage, DebugFieldInfo, DebugFileInfo, DebugFunctionIdx,
-    DebugFunctionInfo, DebugLoc, DebugLocIdx, DebugPrimitiveType, DebugSourceAsmOp,
-    DebugSourceInlineCall, DebugSourceNode, DebugSourceNodeId, DebugSourceVar, DebugStringIdx,
-    DebugTypeIdx, DebugTypeInfo, DebugVariantInfo, PackageDebugInfo,
+    DEBUG_INFO_VERSION, DebugErrorMessage, DebugFieldInfo, DebugFileIdx, DebugFileInfo,
+    DebugFunctionIdx, DebugFunctionInfo, DebugLoc, DebugLocIdx, DebugPrimitiveType,
+    DebugSourceAsmOp, DebugSourceInlineCall, DebugSourceNode, DebugSourceNodeId, DebugSourceVar,
+    DebugStringIdx, DebugTypeIdx, DebugTypeInfo, DebugVariantInfo, OptionalIndex, PackageDebugInfo,
 };
 
 /// Base alignment for copied payloads. The assertions below ensure that this is sufficient for
@@ -36,45 +36,19 @@ const _: () = {
     assert!(align_of::<DebugSourceAsmOp>() <= POD_BUFFER_ALIGNMENT);
 };
 
-/// Wire form of an optional index. Byte arrays make little-endian encoding explicit, while keeping
-/// invalid discriminants representable for later validation.
-#[repr(C)]
-#[derive(Clone, Copy, zerocopy::FromBytes, Immutable, IntoBytes, KnownLayout)]
-struct WireOptionU32 {
-    discriminant: [u8; 4],
-    payload: [u8; 4],
-}
-
-impl WireOptionU32 {
-    fn from_option<T: miden_utils_indexing::Idx>(value: super::OptionC<T>) -> Self {
-        let (discriminant, payload) = value.into_raw_parts();
-        Self {
-            discriminant: discriminant.to_le_bytes(),
-            payload: payload.to_le_bytes(),
-        }
-    }
-
-    fn into_option<T: miden_utils_indexing::Idx>(self) -> super::OptionC<T> {
-        super::OptionC::from_raw_parts(
-            u32::from_le_bytes(self.discriminant),
-            u32::from_le_bytes(self.payload),
-        )
-    }
-}
-
 /// Wire form of [`DebugFunctionInfo`]. The domain type cannot be decoded from arbitrary bytes
 /// because its field elements must be validated before constructing a [`Word`].
 #[repr(C, align(8))]
 #[derive(Clone, Copy, zerocopy::FromBytes, Immutable, IntoBytes, KnownLayout)]
 struct WireDebugFunctionInfo {
-    mast_root: [[u8; 8]; 4],
-    source_node: WireOptionU32,
-    type_idx: WireOptionU32,
-    linkage_name_idx: WireOptionU32,
-    name_idx: [u8; 4],
-    file_idx: [u8; 4],
-    line: [u8; 4],
-    column: [u8; 4],
+    mast_root: [u64; 4],
+    source_node: OptionalIndex<DebugSourceNodeId>,
+    type_idx: OptionalIndex<DebugTypeIdx>,
+    linkage_name_idx: OptionalIndex<DebugStringIdx>,
+    name_idx: DebugStringIdx,
+    file_idx: DebugFileIdx,
+    line: LineIndex,
+    column: ColumnIndex,
 }
 
 // PACKAGE DEBUG INFO SERIALIZATION
@@ -103,17 +77,16 @@ impl Serializable for PackageDebugInfo {
         pad_to_align::<WireDebugFunctionInfo>(&mut output);
         write_pod_rows(
             self.functions().iter().map(|row| {
-                let mast_root =
-                    row.mast_root.into_elements().map(|felt| felt.as_canonical_u64().to_le_bytes());
+                let mast_root = row.mast_root.into_elements().map(|felt| felt.as_canonical_u64());
                 WireDebugFunctionInfo {
                     mast_root,
-                    source_node: WireOptionU32::from_option(row.source_node),
-                    type_idx: WireOptionU32::from_option(row.type_idx),
-                    linkage_name_idx: WireOptionU32::from_option(row.linkage_name_idx),
-                    name_idx: u32::from(row.name_idx).to_le_bytes(),
-                    file_idx: u32::from(row.file_idx).to_le_bytes(),
-                    line: row.line.to_u32().to_le_bytes(),
-                    column: row.column.to_u32().to_le_bytes(),
+                    source_node: row.source_node,
+                    type_idx: row.type_idx,
+                    linkage_name_idx: row.linkage_name_idx,
+                    name_idx: row.name_idx,
+                    file_idx: row.file_idx,
+                    line: row.line,
+                    column: row.column,
                 }
             }),
             &mut output,
@@ -172,13 +145,13 @@ impl Deserializable for PackageDebugInfo {
                         read_wire_felt(row.mast_root[2])?,
                         read_wire_felt(row.mast_root[3])?,
                     ]),
-                    source_node: row.source_node.into_option(),
-                    type_idx: row.type_idx.into_option(),
-                    linkage_name_idx: row.linkage_name_idx.into_option(),
-                    name_idx: u32::from_le_bytes(row.name_idx).into(),
-                    file_idx: u32::from_le_bytes(row.file_idx).into(),
-                    line: LineIndex::from(u32::from_le_bytes(row.line)),
-                    column: ColumnIndex::from(u32::from_le_bytes(row.column)),
+                    source_node: row.source_node,
+                    type_idx: row.type_idx,
+                    linkage_name_idx: row.linkage_name_idx,
+                    name_idx: row.name_idx,
+                    file_idx: row.file_idx,
+                    line: row.line,
+                    column: row.column,
                 })
             },
         )?;
@@ -788,8 +761,8 @@ where
     target.write_bytes(rows.as_bytes());
 }
 
-fn read_wire_felt(bytes: [u8; 8]) -> Result<Felt, DeserializationError> {
-    Felt::new(u64::from_le_bytes(bytes)).map_err(|err| {
+fn read_wire_felt(value: u64) -> Result<Felt, DeserializationError> {
+    Felt::new(value).map_err(|err| {
         DeserializationError::InvalidValue(alloc::format!(
             "invalid field element in debug function MAST root: {err}"
         ))
