@@ -267,7 +267,12 @@ impl MastForestBuilder {
         let source_child_refs = self.source_child_refs_for_node_refs(&draft.child_refs);
         let node_ref = if let Some(node_ref) = self.find_node_ref_by_key(&dedup_key) {
             if self.should_replace_pending_node(node_ref, &draft) {
-                self.replace_pending_node_record_ref(node_ref, dedup_key, draft.clone());
+                self.replace_pending_node_record_ref(
+                    node_ref,
+                    dedup_key,
+                    draft.clone(),
+                    &source_child_refs,
+                );
             }
             node_ref
         } else {
@@ -304,7 +309,18 @@ impl MastForestBuilder {
         node_ref: MastNodeRef,
         key: MastNodeKey,
         draft: PendingMastNodeDraft,
+        source_child_refs: &[SourceNodeRef],
     ) {
+        // An external node is a zero-child placeholder, so every source occurrence recorded for
+        // it initially has no children. Preserve those occurrence IDs when the concrete node
+        // becomes available, but update their shape to match the replacement. This also preserves
+        // references to those occurrences from source roots, parent occurrences, and functions.
+        if let Some(source_refs) = self.source_refs_by_node_ref.get(&node_ref) {
+            for &source_ref in source_refs {
+                self.debug_info[source_ref].children = source_child_refs.to_vec();
+            }
+        }
+
         self.nodes[node_ref] = PendingMastNode {
             key,
             digest: draft.digest,
@@ -320,10 +336,11 @@ impl MastForestBuilder {
         &mut self,
         key: MastNodeKey,
         draft: PendingMastNodeDraft,
+        source_child_refs: &[SourceNodeRef],
     ) -> Result<MastNodeRef, Report> {
         if let Some(node_ref) = self.find_node_ref_by_key(&key) {
             if self.should_replace_pending_node(node_ref, &draft) {
-                self.replace_pending_node_record_ref(node_ref, key, draft);
+                self.replace_pending_node_record_ref(node_ref, key, draft, source_child_refs);
             }
             Ok(node_ref)
         } else {
@@ -422,7 +439,11 @@ impl MastForestBuilder {
             if let Some(node_ref) = self.find_reusable_node_ref_by_key(&dedup_key, &draft) {
                 node_ref
             } else {
-                self.insert_or_replace_pending_node_record_ref(dedup_key, draft.clone())?
+                self.insert_or_replace_pending_node_record_ref(
+                    dedup_key,
+                    draft.clone(),
+                    &source_child_refs,
+                )?
             };
 
         self.record_source_occurrence(node_ref, source_child_refs, &draft)?;
@@ -1852,6 +1873,69 @@ mod tests {
 
         assert!(forest.is_procedure_root(final_root));
         assert!(matches!(forest[final_root], MastNode::Block(_)));
+    }
+
+    #[test]
+    fn test_non_leaf_replacement_rebinds_external_source_occurrences() {
+        let mut builder = MastForestBuilder::new(&[]).unwrap();
+        let left_ref = builder
+            .ensure_block_ref(vec![Operation::Add], vec![], vec![], vec![], vec![])
+            .unwrap();
+        let right_ref = builder
+            .ensure_block_ref(vec![Operation::Mul], vec![], vec![], vec![], vec![])
+            .unwrap();
+        let left_source_ref = builder.latest_source_ref_for_node_ref(left_ref).unwrap();
+        let right_source_ref = builder.latest_source_ref_for_node_ref(right_ref).unwrap();
+        let join_digest = hasher::merge_in_domain(
+            &[builder.nodes[left_ref].digest, builder.nodes[right_ref].digest],
+            JoinNode::DOMAIN,
+        );
+
+        let external_ref = builder
+            .ensure_external_link_with_source_ref(join_digest, None, None, None)
+            .unwrap();
+        let external_source_ref = builder.latest_source_ref_for_node_ref(external_ref).unwrap();
+
+        let parent_digest =
+            hasher::merge_in_domain(&[join_digest, Word::default()], LoopNode::DOMAIN);
+        let parent_ref = builder
+            .intern_pending_node(PendingMastNodeDraft::new(
+                PendingMastNodeKind::Loop,
+                parent_digest,
+                vec![external_ref],
+            ))
+            .unwrap();
+        let parent_source_ref = builder.latest_source_ref_for_node_ref(parent_ref).unwrap();
+        builder.record_procedure_root_ref(parent_ref);
+
+        let concrete_ref = builder
+            .intern_pending_node(PendingMastNodeDraft::new(
+                PendingMastNodeKind::Join,
+                join_digest,
+                vec![left_ref, right_ref],
+            ))
+            .unwrap();
+        assert_eq!(concrete_ref, external_ref);
+
+        let (forest, remapping, debug_info, source_remapping) =
+            builder.build().unwrap().into_parts_with_debug_info();
+        let final_join = remapping[&concrete_ref];
+        let final_parent = remapping[&parent_ref];
+        let external_source = source_remapping[&external_source_ref];
+        let parent_source = source_remapping[&parent_source_ref];
+        let external_source = &debug_info[external_source];
+
+        assert!(matches!(forest[final_join], MastNode::Join(_)));
+        assert!(matches!(forest[final_parent], MastNode::Loop(_)));
+        assert_eq!(
+            debug_info[parent_source].children,
+            vec![source_remapping[&external_source_ref]]
+        );
+        assert_eq!(
+            external_source.children,
+            vec![source_remapping[&left_source_ref], source_remapping[&right_source_ref]],
+            "the source occurrence created for the external placeholder must match the concrete node",
+        );
     }
 
     #[test]

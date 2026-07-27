@@ -111,7 +111,11 @@ impl MastForestBuilder {
             return Ok(node_ref);
         }
 
-        let node_ref = self.insert_or_replace_pending_node_record_ref(dedup_key, draft.clone())?;
+        let node_ref = self.insert_or_replace_pending_node_record_ref(
+            dedup_key,
+            draft.clone(),
+            &source_child_refs,
+        )?;
         self.record_static_source_occurrence(node_ref, source_child_refs, &draft, source_op_range)?;
         Ok(node_ref)
     }
