@@ -791,7 +791,7 @@ mod tests {
     use core::cell::Cell;
 
     use miden_assembly_syntax::ast::DebugVarLocation;
-    use miden_core::Word;
+    use miden_core::{Felt, Word};
     use miden_debug_types::{ByteIndex, ColumnNumber, LineNumber, Location, Uri};
 
     use super::*;
@@ -1099,6 +1099,45 @@ mod tests {
         let debug_info = *builder.build();
         let result = roundtrip_debug_info(&debug_info);
         assert_eq!(result.functions(), debug_info.functions());
+    }
+
+    #[test]
+    fn debug_function_v2_wire_bytes_are_stable() {
+        const EXPECTED_ROW: [u8; size_of::<WireDebugFunctionInfo>()] = [
+            1, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0,
+            0, 0, 0, 1, 0, 0, 0, 7, 0, 0, 0, 1, 0, 0, 0, 9, 0, 0, 0, 1, 0, 0, 0, 11, 0, 0, 0, 13,
+            0, 0, 0, 15, 0, 0, 0, 17, 0, 0, 0, 19, 0, 0, 0,
+        ];
+
+        let function = DebugFunctionInfo {
+            mast_root: Word::new([
+                Felt::new(1).unwrap(),
+                Felt::new(2).unwrap(),
+                Felt::new(3).unwrap(),
+                Felt::new(4).unwrap(),
+            ]),
+            source_node: Some(DebugSourceNodeId::from(7)).into(),
+            type_idx: Some(DebugTypeIdx::from(9)).into(),
+            linkage_name_idx: Some(DebugStringIdx::from(11)).into(),
+            name_idx: DebugStringIdx::from(13),
+            file_idx: DebugFileIdx::from(15),
+            line: LineIndex::from(17),
+            column: ColumnIndex::from(19),
+        };
+        let mut builder = PackageDebugInfoBuilder::default();
+        builder.add_function(function);
+        let debug_info = builder.build();
+
+        let bytes = debug_info.to_bytes();
+        assert_eq!(bytes[0], 2);
+        assert!(
+            bytes.windows(EXPECTED_ROW.len()).any(|window| window == EXPECTED_ROW),
+            "serialized debug info did not contain the expected function row",
+        );
+
+        let decoded =
+            PackageDebugInfo::read_from(&mut miden_core::serde::SliceReader::new(&bytes)).unwrap();
+        assert_eq!(decoded.functions(), [function]);
     }
 
     #[test]
