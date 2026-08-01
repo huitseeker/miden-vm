@@ -69,6 +69,30 @@ jobs:
           rustup target add wasm32-wasip2
           make build-target-miden
 
+  wasm-simd-runtime:
+    name: WASM SIMD128 runtime check
+    needs: diffs
+    if: ${{ needs.diffs.outputs.isDocsOnly != 'true' && (needs.diffs.outputs.isVm == 'true' || needs.diffs.outputs.isCrypto == 'true' || needs.diffs.outputs.isRustWorkspace == 'true') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Cleanup large tools for build space
+        uses: ./.github/actions/cleanup-runner
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install --no-self-update
+          rustup target add wasm32-wasip1
+      - name: Install cargo-binstall
+        uses: taiki-e/install-action@a6b2e2dcd845ddd7f509ce4f3ed3d922b80cc5d9 # v2.84.0
+        with:
+          tool: cargo-binstall
+      - name: Install wasmtime
+        run: cargo binstall --no-confirm --strategies crate-meta-data wasmtime-cli@45.0.2
+      - name: Run packed Goldilocks/Poseidon2 vs scalar tests under WASM SIMD128
+        run: make test-wasm-simd
+
   fuzz-check:
     name: Check fuzz workspaces
     needs: diffs
