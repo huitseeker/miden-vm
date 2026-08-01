@@ -13,7 +13,10 @@ use miden_core::{
     WORD_SIZE, Word,
     deferred::DeferredRoot,
     field::ExtensionField,
-    program::{KernelDescriptor, MIN_STACK_DEPTH, ProgramInfo, StackInputs, StackOutputs},
+    program::{
+        KernelDescriptor, MIN_STACK_DEPTH, NUM_CLAIM_ELEMENTS, ProgramInfo, StackInputs,
+        StackOutputs,
+    },
 };
 use miden_crypto::stark::{
     air::{ReductionError, WindowAccess},
@@ -877,18 +880,15 @@ impl<EF: ExtensionField<Felt>> MultiAir<Felt, EF> for MidenMultiAir {
 
     /// Absorb statement-owned public inputs into the Fiat-Shamir challenger.
     ///
-    /// Uses a rate-aligned schedule: six 8-felt blocks, 48 felts total.
+    /// One rate-aligned block: `[CLAIM_HASH (4) | deferred_root (4)]`, where `CLAIM_HASH` is the
+    /// canonical execution-claim commitment (see `miden_core::program::ExecutionClaim`) over
+    /// `program_hash ‖ kernel_H ‖ stack_inputs ‖ stack_outputs`. With the relation digest
+    /// pre-loaded in the challenger (see `config`), the transcript state after this block
+    /// realizes the factored statement binding `H(RELATION_DIGEST ‖ CLAIM_HASH ‖ D)`.
     ///
-    /// ```text
-    /// [ kernel_H (4) | program_hash (4) ]
-    /// [ deferred_root (4) | 0,0,0,0 ]         trailing pad keeps the schedule rate-aligned
-    /// [ stack_inputs (16) ]                   two blocks
-    /// [ stack_outputs (16) ]                  two blocks
-    /// ```
-    ///
-    /// The kernel digests enter the transcript only through `kernel_H`
-    /// (see [`hash_kernel_digests`]), committing to the kernel with a fixed-size value instead
-    /// of the unbounded digest list.
+    /// The kernel digests enter the transcript only through `kernel_H` (see
+    /// [`hash_kernel_digests`]); the raw stack I/O and digest list remain public values for
+    /// constraint evaluation and are not separately absorbed.
     fn observe<C: CanObserve<Felt>>(
         &self,
         challenger: &mut C,
@@ -905,19 +905,16 @@ impl<EF: ExtensionField<Felt>> MultiAir<Felt, EF> for MidenMultiAir {
         let kernel_h = hash_kernel_digests(&aux_inputs[AUX_KERNEL_DIGESTS..]);
         let program_hash = &aux_inputs[AUX_PROGRAM_HASH..AUX_PROGRAM_HASH + WORD_SIZE];
         let deferred_root = &aux_inputs[AUX_DEFERRED_ROOT..AUX_DEFERRED_ROOT + WORD_SIZE];
-        let stack_io = air_inputs;
 
-        // Block 1: kernel_H | program_hash. Block 2: deferred_root | zero pad.
-        for &v in kernel_h.iter().chain(program_hash) {
-            challenger.observe(v);
-        }
-        for &v in deferred_root {
-            challenger.observe(v);
-        }
-        for _ in 0..WORD_SIZE {
-            challenger.observe(Felt::ZERO);
-        }
-        for &v in stack_io {
+        // Canonical claim encoding P ‖ K ‖ I ‖ O; the offset layout of
+        // `ExecutionClaim::to_elements`, pinned by `observe_matches_execution_claim_commitment`.
+        let mut claim = [Felt::ZERO; NUM_CLAIM_ELEMENTS];
+        claim[0..WORD_SIZE].copy_from_slice(program_hash);
+        claim[WORD_SIZE..2 * WORD_SIZE].copy_from_slice(&kernel_h);
+        claim[2 * WORD_SIZE..].copy_from_slice(air_inputs);
+        let claim_hash = miden_core::program::claim_commitment(&claim);
+
+        for &v in claim_hash.as_elements().iter().chain(deferred_root) {
             challenger.observe(v);
         }
     }
@@ -1024,8 +1021,9 @@ impl<EF: ExtensionField<Felt>> MultiAir<Felt, EF> for MidenMultiAir {
 /// Computes `kernel_H`, the fixed-size commitment to the kernel-procedure digests.
 ///
 /// This is the canonical [`KernelDescriptor::commitment`] value expressed over the flattened digest
-/// felts: the linear hash (`hash_elements`) of `kernel_felts`. The empty digest list yields
-/// `hash_elements(&[])`.
+/// felts: the domain-tagged linear hash (`hash_elements_in_domain` with
+/// [`miden_core::program::KERNEL_DOMAIN_TAG`]) of `kernel_felts`. The empty digest list yields
+/// the canonical empty-input value under the same domain.
 ///
 /// `kernel_H` is absorbed into the Fiat-Shamir transcript in place of the unbounded kernel
 /// digest list, committing to the kernel with a fixed-size value.
@@ -1043,7 +1041,11 @@ pub fn hash_kernel_digests(kernel_felts: &[Felt]) -> [Felt; WORD_SIZE] {
 }
 
 fn hash_kernel_input_felts(kernel_felts: &[Felt]) -> [Felt; WORD_SIZE] {
-    miden_core::chiplets::hasher::hash_elements(kernel_felts).into()
+    miden_core::chiplets::hasher::hash_elements_in_domain(
+        kernel_felts,
+        miden_core::program::KERNEL_DOMAIN_TAG,
+    )
+    .into()
 }
 
 // REDUCED-AUX BOUNDARY BUILDER
@@ -1214,11 +1216,94 @@ mod tests {
     }
 
     #[test]
+    fn hash_kernel_digests_matches_kernel_descriptor_commitment() {
+        // The transcript-side helper and `KernelDescriptor::commitment` are two computations of
+        // the same normative value; this pins them together (including the empty kernel).
+        use miden_core::Word;
+
+        let word = |a: u64| -> Word {
+            [Felt::new_unchecked(a), Felt::new_unchecked(a + 1), Felt::ZERO, Felt::ONE].into()
+        };
+        for procs in [vec![], vec![word(10)], vec![word(10), word(20), word(30)]] {
+            let descriptor = KernelDescriptor::from_hashes(procs).unwrap();
+            let flattened: Vec<Felt> =
+                descriptor.proc_hashes().iter().flat_map(|w| w.as_elements().to_vec()).collect();
+            assert_eq!(
+                Word::new(hash_kernel_digests(&flattened)),
+                descriptor.commitment(),
+                "hash_kernel_digests diverged from KernelDescriptor::commitment"
+            );
+        }
+    }
+
+    #[test]
     #[should_panic(expected = "kernel digest felts exceed KernelDescriptor::MAX_NUM_PROCEDURES")]
     fn hash_kernel_digests_rejects_too_many_digest_felts() {
         let kernel_felts = vec![Felt::ZERO; (KernelDescriptor::MAX_NUM_PROCEDURES + 1) * WORD_SIZE];
 
         let _ = hash_kernel_digests(&kernel_felts);
+    }
+
+    #[test]
+    fn observe_matches_execution_claim_commitment() {
+        // The transcript's statement block must open with exactly
+        // `ExecutionClaim::commitment()` for the same statement, followed by the deferred
+        // root — pinning `observe`'s inline claim encoding to the canonical one.
+        use miden_core::{field::QuadFelt, program::ExecutionClaim};
+
+        #[derive(Default)]
+        struct FeltSink {
+            observed: Vec<Felt>,
+        }
+        impl CanObserve<Felt> for FeltSink {
+            fn observe(&mut self, value: Felt) {
+                self.observed.push(value);
+            }
+        }
+
+        let word = |a: u64| -> Word {
+            [
+                Felt::new_unchecked(a),
+                Felt::new_unchecked(a + 1),
+                Felt::new_unchecked(a + 2),
+                Felt::new_unchecked(a + 3),
+            ]
+            .into()
+        };
+        let kernel = KernelDescriptor::from_hashes(vec![word(50), word(60)]).unwrap();
+        let program_hash = word(1);
+        let stack_inputs =
+            StackInputs::new(&[Felt::new_unchecked(5), Felt::new_unchecked(6)]).unwrap();
+        let stack_outputs = StackOutputs::new(&[Felt::new_unchecked(7)]).unwrap();
+        let deferred_root = word(90);
+
+        let claim = ExecutionClaim::from_program_info(
+            ProgramInfo::new(program_hash, kernel.clone()),
+            stack_inputs,
+            stack_outputs,
+        );
+
+        // air_inputs = I ‖ O; aux_inputs = P ‖ D ‖ kernel digest felts.
+        let mut air_inputs = [Felt::ZERO; NUM_PUBLIC_VALUES];
+        air_inputs[0..MIN_STACK_DEPTH].copy_from_slice(&stack_inputs[..]);
+        air_inputs[MIN_STACK_DEPTH..].copy_from_slice(&stack_outputs[..]);
+        let mut aux_inputs: Vec<Felt> = Vec::new();
+        aux_inputs.extend(program_hash.as_elements());
+        aux_inputs.extend(deferred_root.as_elements());
+        aux_inputs.extend(Word::words_as_elements(kernel.proc_hashes()));
+
+        let mut sink = FeltSink::default();
+        <MidenMultiAir as MultiAir<Felt, QuadFelt>>::observe(
+            &MidenMultiAir::new(),
+            &mut sink,
+            &air_inputs,
+            &aux_inputs,
+            &[10, 10, 10],
+        );
+
+        let mut expected: Vec<Felt> = claim.commitment().as_elements().to_vec();
+        expected.extend(deferred_root.as_elements());
+        assert_eq!(sink.observed, expected, "observe must emit [CLAIM_HASH | D]");
     }
 
     #[test]
