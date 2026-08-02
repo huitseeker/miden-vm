@@ -1,4 +1,6 @@
-use super::InputKey;
+use core::num::NonZeroUsize;
+
+use super::{InputKey, SELECTORS_PER_AIR};
 use crate::EXT_DEGREE;
 
 /// A contiguous region of inputs within the ACE READ layout.
@@ -18,18 +20,18 @@ impl InputRegion {
 /// Counts needed to build the ACE input layout.
 #[derive(Debug, Clone, Copy)]
 pub struct InputCounts {
+    /// Width of the preprocessed trace.
+    pub preprocessed_width: usize,
     /// Width of the main trace.
     pub width: usize,
     /// Width of the aux trace.
     pub aux_width: usize,
-    /// Number of committed boundary values (accumulator column finals).
+    /// Number of committed boundary values.
     pub num_aux_boundary: usize,
     /// Number of public inputs.
     pub num_public: usize,
     /// Number of randomness challenges used by the AIR.
     pub num_randomness: usize,
-    /// Number of periodic columns.
-    pub num_periodic: usize,
     /// Number of quotient chunks.
     pub num_quotient_chunks: usize,
 }
@@ -37,16 +39,20 @@ pub struct InputCounts {
 /// Grouped regions for the ACE input layout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct LayoutRegions {
-    /// Region containing fixed-length public values.
+    /// Region containing fixed public values.
     pub public_values: InputRegion,
     /// Region containing randomness inputs (alpha, beta).
     pub randomness: InputRegion,
+    /// Preprocessed trace OOD values at `zeta`.
+    pub preprocessed_curr: InputRegion,
     /// Main trace OOD values at `zeta`.
     pub main_curr: InputRegion,
     /// Aux trace OOD coordinates at `zeta`.
     pub aux_curr: InputRegion,
     /// Quotient chunk OOD coordinates at `zeta`.
     pub quotient_curr: InputRegion,
+    /// Preprocessed trace OOD values at `g * zeta`.
+    pub preprocessed_next: InputRegion,
     /// Main trace OOD values at `g * zeta`.
     pub main_next: InputRegion,
     /// Aux trace OOD coordinates at `g * zeta`.
@@ -59,81 +65,45 @@ pub(crate) struct LayoutRegions {
     pub stark_vars: InputRegion,
 }
 
-/// Indexes of canonical verifier scalars inside the stark-vars block.
-///
-/// Every slot in the ACE input array is an extension-field (EF) element --
-/// the circuit operates entirely in the extension field. However, some of
-/// these scalars are inherently base-field values that the MASM verifier
-/// stores as `(val, 0)` in the EF slot.
-///
-/// See the module documentation on [`super::super::dag::lower`] for how each
-/// variable enters the verifier expression.
+/// Indexes of verifier scalars inside the stark-vars block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct StarkVarIndices {
-    // -- Extension-field values (slots 0-5) --
-    /// Composition challenge `alpha` for folding constraints.
+    /// Composition challenge `alpha`.
     pub alpha: usize,
-    /// `zeta^N` where N is the trace length.
+    /// `zeta^N_max`, where `N_max` is the maximum trace length represented by the circuit.
     pub z_pow_n: usize,
-    /// `zeta^(N / max_cycle_len)` for periodic column evaluation.
+    /// Shared periodic-column basis `zeta^(N_max / shared_period)`.
     pub z_k: usize,
-    /// Precomputed first-row selector: `(z^N - 1) / (z - 1)`.
+    /// First-row selector.
     pub is_first: usize,
-    /// Precomputed last-row selector: `(z^N - 1) / (z - g^{-1})`.
+    /// Last-row selector.
     pub is_last: usize,
-    /// Precomputed transition selector: `z - g^{-1}`.
+    /// Transition selector.
     pub is_transition: usize,
-    /// Reserved word-alignment slot for the base stark-vars block (kept zero).
+    /// Reserved slot kept zero.
     pub reserved: usize,
-
-    // -- Base-field values stored as (val, 0) in EF slots --
-    /// First barycentric weight `1 / (k * s0^{k-1})`.
+    /// First barycentric weight.
     pub weight0: usize,
-    /// `f = h^N` (chunk shift ratio between cosets).
+    /// Chunk shift ratio.
     pub f: usize,
-    /// `s0 = offset^N` (first chunk shift).
+    /// First coset shift.
     pub s0: usize,
-
-    // -- Multi-AIR additions (only present when the layout was built with `num_airs >= 2`) --
-    /// Slot block for the per-AIR β coefficients and lifted selectors.
-    pub multi_air: Option<MultiAirVarIndices>,
+    /// Extra slots present only for a multi-AIR layout.
+    pub multi_air: Option<MultiAirIndices>,
 }
 
-/// Indexes of the per-AIR stark-vars slots inside a multi-AIR layout.
-///
-/// The block occupies `4 * num_airs` consecutive EF slots starting at `base`:
-/// first one β coefficient per AIR (instance order), then one
-/// `(is_first, is_last, is_transition)` lifted-selector triple per AIR.
+/// Stark-var slots added by a multi-AIR layout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct MultiAirVarIndices {
-    /// First slot of the block (the β coefficient for AIR 0).
-    pub base: usize,
-    /// Number of AIRs the layout was built for.
-    pub num_airs: usize,
+pub(crate) struct MultiAirIndices {
+    /// Number of AIR instances represented in the layout.
+    pub air_count: NonZeroUsize,
+    /// Multi-AIR fold beta slot.
+    pub fold_beta: usize,
+    /// First per-AIR selector slot.
+    pub selector_start: usize,
 }
 
-impl MultiAirVarIndices {
-    /// Slot of the β coefficient for the AIR at instance index `air`.
-    pub fn beta(&self, air: usize) -> Option<usize> {
-        (air < self.num_airs).then(|| self.base + air)
-    }
-
-    /// Slot of the lifted selector `sel` (0 = is_first, 1 = is_last, 2 = is_transition)
-    /// for the AIR at instance index `air`.
-    pub fn selector(&self, air: usize, sel: usize) -> Option<usize> {
-        (air < self.num_airs && sel < 3).then(|| self.base + self.num_airs + 3 * air + sel)
-    }
-
-    /// Total number of slots in the block.
-    pub fn width(&self) -> usize {
-        4 * self.num_airs
-    }
-}
-
-/// ACE input layout for Plonky3-based verifier logic.
-///
-/// This describes the exact ordering and alignment of inputs consumed by the
-/// ACE chiplet (READ section).
+/// ACE input layout for circuit evaluation.
 #[derive(Debug, Clone)]
 pub struct InputLayout {
     /// Grouped regions for the ACE input layout.
@@ -144,7 +114,7 @@ pub struct InputLayout {
     pub(crate) aux_rand_beta: usize,
     /// Indexes into the stark-vars region.
     pub(crate) stark: StarkVarIndices,
-    /// Total number of inputs (length of the READ section).
+    /// Total number of ACE READ inputs.
     pub total_inputs: usize,
     /// Counts used to derive the layout.
     pub counts: InputCounts,
@@ -160,15 +130,17 @@ impl InputLayout {
         self.mapper().index_of(key)
     }
 
-    /// Validate internal invariants for this layout (region sizes, key ranges, randomness inputs).
+    /// Validate internal layout invariants.
     pub(crate) fn validate(&self) {
         let mut max_end = 0usize;
         for region in [
             self.regions.public_values,
             self.regions.randomness,
+            self.regions.preprocessed_curr,
             self.regions.main_curr,
             self.regions.aux_curr,
             self.regions.quotient_curr,
+            self.regions.preprocessed_next,
             self.regions.main_next,
             self.regions.aux_next,
             self.regions.quotient_next,
@@ -179,6 +151,17 @@ impl InputLayout {
         }
 
         assert!(max_end <= self.total_inputs, "regions exceed total_inputs");
+
+        assert_eq!(
+            self.regions.preprocessed_curr.width, self.counts.preprocessed_width,
+            "preprocessed_curr width mismatch"
+        );
+        assert_eq!(
+            self.regions.preprocessed_next.width, self.counts.preprocessed_width,
+            "preprocessed_next width mismatch"
+        );
+        assert_eq!(self.regions.main_curr.width, self.counts.width, "main_curr width mismatch");
+        assert_eq!(self.regions.main_next.width, self.counts.width, "main_next width mismatch");
 
         let aux_coord_width = self.counts.aux_width * EXT_DEGREE;
         assert_eq!(self.regions.aux_curr.width, aux_coord_width, "aux_curr width mismatch");
@@ -203,7 +186,6 @@ impl InputLayout {
         let check = |name: &str, idx: usize| {
             assert!(idx >= stark_start && idx < stark_end, "stark var {name} out of range");
         };
-        // Extension-field slots.
         check("alpha", self.stark.alpha);
         check("z_pow_n", self.stark.z_pow_n);
         check("z_k", self.stark.z_k);
@@ -211,13 +193,14 @@ impl InputLayout {
         check("is_last", self.stark.is_last);
         check("is_transition", self.stark.is_transition);
         check("reserved", self.stark.reserved);
-        // Base-field slots (stored as (val, 0) in the EF slot).
         check("weight0", self.stark.weight0);
         check("f", self.stark.f);
         check("s0", self.stark.s0);
-        if let Some(multi_air) = &self.stark.multi_air {
-            check("multi_air block start", multi_air.base);
-            check("multi_air block end", multi_air.base + multi_air.width() - 1);
+        if let Some(multi_air) = self.stark.multi_air {
+            check("multi_air_fold_beta", multi_air.fold_beta);
+            for i in 0..(multi_air.air_count.get() * SELECTORS_PER_AIR) {
+                check("air_selector", multi_air.selector_start + i);
+            }
         }
 
         let rand_start = self.regions.randomness.offset;
@@ -230,5 +213,21 @@ impl InputLayout {
             self.aux_rand_beta >= rand_start && self.aux_rand_beta < rand_end,
             "aux_rand_beta out of randomness region"
         );
+    }
+}
+
+impl StarkVarIndices {
+    pub(crate) fn multi_air_fold_beta_index(&self) -> Option<usize> {
+        self.multi_air.map(|multi_air| multi_air.fold_beta)
+    }
+
+    pub(crate) fn air_selector_index(
+        &self,
+        air_index: usize,
+        selector_offset: usize,
+    ) -> Option<usize> {
+        let multi_air = self.multi_air?;
+        (air_index < multi_air.air_count.get() && selector_offset < SELECTORS_PER_AIR)
+            .then_some(multi_air.selector_start + air_index * SELECTORS_PER_AIR + selector_offset)
     }
 }

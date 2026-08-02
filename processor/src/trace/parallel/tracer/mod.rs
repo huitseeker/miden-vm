@@ -435,9 +435,9 @@ impl Tracer for CoreTraceGenerationTracer<'_> {
         processor: &ReplayProcessor,
         op_helper_registers: OperationHelperRegisters,
         current_forest: &Arc<SparseMastForest>,
-    ) {
+    ) -> Result<(), ExecutionError> {
         if self.error_encountered.is_some() {
-            return;
+            return Ok(());
         }
 
         use Continuation::*;
@@ -623,6 +623,8 @@ impl Tracer for CoreTraceGenerationTracer<'_> {
         if let Err(e) = result {
             self.error_encountered = Some(e);
         }
+
+        Ok(())
     }
 }
 
@@ -660,7 +662,7 @@ where
 mod tests {
     use alloc::vec;
 
-    use miden_core::{mast::DynNodeBuilder, precompile::PrecompileTranscriptState};
+    use miden_core::mast::DynNodeBuilder;
 
     use super::*;
     use crate::{
@@ -719,7 +721,7 @@ mod tests {
             clk: 0u32.into(),
             ctx: ContextId::root(),
             fn_hash: Word::default(),
-            pc_transcript_state: PrecompileTranscriptState::default(),
+            deferred_root: Word::default(),
         };
 
         let processor = ReplayProcessor::new(

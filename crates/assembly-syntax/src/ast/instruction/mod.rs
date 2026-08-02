@@ -271,7 +271,7 @@ pub enum Instruction {
     HornerBase,
     HornerExt,
     EvalCircuit,
-    LogPrecompile,
+    LogDeferred,
 
     // ----- exec / call -------------------------------------------------------------------------
     Exec(InvocationTarget),

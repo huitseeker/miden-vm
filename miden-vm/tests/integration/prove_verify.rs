@@ -3,14 +3,18 @@
 use alloc::sync::Arc;
 
 use miden_assembly::{Assembler, DefaultSourceManager};
-use miden_core::{precompile::PrecompileTranscriptState, proof::ExecutionProof};
+use miden_core::{
+    program::ExecutionClaim,
+    proof::{DeferredProof, ExecutionProof, StarkProof},
+};
 use miden_core_lib::CoreLibrary;
 use miden_processor::ExecutionOptions;
 use miden_prover::{
-    AdviceInputs, ProgramInfo, ProvingOptions, PublicInputs, StackInputs, StackOutputs, prove_sync,
+    AdviceInputs, ProgramInfo, ProvingOptions, StackInputs, StackOutputs, prove_partial_sync,
+    prove_sync,
 };
-use miden_utils_testing::stack_inputs_from_ints;
-use miden_verifier::verify;
+use miden_utils_testing::{recursive_verifier::generate_advice_inputs, stack_inputs_from_ints};
+use miden_verifier::{VerificationError, Verifier, verify};
 use miden_vm::{DefaultHost, HashFunction};
 
 fn assert_prove_verify(
@@ -47,18 +51,12 @@ fn assert_prove_verify(
     }
 
     if verify_recursively {
-        assert_recursive_verify(
-            program.to_info(),
-            stack_inputs,
-            stack_outputs,
-            PrecompileTranscriptState::default(),
-            &proof,
-        );
+        assert_recursive_verify(program.to_info(), stack_inputs, stack_outputs, &proof);
     }
 
     println!("Verifying proof...");
-    let security_level =
-        verify(program.into(), stack_inputs, stack_outputs, proof).expect("Verification failed");
+    let claim = ExecutionClaim::from_program_info(program.into(), stack_inputs, stack_outputs);
+    let security_level = verify(proof, claim).expect("Verification failed");
 
     println!("Verification successful! Security level: {security_level}");
 }
@@ -67,20 +65,14 @@ fn assert_recursive_verify(
     program_info: ProgramInfo,
     stack_inputs: StackInputs,
     stack_outputs: StackOutputs,
-    pc_transcript_state: PrecompileTranscriptState,
     proof: &ExecutionProof,
 ) {
-    assert_eq!(proof.hash_fn(), HashFunction::Poseidon2);
-
-    let pub_inputs =
-        PublicInputs::new(program_info, stack_inputs, stack_outputs, pc_transcript_state);
-    let verifier_inputs = miden_utils_testing::recursive_verifier::generate_advice_inputs(
-        proof.stark_proof(),
-        pub_inputs,
-    )
-    .expect("recursive verifier advice construction failed");
+    let claim = ExecutionClaim::from_program_info(program_info, stack_inputs, stack_outputs);
+    let verifier_inputs = generate_advice_inputs(proof, &claim)
+        .expect("recursive verifier advice construction failed");
 
     let source = "
+        use miden::core::sys
         use miden::core::sys::vm
 
         # Copy `count` felts (a multiple of 4) from the advice tape into memory starting at `dst`.
@@ -104,26 +96,23 @@ fn assert_recursive_verify(
         end
 
         begin
-            # Initial stack: [kernel_ptr, num_kernel_digests, stack_io_ptr, PROG0..3, log_core, log_chip].
+            # Initial stack: [claim_ptr].
 
-            # Copy kernel digests (4·num_kernel_digests felts) from advice into the caller region
-            # (kernel_ptr = 0). Build [dst=0, count=4N].
-            dup.1 mul.4 push.0
+            # Copy the claim encoding P | K | I | O (40 felts) into the claim region
+            # (claim_ptr = 4096); the kernel digest witness travels in the advice map.
+            push.40 push.4096
             exec.copy_advice_to_mem
 
-            # Copy stack i/o (32 felts) from advice into the caller region (stack_io_ptr = 4096).
-            # Build [dst=4096, count=32].
-            push.32 push.4096
-            exec.copy_advice_to_mem
-
-            exec.vm::verify_proof
+            exec.vm::verify_vm_proof
+            # => [D, num_queries, query_pow_bits, deep_pow_bits, folding_pow_bits]
+            exec.sys::truncate_stack
         end
     ";
 
     let mut test = crate::build_test!(
         source,
         &verifier_inputs.initial_stack,
-        &verifier_inputs.advice_stack,
+        &verifier_inputs.advice_stack(),
         verifier_inputs.store,
         verifier_inputs.advice_map
     );
@@ -202,7 +191,7 @@ fn test_poseidon2_prove_verify_rust_only() {
     assert_prove_verify(source, HashFunction::Poseidon2, "Poseidon2", true, false);
 }
 
-/// Equal-heights regression: tiny program where both AIRs land at MIN_TRACE_LEN.
+/// Equal-heights regression: tiny program where every AIR lands at MIN_TRACE_LEN.
 /// Catches mistakes in the MASM `air_order` reconstruction's tie-break rule.
 #[test]
 fn test_equal_heights_recursive() {
@@ -214,8 +203,8 @@ fn test_equal_heights_recursive() {
     assert_prove_verify(source, HashFunction::Poseidon2, "Poseidon2", false, true);
 }
 
-/// Hash-heavy program where `chip_height > core_height`. Regression for the
-/// per-AIR-height boundary handling on the SLICED Core trace.
+/// Hash-heavy program where chiplets grow beyond the core trace. Regression for per-AIR-height
+/// boundary handling on the sliced core trace.
 #[test]
 fn test_hash_heavy_divergent_heights() {
     let source = "
@@ -228,6 +217,22 @@ fn test_hash_heavy_divergent_heights() {
         end
     ";
     assert_prove_verify(source, HashFunction::Blake3_256, "Blake3", false, false);
+}
+
+/// Exercises the MASM recursive verifier when the Poseidon2 permutation AIR is taller than the
+/// core trace.
+#[test]
+fn test_hash_heavy_divergent_heights_recursive() {
+    let source = "
+        begin
+            padw padw padw
+            repeat.20
+                hperm
+            end
+            dropw dropw dropw
+        end
+    ";
+    assert_prove_verify(source, HashFunction::Poseidon2, "Poseidon2", false, true);
 }
 
 /// Test end-to-end proving and verification with RPX
@@ -250,29 +255,22 @@ fn test_rpx_prove_verify() {
 // ================================================================================================
 
 mod fast_parallel {
-    use alloc::{sync::Arc, vec::Vec};
+    use alloc::sync::Arc;
 
     use miden_assembly::{Assembler, DefaultSourceManager};
     use miden_core::{
-        Felt, Word,
-        events::{EventId, EventName},
-        precompile::{
-            PrecompileCommitment, PrecompileError, PrecompileRequest, PrecompileTranscript,
-            PrecompileVerifier, PrecompileVerifierRegistry,
-        },
-        proof::{ExecutionProof, HashFunction},
+        program::ExecutionClaim,
+        proof::{DeferredProof, ExecutionProof, HashFunction},
     };
-    use miden_core_lib::CoreLibrary;
     use miden_processor::{
-        DefaultHost, ExecutionOptions, FastProcessor, ProcessorState, StackInputs, StackOutputs,
-        advice::{AdviceInputs, AdviceMutation},
-        event::{EventError, EventHandler},
+        DefaultHost, ExecutionOptions, FastProcessor, StackInputs, advice::AdviceInputs,
         trace::build_trace,
     };
     use miden_prover::{
-        ProvingOptions, TraceProvingInputs, config, prove_from_trace_sync, prove_stark,
+        ProvingOptions, TraceProvingInputs, config, prove_from_trace_sync,
+        prove_partial_from_trace_sync, prove_stark,
     };
-    use miden_verifier::{verify, verify_with_precompiles};
+    use miden_verifier::verify;
     use miden_vm::{Program, TraceBuildInputs};
 
     /// Default fragment size for parallel trace generation
@@ -291,7 +289,7 @@ mod fast_parallel {
         host: &mut DefaultHost,
     ) -> TraceBuildInputs {
         FastProcessor::new_with_options(stack_inputs, advice_inputs, parallel_execution_options())
-            .expect("processor advice inputs should fit advice map limits")
+            .expect("processor should initialize with built-in precompiles")
             .execute_trace_inputs_sync(program, host)
             .expect("Fast processor execution failed")
     }
@@ -335,22 +333,34 @@ mod fast_parallel {
         // Build public inputs
         let (public_values, aux_inputs) = trace.public_inputs().to_air_inputs();
 
-        // Multi-AIR splitting: derive Core + Chiplets matrices for prove_multi.
-        let (core_matrix, chiplets_matrix) = trace.to_core_chiplets_matrices();
+        // Per-AIR matrices for prove_multi.
+        let (core_matrix, chiplets_matrix, poseidon2_matrix) = trace.to_air_matrices();
 
         // Generate proof using Blake3_256
-        let blake3_config = config::blake3_256_config(config::pcs_params());
-        let proof_bytes =
-            prove_stark(&blake3_config, core_matrix, chiplets_matrix, &public_values, &aux_inputs)
-                .expect("Proving failed");
+        let blake3_config =
+            config::blake3_256_config(config::pcs_params(), config::RELATION_DIGEST);
+        let proof_bytes = prove_stark(
+            &blake3_config,
+            core_matrix,
+            chiplets_matrix,
+            poseidon2_matrix,
+            &public_values,
+            &aux_inputs,
+        )
+        .expect("Proving failed");
 
-        let precompile_requests = trace.precompile_requests().to_vec();
-
-        let proof = ExecutionProof::new(proof_bytes, HashFunction::Blake3_256, precompile_requests);
+        // The fixture is deferred-free, so the final proof carries empty deferred material.
+        assert_eq!(trace.deferred_state().root(), miden_core::deferred::TRUE_DIGEST);
+        let proof = ExecutionProof::from_parts(
+            proof_bytes,
+            HashFunction::Blake3_256,
+            DeferredProof::empty(),
+        );
 
         // Verify the proof
-        verify(program.into(), stack_inputs, fast_stack_outputs, proof)
-            .expect("Verification failed");
+        let claim =
+            ExecutionClaim::from_program_info(program.into(), stack_inputs, fast_stack_outputs);
+        verify(proof, claim).expect("Verification failed");
     }
 
     #[test]
@@ -379,265 +389,164 @@ mod fast_parallel {
         ))
         .expect("prove_from_trace_sync failed");
 
-        verify(program.into(), stack_inputs, stack_outputs, proof).expect("Verification failed");
+        let claim = ExecutionClaim::from_program_info(program.into(), stack_inputs, stack_outputs);
+        verify(proof, claim).expect("Verification failed");
     }
 
     #[test]
-    fn test_prove_from_trace_sync_preserves_precompile_requests() {
-        let LoggedPrecompileProofFixture {
-            program,
-            stack_inputs,
-            stack_outputs,
-            proof,
-            verifier_registry,
-            expected_transcript,
-        } = prove_logged_precompile_fixture(HashFunction::Blake3_256);
-
-        let (_, pc_transcript_state) = verify_with_precompiles(
-            program.into(),
-            stack_inputs,
-            stack_outputs,
-            proof,
-            &verifier_registry,
-        )
-        .expect("proof verification with precompiles failed");
-        assert_eq!(expected_transcript.state(), pc_transcript_state);
-    }
-
-    #[test]
-    fn test_poseidon2_recursive_verify_with_precompile_requests() {
-        let LoggedPrecompileProofFixture {
-            program,
-            stack_inputs,
-            stack_outputs,
-            proof,
-            verifier_registry,
-            expected_transcript,
-        } = prove_logged_precompile_fixture(HashFunction::Poseidon2);
-
-        super::assert_recursive_verify(
-            program.to_info(),
-            stack_inputs,
-            stack_outputs,
-            expected_transcript.state(),
-            &proof,
-        );
-
-        verify_with_precompiles(
-            program.into(),
-            stack_inputs,
-            stack_outputs,
-            proof,
-            &verifier_registry,
-        )
-        .expect("proof verification with precompiles failed");
-    }
-
-    fn prove_logged_precompile_fixture(hash_fn: HashFunction) -> LoggedPrecompileProofFixture {
-        const NUM_ITERATIONS: usize = 256;
-        let fixtures = logged_precompile_fixtures(NUM_ITERATIONS);
-
-        let request_snippets = fixtures
-            .iter()
-            .map(LoggedPrecompileFixture::source_snippet)
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        let source = format!(
-            "
-                use miden::core::sys
-
-                begin
-                    {request_snippets}
-                end
-            "
-        );
-
+    fn test_prove_from_trace_sync_preserves_deferred_wire() {
+        let source = "begin log_deferred end";
         let program = Assembler::default()
-            .with_package(CoreLibrary::default().package(), miden_assembly::Linkage::Dynamic)
-            .expect("failed to load core library")
             .assemble_program("program", source)
-            .expect("failed to assemble log_precompile fixture")
+            .unwrap()
             .unwrap_program();
         let stack_inputs = StackInputs::default();
         let advice_inputs = AdviceInputs::default();
-        let mut host = DefaultHost::default();
-        let core_lib = CoreLibrary::default();
-        host.load_library(&core_lib).expect("failed to load core library into host");
-        for fixture in &fixtures {
-            host.register_handler(
-                fixture.event_name.clone(),
-                Arc::new(DummyLogPrecompileHandler::new(fixture)),
-            )
-            .expect("failed to register dummy handler");
-        }
-
+        let mut host = default_source_manager_host();
         let trace_inputs =
             execute_parallel_trace_inputs(&program, stack_inputs, advice_inputs, &mut host);
+        let expected_wire = trace_inputs
+            .deferred_state()
+            .to_wire()
+            .expect("deferred state should serialize to wire");
         assert!(
-            trace_inputs.trace_generation_context().core_trace_contexts.len() > 1,
-            "expected precompile fixture to span multiple core-trace fragments"
+            !expected_wire.entries.is_empty(),
+            "log_deferred should advance the deferred root"
         );
 
-        let (stack_outputs, proof) = prove_from_trace_sync(TraceProvingInputs::new(
+        let (stack_outputs, proof) = prove_partial_from_trace_sync(TraceProvingInputs::new(
             trace_inputs,
-            ProvingOptions::with_96_bit_security(hash_fn),
+            ProvingOptions::with_96_bit_security(HashFunction::Blake3_256),
         ))
-        .expect("prove_from_trace_sync failed");
+        .expect("prove_partial_from_trace_sync failed");
 
-        let expected_requests =
-            fixtures.iter().map(LoggedPrecompileFixture::request).collect::<Vec<_>>();
-
-        assert_eq!(proof.precompile_requests(), expected_requests.as_slice());
-
-        let verifier_registry =
-            fixtures.iter().fold(PrecompileVerifierRegistry::new(), |registry, fixture| {
-                registry.with_verifier(
-                    &fixture.event_name,
-                    Arc::new(DummyLogPrecompileVerifier::new(fixture)),
-                )
-            });
-        let transcript = verifier_registry
-            .requests_transcript(proof.precompile_requests())
-            .expect("failed to recompute deferred commitment");
-        let mut expected_transcript = PrecompileTranscript::new();
-        for fixture in &fixtures {
-            expected_transcript.record(fixture.commitment);
-        }
-        assert_eq!(transcript.state(), expected_transcript.state());
-
-        LoggedPrecompileProofFixture {
-            program,
-            stack_inputs,
-            stack_outputs,
-            proof,
-            verifier_registry,
-            expected_transcript,
-        }
+        assert_eq!(proof.deferred_proof().as_wire(), Some(&expected_wire));
+        let claim = ExecutionClaim::from_program_info(program.into(), stack_inputs, stack_outputs);
+        let (_, pending) = miden_verifier::Verifier::new()
+            .verify_partial(proof, claim)
+            .expect("partial verification failed");
+        assert_ne!(pending.root(), miden_core::deferred::TRUE_DIGEST);
+        let _state = pending.into_state();
     }
+}
 
-    struct LoggedPrecompileProofFixture {
-        program: Program,
-        stack_inputs: StackInputs,
-        stack_outputs: StackOutputs,
-        proof: ExecutionProof,
-        verifier_registry: PrecompileVerifierRegistry,
-        expected_transcript: PrecompileTranscript,
-    }
+/// Proves a trivial program and returns the claim/proof pair for API-surface tests.
+fn prove_fixture() -> (ExecutionClaim, ExecutionProof) {
+    let program = Assembler::default()
+        .assemble_program("program", "begin push.1 push.2 add swap drop end")
+        .unwrap()
+        .unwrap_program();
+    let stack_inputs = stack_inputs_from_ints([0, 1]);
+    let mut host =
+        DefaultHost::default().with_source_manager(Arc::new(DefaultSourceManager::default()));
+    let (stack_outputs, proof) = prove_sync(
+        &program,
+        stack_inputs,
+        AdviceInputs::default(),
+        &mut host,
+        ExecutionOptions::default(),
+        ProvingOptions::with_96_bit_security(HashFunction::Blake3_256),
+    )
+    .expect("Proving failed");
+    (
+        ExecutionClaim::from_program_info(program.into(), stack_inputs, stack_outputs),
+        proof,
+    )
+}
 
-    fn logged_precompile_fixtures(num_iterations: usize) -> Vec<LoggedPrecompileFixture> {
-        (0..num_iterations)
-            .flat_map(|iteration| {
-                (0..3)
-                    .map(move |slot| LoggedPrecompileFixture::for_iteration(iteration as u8, slot))
-            })
-            .collect()
-    }
+/// Like [`prove_fixture`], but produces a wire-backed partial proof via `prove_partial_sync`.
+fn prove_partial_fixture() -> (ExecutionClaim, ExecutionProof) {
+    let program = Assembler::default()
+        .assemble_program("program", "begin push.1 push.2 add swap drop end")
+        .unwrap()
+        .unwrap_program();
+    let stack_inputs = stack_inputs_from_ints([0, 1]);
+    let mut host =
+        DefaultHost::default().with_source_manager(Arc::new(DefaultSourceManager::default()));
+    let (stack_outputs, proof) = prove_partial_sync(
+        &program,
+        stack_inputs,
+        AdviceInputs::default(),
+        &mut host,
+        ExecutionOptions::default(),
+        ProvingOptions::with_96_bit_security(HashFunction::Blake3_256),
+    )
+    .expect("Proving failed");
+    (
+        ExecutionClaim::from_program_info(program.into(), stack_inputs, stack_outputs),
+        proof,
+    )
+}
 
-    #[derive(Clone)]
-    struct LoggedPrecompileFixture {
-        event_name: EventName,
-        calldata: Vec<u8>,
-        commitment: PrecompileCommitment,
-    }
+/// `verify` accepts the prover's final packages and refuses wire-backed partial material; a
+/// partial package verifies through `Verifier::verify_partial`, which hydrates the wire and
+/// returns the obligation.
+#[test]
+fn test_partial_obligation_flow() {
+    // the default prover emits final deferred material: `verify` accepts it directly
+    let (claim, proof) = prove_fixture();
+    verify(proof, claim).expect("final verification should pass");
 
-    impl LoggedPrecompileFixture {
-        fn new(event_name: EventName, calldata: [u8; 4], tag: Word, comm_calldata: Word) -> Self {
-            Self {
-                event_name,
-                calldata: calldata.into(),
-                commitment: PrecompileCommitment::new(tag, comm_calldata),
-            }
-        }
+    // a partial (wire-backed) package is refused by final verification...
+    let (claim, partial) = prove_partial_fixture();
+    assert!(matches!(
+        verify(partial.clone(), claim.clone()),
+        Err(VerificationError::UnsupportedDeferredProof)
+    ));
 
-        fn for_iteration(iteration: u8, slot: u8) -> Self {
-            let event_name =
-                EventName::from_string(format!("test::sys::log_precompile_{iteration}_{slot}"));
-            let iteration = u64::from(iteration);
-            let slot = u64::from(slot);
-            let event_id = EventId::from_name(event_name.as_str());
+    // ...and verified by the partial path, which returns the linear obligation
+    let (_, pending) = Verifier::new()
+        .verify_partial(partial, claim)
+        .expect("partial verification should pass");
+    assert_eq!(pending.root(), miden_core::deferred::TRUE_DIGEST);
+    let _state = pending.into_state();
+}
 
-            Self::new(
-                event_name,
-                [
-                    iteration as u8,
-                    slot as u8,
-                    (iteration + slot) as u8,
-                    ((iteration * 3) + slot + 1) as u8,
-                ],
-                Word::from([
-                    event_id.as_felt(),
-                    Felt::new_unchecked(iteration + 1),
-                    Felt::new_unchecked(slot + 1),
-                    Felt::new_unchecked((iteration * 3) + slot + 7),
-                ]),
-                Word::from([
-                    Felt::new_unchecked((iteration * 5) + slot + 11),
-                    Felt::new_unchecked((iteration * 7) + slot + 13),
-                    Felt::new_unchecked((iteration * 11) + slot + 17),
-                    Felt::new_unchecked((iteration * 13) + slot + 19),
-                ]),
-            )
-        }
+/// A STARK-backed deferred proof must be exactly encoded and match the root bound by the outer VM
+/// proof.
+#[test]
+fn test_deferred_stark_proof_requires_exact_encoding_and_bound_root() {
+    // a program with a deferred request binds a non-TRUE deferred root into its statement
+    let source = "
+        begin
+            log_deferred
+            dropw dropw dropw
+        end
+    ";
+    let program = Assembler::default()
+        .assemble_program("program", source)
+        .unwrap()
+        .unwrap_program();
+    let stack_inputs = stack_inputs_from_ints([0, 1]);
+    let mut host =
+        DefaultHost::default().with_source_manager(Arc::new(DefaultSourceManager::default()));
+    let (stack_outputs, proof) = prove_sync(
+        &program,
+        stack_inputs,
+        AdviceInputs::default(),
+        &mut host,
+        ExecutionOptions::default(),
+        ProvingOptions::with_96_bit_security(HashFunction::Poseidon2),
+    )
+    .expect("Proving failed");
+    let claim = ExecutionClaim::from_program_info(program.into(), stack_inputs, stack_outputs);
 
-        fn event_id(&self) -> EventId {
-            self.commitment.event_id()
-        }
+    verify(proof.clone(), claim.clone()).expect("untampered deferred proof should verify");
 
-        fn request(&self) -> PrecompileRequest {
-            PrecompileRequest::new(self.event_id(), self.calldata.clone())
-        }
+    // The proof encoding is exact: an otherwise-valid proof with a trailing byte is rejected.
+    let stark = proof.miden_proof();
+    let mut proof_bytes = stark.bytes().to_vec();
+    proof_bytes.push(0);
+    let trailing = ExecutionProof::new(
+        StarkProof::new(proof_bytes, stark.hash_fn()),
+        proof.deferred_proof().clone(),
+    );
+    verify(trailing, claim.clone()).expect_err("trailing proof bytes must be rejected");
 
-        fn source_snippet(&self) -> String {
-            format!(
-                "emit.event(\"{event_name}\")\n\
-                 push.{tag} push.{comm}\n\
-                 exec.sys::log_precompile_request",
-                event_name = self.event_name,
-                tag = self.commitment.tag(),
-                comm = self.commitment.comm_calldata(),
-            )
-        }
-    }
-
-    #[derive(Clone)]
-    struct DummyLogPrecompileHandler {
-        event_id: EventId,
-        calldata: Vec<u8>,
-    }
-
-    impl DummyLogPrecompileHandler {
-        fn new(fixture: &LoggedPrecompileFixture) -> Self {
-            Self {
-                event_id: fixture.event_id(),
-                calldata: fixture.calldata.clone(),
-            }
-        }
-    }
-
-    impl EventHandler for DummyLogPrecompileHandler {
-        fn on_event(&self, _process: &ProcessorState) -> Result<Vec<AdviceMutation>, EventError> {
-            Ok(vec![AdviceMutation::extend_precompile_requests([PrecompileRequest::new(
-                self.event_id,
-                self.calldata.clone(),
-            )])])
-        }
-    }
-
-    #[derive(Clone)]
-    struct DummyLogPrecompileVerifier {
-        commitment: PrecompileCommitment,
-    }
-
-    impl DummyLogPrecompileVerifier {
-        fn new(fixture: &LoggedPrecompileFixture) -> Self {
-            Self { commitment: fixture.commitment }
-        }
-    }
-
-    impl PrecompileVerifier for DummyLogPrecompileVerifier {
-        fn verify(&self, _calldata: &[u8]) -> Result<PrecompileCommitment, PrecompileError> {
-            Ok(self.commitment)
-        }
-    }
+    // The deferred root is statement-bound: replacing it with TRUE must fail.
+    let tampered = ExecutionProof::new(
+        StarkProof::new(stark.bytes().to_vec(), stark.hash_fn()),
+        DeferredProof::empty(),
+    );
+    assert!(verify(tampered, claim).is_err());
 }

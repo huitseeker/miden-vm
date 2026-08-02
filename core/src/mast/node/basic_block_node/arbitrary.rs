@@ -15,7 +15,7 @@ use crate::{
         JoinNodeBuilder, LoopNodeBuilder, SplitNodeBuilder,
     },
     operations::{AssemblyOp, Operation},
-    program::{Kernel, Program},
+    program::{KernelDescriptor, Program},
 };
 
 // Strategy for operations without immediate values (non-control flow)
@@ -509,7 +509,7 @@ impl Arbitrary for MastForest {
                         }
                     }
 
-                    forest.finish().expect("generated MAST forest should be valid")
+                    forest.build().expect("generated MAST forest should be valid")
                 },
             )
             .boxed()
@@ -605,7 +605,7 @@ impl Arbitrary for Program {
             let node_id = builder.push_node(node_builder).expect("Failed to add node");
             builder.mark_root(node_id);
             let (forest, remapping) =
-                builder.finish_with_id_map().expect("generated program forest should be valid");
+                builder.build_with_id_map().expect("generated program forest should be valid");
             let entrypoint = remapping.get(node_id).expect("entrypoint should be retained");
 
             Program::new(Arc::new(forest), entrypoint)
@@ -618,7 +618,7 @@ impl Arbitrary for Program {
     }
 }
 
-impl Arbitrary for Kernel {
+impl Arbitrary for KernelDescriptor {
     type Parameters = ();
     type Strategy = BoxedStrategy<Self>;
 
@@ -636,7 +636,7 @@ impl Arbitrary for Kernel {
         // Strategy for generating kernel (0 to 3 words to avoid hitting MAX_NUM_PROCEDURES limit)
         prop::collection::vec(word_strategy, 0..=3)
             .prop_map(|words: Vec<Word>| {
-                Kernel::new(&words).expect("Generated kernel should be valid")
+                KernelDescriptor::new(&words).expect("Generated kernel should be valid")
             })
             .boxed()
     }

@@ -28,9 +28,12 @@ use miden_mast_package::{
 use miden_project::Linkage;
 
 use crate::{
-    Assembler, PathBuf,
+    Assembler, PathBuf, SourceSpan, Span,
     assembler::{MAX_CONTROL_FLOW_NESTING, MAX_PROC_LOCALS},
-    ast::{Module, ProcedureName, QualifiedProcedureName},
+    ast::{
+        Block, Instruction, Module, Op, Procedure, ProcedureName, QualifiedProcedureName,
+        Visibility,
+    },
     diagnostics::{IntoDiagnostic, Report},
     fmp::fmp_initialization_sequence,
     mast_forest_builder::MastForestBuilder,
@@ -67,6 +70,8 @@ fn assert_package_has_source_asm_ops(package: &Package, message: &str) {
     let has_source_asm_ops = debug_info.nodes().iter().any(|node| !node.asm_ops.is_empty());
     assert!(has_source_asm_ops, "{message}");
 }
+
+mod package;
 
 // Note: where possible, prefer insta to pretty_assertions for snapshot testing.
 //
@@ -446,10 +451,10 @@ fn get_module_by_path() {
         .assemble_library("test", foo, None::<Box<Module>>)
         .unwrap();
 
-    let foo_module_info = bundle.module_infos().next().unwrap();
-    assert_eq!(foo_module_info.path(), &PathBuf::new("::test::foo").unwrap());
+    let foo_module_descriptor = bundle.module_descriptors().next().unwrap();
+    assert_eq!(foo_module_descriptor.path(), &PathBuf::new("::test::foo").unwrap());
 
-    let (_, foo_proc) = foo_module_info.procedures().next().unwrap();
+    let (_, foo_proc) = foo_module_descriptor.procedures().next().unwrap();
     assert_eq!(foo_proc.name, ProcedureName::new("foo").unwrap());
 }
 
@@ -3903,6 +3908,7 @@ fn assert_diagnostic_lines_rejects_missing_actual_lines() {
 fn assert_diagnostic_lines_rejects_extra_actual_lines() {
     assert_diagnostic_lines!(report!("the first line\nthe second line"), "the first line");
 }
+
 // MAST TESTS
 // ================================================================================================
 
@@ -4397,7 +4403,7 @@ fn can_assemble_a_multi_module_kernel() -> Result<(), Report> {
         assembler.assemble_kernel("kernel", kernel, [helpers]).unwrap()
     };
 
-    assert_eq!(kernel_lib.to_kernel().ok().map(|k| k.proc_hashes().len()), Some(1));
+    assert_eq!(kernel_lib.to_kernel_descriptor().ok().map(|k| k.proc_hashes().len()), Some(1));
 
     Assembler::with_kernel(context.source_manager(), Arc::from(kernel_lib))?
         .assemble_program("program", PROGRAM)?;
@@ -7632,4 +7638,162 @@ fn test_num_locals_one_above_max_is_rejected() {
     let err = assemble_library_with_num_locals(&context, MAX_PROC_LOCALS + 1)
         .expect_err("assembling a procedure with MAX_PROC_LOCALS + 1 should fail");
     assert_diagnostic!(&err, "number of procedure locals 65533 exceeds the maximum of 65532");
+}
+
+/// Regression test for the AST-producer path in issue #3331.
+///
+/// The `@locals(..)` grammar cannot attach locals to a `begin`..`end` block, so the parser can
+/// never produce an entrypoint with locals. On the contrary, the AST API can, the entrypoint
+/// compiles to an ordinary procedure reachable via `Module::procedures_mut`, and
+/// `Procedure::set_num_locals` bypasses the parser entirely. An entrypoint with locals is an
+/// unrecoverable producer bug, so the invariant is enforced at the mutation site and must panic
+/// there.
+#[test]
+#[should_panic(expected = "program entrypoint cannot have locals")]
+fn test_entrypoint_with_locals_via_setter_panics() {
+    let context = TestContext::default();
+    let source = source_file!(&context, "begin push.1 drop end");
+    let mut program = context.parse_program(source).expect("failed to parse executable module");
+
+    for proc in program.procedures_mut() {
+        proc.set_num_locals(4);
+    }
+}
+
+/// The assembler keeps its own assertion as a backstop for entrypoints constructed with locals
+/// directly via `Procedure::new`, which bypasses the `set_num_locals` guard. This
+/// mirrors how the semantic analyzer lowers a `begin`..`end` block into a `main` procedure, but
+/// with a non-zero local count. See issue #3331.
+#[test]
+#[should_panic(expected = "program entrypoint cannot have locals")]
+fn test_entrypoint_with_locals_via_constructor_panics() {
+    let context = TestContext::default();
+
+    let body = Block::new(
+        SourceSpan::default(),
+        Vec::from([Op::Inst(Span::unknown(Instruction::Assertz))]),
+    );
+    let main =
+        Procedure::new(SourceSpan::default(), Visibility::Public, ProcedureName::main(), 4, body);
+
+    let mut module = Module::new_executable();
+    module
+        .define_procedure(main, context.source_manager())
+        .expect("failed to define entrypoint");
+
+    let _ = Assembler::new(context.source_manager()).assemble_program("test", module);
+}
+
+/// Pins the cycle cost of every instruction documented in
+/// `docs/src/user_docs/assembly/field_operations.md` to the number of operations the assembler
+/// actually emits, so the two cannot drift apart.
+///
+/// Cost is measured by differencing programs containing the instruction once, twice and three
+/// times: this cancels the entrypoint prologue exactly, and requiring the two deltas to agree
+/// rules out any fusion between adjacent copies.
+#[test]
+fn field_operation_cycle_costs_match_docs() {
+    // (source, documented cycles)
+    let cases: &[(&str, usize)] = &[
+        // Assertions and tests
+        ("assert", 1),
+        ("assertz", 2),
+        ("assert_eq", 2),
+        ("assert_eqw", 11),
+        // Arithmetic and Boolean operations
+        ("add", 1),
+        ("add.2", 2),
+        ("sub", 2),
+        ("sub.2", 2),
+        ("mul", 1),
+        ("mul.2", 2),
+        ("div", 2),
+        ("div.2", 2),
+        ("neg", 1),
+        ("inv", 1),
+        ("pow2", 16),
+        ("exp", 73),
+        ("exp.u8", 17),
+        ("exp.u16", 25),
+        ("exp.u32", 41),
+        ("exp.u63", 72),
+        // exp.b: small-power table for b <= 7, then 11 + floor(log2(b))
+        ("exp.0", 3),
+        ("exp.1", 1),
+        ("exp.2", 2),
+        ("exp.3", 4),
+        ("exp.4", 6),
+        ("exp.5", 8),
+        ("exp.6", 10),
+        ("exp.7", 12),
+        ("exp.8", 14),
+        ("exp.16", 15),
+        ("exp.256", 19),
+        ("ilog2", 70),
+        ("not", 1),
+        ("and", 1),
+        ("or", 1),
+        ("xor", 7),
+        // Comparison operations
+        ("eq", 1),
+        ("eq.2", 2),
+        ("neq", 2),
+        ("neq.2", 3),
+        ("lt", 17),
+        ("lt.2", 18),
+        ("lte", 18),
+        ("lte.2", 19),
+        ("gt", 16),
+        ("gt.2", 17),
+        ("gte", 17),
+        ("gte.2", 18),
+        ("is_odd", 6),
+        ("eqw", 15),
+        // Extension field operations
+        ("ext2add", 5),
+        ("ext2sub", 7),
+        ("ext2mul", 3),
+        ("ext2neg", 4),
+        ("ext2inv", 11),
+        ("ext2div", 14),
+    ];
+
+    let ops_for = |instruction: &str, copies: usize| -> usize {
+        let context = TestContext::default();
+        let body = core::iter::repeat_n(instruction, copies).collect::<Vec<_>>().join("\n    ");
+        let source = source_file!(&context, format!("begin\n    {body}\nend"));
+        let program = Assembler::new(context.source_manager())
+            .assemble_program("program", source)
+            .expect("assembly failed")
+            .unwrap_program();
+
+        program
+            .mast_forest()
+            .nodes()
+            .iter()
+            .filter_map(|node| node.get_basic_block())
+            .map(|block| block.raw_operations().count())
+            .sum()
+    };
+
+    let mut mismatches = Vec::new();
+    for (instruction, documented) in cases {
+        let (one, two, three) =
+            (ops_for(instruction, 1), ops_for(instruction, 2), ops_for(instruction, 3));
+        let (first, second) = (two - one, three - two);
+        assert_eq!(
+            first, second,
+            "{instruction}: cost is not additive across copies ({first} then {second}); \
+             the differencing measurement is not valid for this instruction"
+        );
+        if first != *documented {
+            mismatches.push(format!("  {instruction}: documented {documented}, emits {first}"));
+        }
+    }
+
+    assert!(
+        mismatches.is_empty(),
+        "field_operations.md is out of date:\n{}",
+        mismatches.join("\n")
+    );
 }

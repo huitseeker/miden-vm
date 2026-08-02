@@ -4,7 +4,7 @@ use core::ops::ControlFlow;
 use miden_mast_package::debug_info::{DebugSourceNodeId, PackageDebugInfo};
 
 use crate::{
-    BaseHost, BreakReason, ContextId, ExecutionError, Kernel, Stopper, Word,
+    BaseHost, BreakReason, ContextId, ExecutionError, KernelDescriptor, Stopper, Word,
     continuation_stack::{Continuation, ContinuationStack},
     errors::PackageSourceDebugContext,
     host::default::NoopHost,
@@ -43,7 +43,7 @@ use operations::execute_op;
 pub(crate) struct ExecutionState<'a, P, H, S, T, F> {
     pub processor: &'a mut P,
     pub continuation_stack: &'a mut ContinuationStack<F>,
-    pub kernel: &'a Kernel,
+    pub kernel: &'a KernelDescriptor,
     pub host: &'a mut H,
     pub tracer: &'a mut T,
     pub stopper: &'a S,
@@ -179,7 +179,7 @@ pub(crate) fn execute_impl<P, S, T, F>(
     processor: &mut P,
     continuation_stack: &mut ContinuationStack<F>,
     current_forest: &mut F,
-    kernel: &Kernel,
+    kernel: &KernelDescriptor,
     mut host: &mut dyn BaseHost,
     tracer: &mut T,
     stopper: &S,
@@ -207,7 +207,7 @@ pub(crate) fn execute_impl_noop_host<P, S, T, F>(
     processor: &mut P,
     continuation_stack: &mut ContinuationStack<F>,
     current_forest: &mut F,
-    kernel: &Kernel,
+    kernel: &KernelDescriptor,
     host: &mut NoopHost,
     tracer: &mut T,
     stopper: &S,
@@ -235,7 +235,7 @@ fn execute_impl_inner<P, H, S, T, F>(
     processor: &mut P,
     continuation_stack: &mut ContinuationStack<F>,
     current_forest: &mut F,
-    kernel: &Kernel,
+    kernel: &KernelDescriptor,
     host: &mut H,
     tracer: &mut T,
     stopper: &S,
@@ -277,7 +277,7 @@ fn execute_impl_with_source<P, H, S, T, F>(
     processor: &mut P,
     continuation_stack: &mut ContinuationStack<F>,
     current_forest: &mut F,
-    kernel: &Kernel,
+    kernel: &KernelDescriptor,
     host: &mut H,
     tracer: &mut T,
     stopper: &S,
@@ -410,7 +410,7 @@ fn execute_impl_pure<P, H, S, T, F>(
     processor: &mut P,
     continuation_stack: &mut ContinuationStack<F>,
     current_forest: &mut F,
-    kernel: &Kernel,
+    kernel: &KernelDescriptor,
     host: &mut H,
     tracer: &mut T,
     stopper: &S,
@@ -704,7 +704,9 @@ where
     F: ExecutableMastForest + Clone,
 {
     // Signal the end of clock cycle to tracer (before incrementing processor clock).
-    tracer.finalize_clock_cycle(processor, op_helper_registers, current_forest);
+    if let Err(e) = tracer.finalize_clock_cycle(processor, op_helper_registers, current_forest) {
+        return ControlFlow::Break(BreakReason::Err(e));
+    }
 
     // Increment the processor clock.
     processor.system_mut().increment_clock();

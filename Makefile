@@ -15,11 +15,12 @@ help:
 	@printf "  make test-assembly-syntax        # Test assembly-syntax crate\n"
 	@printf "  make test-core                   # Test core crate\n"
 	@printf "  make test-vm                     # Test miden-vm crate\n"
+	@printf "  make test-crypto                 # Test specialized crypto feature configurations\n"
 	@printf "  make test-processor              # Test processor crate\n"
 	@printf "  make test-prover                 # Test prover crate\n"
 	@printf "  make test-core-lib               # Test core-lib crate\n"
 	@printf "  make test-verifier               # Test verifier crate\n"
-	@printf "  make check-constraints          # Check core-lib constraint artifacts\n"
+	@printf "  make check-constraints           # Check core-lib constraint artifacts\n"
 	@printf "  make regenerate-constraints      # Regenerate core-lib constraint artifacts\n"
 	@printf "\nExamples:\n"
 	@printf "  make test-air test=\"some_test\" # Test specific function\n"
@@ -39,6 +40,9 @@ ALL_FEATURES             := --all-features
 # Workspace-wide test features
 WORKSPACE_TEST_FEATURES  := concurrent,testing,executable
 FAST_TEST_FEATURES       := concurrent,testing
+MIDEN_CRYPTO_FUZZ_TARGETS := smt word merkle merkle_store smt_serde partial_smt mmr crypto aead signatures
+MIDEN_SERDE_UTILS_FUZZ_TARGETS := primitives collections string vint64 goldilocks budgeted
+MIDEN_STARK_TEST_PACKAGES := -p miden-lifted-air -p miden-lifted-stark -p miden-stateful-hasher -p miden-stark-transcript
 
 # Feature sets for executable builds
 FEATURES_CONCURRENT_EXEC := --features concurrent,executable
@@ -79,8 +83,7 @@ xclippy: ## Runs Clippy with custom lint config from .cargo/config.toml
 
 
 .PHONY: fix
-fix: ## Runs Fix with configs (alias for xclippy-fix)
-	cargo +stable xclippy-fix
+fix: xclippy-fix format ## Applies automatic lint and format fixes
 
 .PHONY: xclippy-fix
 xclippy-fix: ## Runs Clippy with --fix using the same lints as xclippy
@@ -101,7 +104,7 @@ shear: ## Runs cargo-shear to find unused or misplaced dependencies
 	cargo shear
 
 .PHONY: lint
-lint: xclippy xclippy-fix format ## Runs all linting tasks: check with xclippy, fix issues, then format
+lint: xclippy format-check shear ## Runs all lint checks without modifying files
 
 # --- docs ----------------------------------------------------------------------------------------
 
@@ -168,11 +171,22 @@ test-%: ## Tests a specific crate; accepts 'test=' to pass a selector or nextest
 
 .PHONY: test-build
 test-build: ## Build the test binaries for the workspace (no run)
-	$(MAKE) core-test-build NEXTEST_PROFILE=ci FEATURES="$(WORKSPACE_TEST_FEATURES)"
+	$(MAKE) core-test-build FEATURES="$(WORKSPACE_TEST_FEATURES)"
 
 .PHONY: test
-test: ## Run all tests for the workspace
-	$(MAKE) core-test NEXTEST_PROFILE=ci FEATURES="$(WORKSPACE_TEST_FEATURES)"
+test: ## Run the standard workspace test suite
+	$(MAKE) core-test FEATURES="$(WORKSPACE_TEST_FEATURES)"
+
+.PHONY: test-crypto
+# Ordinary crypto, field, serde, derive, and Wycheproof tests run in the standard workspace suite.
+# This target only adds feature configurations which that suite does not cover.
+test-crypto: ## Run crypto tests requiring specialized feature configurations
+	cargo nextest run \
+		--profile ci \
+		--cargo-profile test-dev \
+		-p miden-crypto \
+		--features miden-crypto/persistent-forest
+	$(MAKE) test-lifted-stark
 
 .PHONY: test-docs
 test-docs: ## Run documentation tests (cargo test - nextest doesn't support doctests)
@@ -217,7 +231,41 @@ build: ## Builds with default parameters
 
 .PHONY: build-no-std
 build-no-std: ## Builds without the standard library
-	$(BUILDDOCS) cargo build --no-default-features --target wasm32-unknown-unknown --workspace --exclude miden-vm-blake3-bench
+	$(BUILDDOCS) cargo build --no-default-features --target wasm32-unknown-unknown --workspace \
+		--exclude miden-vm-blake3-bench \
+		--exclude miden-vm-synthetic-bench \
+		--exclude miden-crypto-smt-codspeed-bench \
+		--exclude miden-bench \
+		--exclude miden-crypto-wycheproof-tests
+
+.PHONY: build-target-miden
+build-target-miden: ## Builds miden-field for wasm32-wasip2 with cfg(miden)
+	RUSTFLAGS="$${RUSTFLAGS:+$$RUSTFLAGS }--cfg miden" cargo build --release -p miden-field --target wasm32-wasip2
+
+.PHONY: test-wasm-simd
+test-wasm-simd: ## Runs the packed Goldilocks/Poseidon2 vs scalar tests under WASM SIMD128 (requires wasmtime)
+	CARGO_TARGET_WASM32_WASIP1_RUNNER="wasmtime run --dir=." \
+	RUSTFLAGS="-C target-feature=+simd128" \
+	cargo test -p miden-field -p miden-crypto --no-default-features --lib --target wasm32-wasip1 -- packed
+
+.PHONY: check-fuzz
+check-fuzz: ## Checks standalone fuzz workspaces
+	cd tools/miden-core-fuzz && cargo check --locked
+	cd tools/miden-crypto-fuzz && cargo check --locked
+	cd tools/miden-serde-utils-fuzz && cargo check --locked
+
+.PHONY: fuzz-build-crypto
+fuzz-build-crypto: ## Builds imported crypto fuzz targets
+	for target in $(MIDEN_CRYPTO_FUZZ_TARGETS); do \
+		cargo +nightly fuzz build --fuzz-dir tools/miden-crypto-fuzz $$target; \
+	done
+	for target in $(MIDEN_SERDE_UTILS_FUZZ_TARGETS); do \
+		cargo +nightly fuzz build --fuzz-dir tools/miden-serde-utils-fuzz $$target; \
+	done
+
+.PHONY: test-lifted-stark
+test-lifted-stark: ## Runs imported lifted STARK crate tests with parallel feature enabled
+	cargo test $(MIDEN_STARK_TEST_PACKAGES) -F miden-lifted-stark/concurrent
 
 # --- executable ----------------------------------------------------------------------------------
 
@@ -238,12 +286,14 @@ exec-sve: ## Builds an executable with SVE acceleration enabled
 	RUSTFLAGS="-C target-feature=+sve" cargo build --profile optimized $(FEATURES_CONCURRENT_EXEC)
 
 .PHONY: regenerate-constraints
-regenerate-constraints: ## Regenerate core-lib constraint artifacts
+regenerate-constraints: ## Regenerate the checked-in constraint artifacts (MASM circuit + evaluator)
 	cargo run --package miden-core-lib --features constraints-tools --bin regenerate-constraints -- --write
+	cargo run --package miden-core-lib --features constraints-tools --bin regenerate-evaluator -- --write
 
 .PHONY: check-constraints
-check-constraints: ## Check core-lib constraint artifacts for drift
+check-constraints: ## Check the checked-in constraint artifacts for drift
 	cargo run --package miden-core-lib --features constraints-tools --bin regenerate-constraints -- --check
+	cargo run --package miden-core-lib --features constraints-tools --bin regenerate-evaluator -- --check
 
 .PHONY: exec-info
 exec-info: ## Builds an executable with log tree enabled
@@ -309,58 +359,58 @@ bench: ## Benchmarks either a specific bench or all; accepts 'benchmark=' to sel
 
 .PHONY: fuzz-mast-forest
 fuzz-mast-forest: fuzz-seeds ## Run fuzzing for MastForest deserialization
-	@cargo +nightly fuzz run mast_forest_deserialize --release --fuzz-dir miden-core-fuzz
+	@cargo +nightly fuzz run mast_forest_deserialize --release --fuzz-dir tools/miden-core-fuzz
 
 .PHONY: fuzz-mast-validate
 fuzz-mast-validate: fuzz-seeds ## Run fuzzing for UntrustedMastForest validation
-	@cargo +nightly fuzz run mast_forest_validate --release --fuzz-dir miden-core-fuzz
+	@cargo +nightly fuzz run mast_forest_validate --release --fuzz-dir tools/miden-core-fuzz
 
 .PHONY: fuzz-mast-node-info
 fuzz-mast-node-info: fuzz-seeds ## Run fuzzing for SerializedMastForest node metadata access
-	@cargo +nightly fuzz run mast_node_info --release --fuzz-dir miden-core-fuzz
+	@cargo +nightly fuzz run mast_node_info --release --fuzz-dir tools/miden-core-fuzz
 
 .PHONY: fuzz-mast-forest-wire-view
 fuzz-mast-forest-wire-view: fuzz-seeds ## Run fuzzing for MastForestWireView structural inspection
-	@cargo +nightly fuzz run mast_forest_wire_view_new --release --fuzz-dir miden-core-fuzz
+	@cargo +nightly fuzz run mast_forest_wire_view_new --release --fuzz-dir tools/miden-core-fuzz
 
 .PHONY: fuzz-all
 fuzz-all: fuzz-seeds ## Run all fuzz targets (in sequence)
 	FAILED=0; \
-	cargo +nightly fuzz run mast_forest_deserialize --release --fuzz-dir miden-core-fuzz -- -max_total_time=300 || FAILED=1; \
-	cargo +nightly fuzz run mast_forest_serde_deserialize --release --fuzz-dir miden-core-fuzz -- -max_total_time=300 || FAILED=1; \
-	cargo +nightly fuzz run mast_forest_validate --release --fuzz-dir miden-core-fuzz -- -max_total_time=300 || FAILED=1; \
-	cargo +nightly fuzz run mast_node_info --release --fuzz-dir miden-core-fuzz -- -max_total_time=300 || FAILED=1; \
-	cargo +nightly fuzz run mast_forest_wire_view_new --release --fuzz-dir miden-core-fuzz -- -max_total_time=300 || FAILED=1; \
-	cargo +nightly fuzz run basic_block_data --release --fuzz-dir miden-core-fuzz -- -max_total_time=300 || FAILED=1; \
-	cargo +nightly fuzz run debug_info --release --fuzz-dir miden-core-fuzz -- -max_total_time=300 || FAILED=1; \
-	cargo +nightly fuzz run program_deserialize --release --fuzz-dir miden-core-fuzz -- -max_total_time=300 || FAILED=1; \
-	cargo +nightly fuzz run program_serde_deserialize --release --fuzz-dir miden-core-fuzz -- -max_total_time=300 || FAILED=1; \
-	cargo +nightly fuzz run kernel_deserialize --release --fuzz-dir miden-core-fuzz -- -max_total_time=300 || FAILED=1; \
-	cargo +nightly fuzz run kernel_serde_deserialize --release --fuzz-dir miden-core-fuzz -- -max_total_time=300 || FAILED=1; \
-	cargo +nightly fuzz run stack_io_deserialize --release --fuzz-dir miden-core-fuzz -- -max_total_time=300 || FAILED=1; \
-	cargo +nightly fuzz run advice_map_serde_deserialize --release --fuzz-dir miden-core-fuzz -- -max_total_time=300 || FAILED=1; \
-	cargo +nightly fuzz run advice_inputs_deserialize --release --fuzz-dir miden-core-fuzz -- -max_total_time=300 || FAILED=1; \
-	cargo +nightly fuzz run operation_deserialize --release --fuzz-dir miden-core-fuzz -- -max_total_time=300 || FAILED=1; \
-	cargo +nightly fuzz run operation_serde_deserialize --release --fuzz-dir miden-core-fuzz -- -max_total_time=300 || FAILED=1; \
-	cargo +nightly fuzz run execution_proof_deserialize --release --fuzz-dir miden-core-fuzz -- -max_total_time=300 || FAILED=1; \
-	cargo +nightly fuzz run execution_proof_serde_deserialize --release --fuzz-dir miden-core-fuzz -- -max_total_time=300 || FAILED=1; \
-	cargo +nightly fuzz run precompile_request_deserialize --release --fuzz-dir miden-core-fuzz -- -max_total_time=300 || FAILED=1; \
-	cargo +nightly fuzz run precompile_request_serde_deserialize --release --fuzz-dir miden-core-fuzz -- -max_total_time=300 || FAILED=1; \
-	cargo +nightly fuzz run package_deserialize --release --fuzz-dir miden-core-fuzz -- -max_total_time=300 || FAILED=1; \
-	cargo +nightly fuzz run package_semantic_deserialize --release --fuzz-dir miden-core-fuzz -- -max_total_time=300 || FAILED=1; \
-	cargo +nightly fuzz run project_toml_parse --release --fuzz-dir miden-core-fuzz -- -max_total_time=300 || FAILED=1; \
-	cargo +nightly fuzz run project_load --release --fuzz-dir miden-core-fuzz -- -max_total_time=300 || FAILED=1; \
-	cargo +nightly fuzz run project_assemble --release --fuzz-dir miden-core-fuzz -- -max_total_time=300 || FAILED=1; \
+	cargo +nightly fuzz run mast_forest_deserialize --release --fuzz-dir tools/miden-core-fuzz -- -max_total_time=300 || FAILED=1; \
+	cargo +nightly fuzz run mast_forest_serde_deserialize --release --fuzz-dir tools/miden-core-fuzz -- -max_total_time=300 || FAILED=1; \
+	cargo +nightly fuzz run mast_forest_validate --release --fuzz-dir tools/miden-core-fuzz -- -max_total_time=300 || FAILED=1; \
+	cargo +nightly fuzz run mast_node_info --release --fuzz-dir tools/miden-core-fuzz -- -max_total_time=300 || FAILED=1; \
+	cargo +nightly fuzz run mast_forest_wire_view_new --release --fuzz-dir tools/miden-core-fuzz -- -max_total_time=300 || FAILED=1; \
+	cargo +nightly fuzz run basic_block_data --release --fuzz-dir tools/miden-core-fuzz -- -max_total_time=300 || FAILED=1; \
+	cargo +nightly fuzz run debug_info --release --fuzz-dir tools/miden-core-fuzz -- -max_total_time=300 || FAILED=1; \
+	cargo +nightly fuzz run program_deserialize --release --fuzz-dir tools/miden-core-fuzz -- -max_total_time=300 || FAILED=1; \
+	cargo +nightly fuzz run program_serde_deserialize --release --fuzz-dir tools/miden-core-fuzz -- -max_total_time=300 || FAILED=1; \
+	cargo +nightly fuzz run kernel_deserialize --release --fuzz-dir tools/miden-core-fuzz -- -max_total_time=300 || FAILED=1; \
+	cargo +nightly fuzz run kernel_serde_deserialize --release --fuzz-dir tools/miden-core-fuzz -- -max_total_time=300 || FAILED=1; \
+	cargo +nightly fuzz run stack_io_deserialize --release --fuzz-dir tools/miden-core-fuzz -- -max_total_time=300 || FAILED=1; \
+	cargo +nightly fuzz run advice_map_serde_deserialize --release --fuzz-dir tools/miden-core-fuzz -- -max_total_time=300 || FAILED=1; \
+	cargo +nightly fuzz run advice_inputs_deserialize --release --fuzz-dir tools/miden-core-fuzz -- -max_total_time=300 || FAILED=1; \
+	cargo +nightly fuzz run operation_deserialize --release --fuzz-dir tools/miden-core-fuzz -- -max_total_time=300 || FAILED=1; \
+	cargo +nightly fuzz run operation_serde_deserialize --release --fuzz-dir tools/miden-core-fuzz -- -max_total_time=300 || FAILED=1; \
+	cargo +nightly fuzz run execution_proof_deserialize --release --fuzz-dir tools/miden-core-fuzz -- -max_total_time=300 || FAILED=1; \
+	cargo +nightly fuzz run execution_proof_serde_deserialize --release --fuzz-dir tools/miden-core-fuzz -- -max_total_time=300 || FAILED=1; \
+	cargo +nightly fuzz run deferred_state_wire_deserialize --release --fuzz-dir tools/miden-core-fuzz -- -max_total_time=300 || FAILED=1; \
+	cargo +nightly fuzz run deferred_state_wire_serde_deserialize --release --fuzz-dir tools/miden-core-fuzz -- -max_total_time=300 || FAILED=1; \
+	cargo +nightly fuzz run package_deserialize --release --fuzz-dir tools/miden-core-fuzz -- -max_total_time=300 || FAILED=1; \
+	cargo +nightly fuzz run package_semantic_deserialize --release --fuzz-dir tools/miden-core-fuzz -- -max_total_time=300 || FAILED=1; \
+	cargo +nightly fuzz run project_toml_parse --release --fuzz-dir tools/miden-core-fuzz -- -max_total_time=300 || FAILED=1; \
+	cargo +nightly fuzz run project_load --release --fuzz-dir tools/miden-core-fuzz -- -max_total_time=300 || FAILED=1; \
+	cargo +nightly fuzz run project_assemble --release --fuzz-dir tools/miden-core-fuzz -- -max_total_time=300 || FAILED=1; \
 	exit $$FAILED
 
 .PHONY: fuzz-list
 fuzz-list: ## List available fuzz targets
-	cargo +nightly fuzz list --fuzz-dir miden-core-fuzz
+	cargo +nightly fuzz list --fuzz-dir tools/miden-core-fuzz
 
 .PHONY: fuzz-coverage
 fuzz-coverage: ## Generate coverage report for fuzz targets
-	cargo +nightly fuzz coverage mast_forest_deserialize --fuzz-dir miden-core-fuzz
-	cargo +nightly fuzz coverage mast_forest_validate --fuzz-dir miden-core-fuzz
+	cargo +nightly fuzz coverage mast_forest_deserialize --fuzz-dir tools/miden-core-fuzz
+	cargo +nightly fuzz coverage mast_forest_validate --fuzz-dir tools/miden-core-fuzz
 
 .PHONY: fuzz-seeds
 fuzz-seeds: ## Generate seed corpus files for fuzzing

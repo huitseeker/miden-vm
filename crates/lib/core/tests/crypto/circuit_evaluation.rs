@@ -1,7 +1,8 @@
 use miden_ace_codegen::{AceCircuit, AceConfig, InputKey, LayoutKind};
+use miden_air::MIDEN_AIR_COUNT;
 use miden_core::{
     Felt, ONE, ZERO,
-    advice::AdviceStackBuilder,
+    advice::AdviceStack,
     field::{BasedVectorSpace, Field, PrimeCharacteristicRing, QuadFelt},
 };
 use miden_utils_testing::rand::rand_quad_felt;
@@ -86,17 +87,21 @@ fn circuit_evaluation_prove_verify() {
 
 #[test]
 fn multi_air_eval_circuit_masm() {
-    // Exercises the combined CoreAir + ChipletsAir multi-AIR circuit. If this test
-    // passes, the codegen + MASM ACE chip are consistent for the multi-AIR shape; any
+    // Exercises the combined Miden multi-AIR circuit. If this test passes, the
+    // codegen + MASM ACE chip are consistent for the multi-AIR shape; any
     // failure in the recursive verifier (`test_poseidon2_prove_verify`) is then in the
     // input plumbing (memory layout, advice ordering, transcript binding), not in the
     // circuit.
     let config = AceConfig {
         num_quotient_chunks: 8,
         layout: LayoutKind::Masm,
-        num_airs: 2,
+        num_airs: MIDEN_AIR_COUNT,
     };
-    let circuit = miden_air::ace::build_multi_air_ace_circuit::<QuadFelt>(config).unwrap();
+    let circuit = miden_air::ace::build_multi_air_ace_circuit_for_order(
+        config,
+        &miden_air::ProofOrder::instance_order(),
+    )
+    .unwrap();
     let layout = circuit.layout().clone();
 
     let mut inputs = fill_inputs(&layout);
@@ -114,9 +119,8 @@ fn multi_air_eval_circuit_masm() {
     memory_felts.resize(padded_len, ZERO);
     let num_adv_pipe = padded_len / 8;
 
-    let mut advice_builder = AdviceStackBuilder::new();
-    advice_builder.push_for_adv_pipe(&memory_felts);
-    let adv_stack = advice_builder.build_vec_u64();
+    let mut adv_stack = AdviceStack::new();
+    adv_stack.append_for_adv_pipe(&memory_felts);
 
     let pointer = 1 << 16;
     let num_vars = encoded.num_vars();

@@ -1,16 +1,12 @@
-use alloc::{
-    collections::{BTreeSet, VecDeque},
-    vec::Vec,
-};
+use alloc::{collections::BTreeSet, vec::Vec};
 
 use miden_core::{
     Felt, WORD_SIZE, Word,
-    advice::{AdviceInputs, AdviceMap},
+    advice::{AdviceInputs, AdviceMap, AdviceStack},
     crypto::{
         hash::Poseidon2,
         merkle::{InnerNodeInfo, MerkleError, MerklePath, MerkleStore, NodeIndex},
     },
-    precompile::PrecompileRequest,
 };
 #[cfg(test)]
 use miden_core::{crypto::hash::Blake3_256, serde::Serializable};
@@ -94,17 +90,9 @@ impl MerkleStoreBudget for MerkleStore {
 /// 3. Merkle store, which contains structured data reducible to Merkle paths. The VM can request
 ///    Merkle paths from the store, as well as mutate it by updating or merging nodes contained in
 ///    the store.
-/// 4. Deferred precompile requests containing the calldata of any precompile requests made by the
-///    VM. The VM computes a commitment to the calldata of all the precompiles it requests. When
-///    verifying each call, this commitment must be recomputed and should match the one computed by
-///    the VM. After executing a program, the data in these requests can either
-///    - be included in the proof of the VM execution and verified natively alongside the VM proof,
-///      or,
-///    - used to produce a STARK proof using a precompile VM, which can be verified in the epilog of
-///      the program.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdviceProvider {
-    stack: VecDeque<Felt>,
+    stack: AdviceStack,
     map: AdviceMap,
     map_element_count: usize,
     max_map_value_size: usize,
@@ -112,10 +100,6 @@ pub struct AdviceProvider {
     store: MerkleStore,
     merkle_store_node_count: usize,
     max_merkle_store_nodes: usize,
-    pc_requests: Vec<PrecompileRequest>,
-    pc_request_calldata_bytes: usize,
-    max_pc_requests: usize,
-    max_pc_request_calldata_bytes: usize,
 }
 
 impl Default for AdviceProvider {
@@ -129,9 +113,9 @@ impl AdviceProvider {
     ///
     /// The advice map limits in `options` are enforced while loading the initial advice inputs.
     pub fn new(inputs: AdviceInputs, options: &ExecutionOptions) -> Result<Self, AdviceError> {
-        let AdviceInputs { stack, map, store } = inputs;
+        let (stack, map, store) = inputs.into_parts();
         let mut provider = Self::empty(options);
-        provider.extend_stack(stack)?;
+        provider.extend_advice_stack(stack)?;
         provider.extend_merkle_store(store.inner_nodes())?;
         provider.extend_map(&map)?;
         Ok(provider)
@@ -141,7 +125,7 @@ impl AdviceProvider {
         let store = MerkleStore::default();
         let merkle_store_node_count = store.num_internal_nodes();
         Self {
-            stack: VecDeque::new(),
+            stack: AdviceStack::new(),
             map: AdviceMap::default(),
             map_element_count: 0,
             max_map_value_size: options.max_adv_map_value_size(),
@@ -149,10 +133,6 @@ impl AdviceProvider {
             store,
             merkle_store_node_count,
             max_merkle_store_nodes: options.max_merkle_store_nodes(),
-            pc_requests: Vec::new(),
-            pc_request_calldata_bytes: 0,
-            max_pc_requests: options.max_precompile_requests(),
-            max_pc_request_calldata_bytes: options.max_precompile_request_calldata_bytes(),
         }
     }
 
@@ -178,27 +158,11 @@ impl AdviceProvider {
                 max: options.max_merkle_store_nodes(),
             });
         }
-        if self.pc_requests.len() > options.max_precompile_requests() {
-            return Err(AdviceError::PrecompileRequestCountExceeded {
-                current: 0,
-                added: self.pc_requests.len(),
-                max: options.max_precompile_requests(),
-            });
-        }
-        if self.pc_request_calldata_bytes > options.max_precompile_request_calldata_bytes() {
-            return Err(AdviceError::PrecompileRequestCalldataBudgetExceeded {
-                current: 0,
-                added: self.pc_request_calldata_bytes,
-                max: options.max_precompile_request_calldata_bytes(),
-            });
-        }
 
         self.map_element_count = map_element_count;
         self.max_map_value_size = options.max_adv_map_value_size();
         self.max_map_elements = options.max_adv_map_elements();
         self.max_merkle_store_nodes = options.max_merkle_store_nodes();
-        self.max_pc_requests = options.max_precompile_requests();
-        self.max_pc_request_calldata_bytes = options.max_precompile_request_calldata_bytes();
         Ok(())
     }
 
@@ -218,17 +182,14 @@ impl AdviceProvider {
 
     fn apply_mutation(&mut self, mutation: AdviceMutation) -> Result<(), AdviceError> {
         match mutation {
-            AdviceMutation::ExtendStack { values } => {
-                self.extend_stack(values)?;
+            AdviceMutation::ExtendStack { stack } => {
+                self.extend_advice_stack(stack)?;
             },
             AdviceMutation::ExtendMap { other } => {
                 self.extend_map(&other)?;
             },
             AdviceMutation::ExtendMerkleStore { infos } => {
                 self.extend_merkle_store(infos)?;
-            },
-            AdviceMutation::ExtendPrecompileRequests { data } => {
-                self.extend_precompile_requests(data)?;
             },
         }
         Ok(())
@@ -237,7 +198,7 @@ impl AdviceProvider {
     /// Returns a stable fingerprint of the advice state.
     ///
     /// The fingerprint is insensitive to advice-map insertion order and Merkle-store insertion
-    /// order, but it still reflects advice-stack order and precompile-request order.
+    /// order, but it still reflects advice-stack order.
     #[cfg(test)]
     #[must_use]
     pub(crate) fn fingerprint(&self) -> [u8; 32] {
@@ -259,17 +220,8 @@ impl AdviceProvider {
             .flat_map(|(value, left, right)| [value, left, right])
             .collect::<Vec<_>>()
             .to_bytes();
-        let precompile_requests = self.pc_requests.to_bytes();
-        Blake3_256::hash_iter(
-            [
-                stack.as_slice(),
-                map.as_slice(),
-                store.as_slice(),
-                precompile_requests.as_slice(),
-            ]
-            .into_iter(),
-        )
-        .into()
+        Blake3_256::hash_iter([stack.as_slice(), map.as_slice(), store.as_slice()].into_iter())
+            .into()
     }
 
     // ADVICE STACK
@@ -280,7 +232,7 @@ impl AdviceProvider {
     /// # Errors
     /// Returns an error if the advice stack is empty.
     fn pop_stack(&mut self) -> Result<Felt, AdviceError> {
-        self.stack.pop_front().ok_or(AdviceError::StackReadFailed)
+        self.stack.consume_element().ok_or(AdviceError::StackReadFailed)
     }
 
     /// Pops a word (4 elements) from the advice stack and returns it.
@@ -291,16 +243,7 @@ impl AdviceProvider {
     /// # Errors
     /// Returns an error if the advice stack does not contain a full word.
     fn pop_stack_word(&mut self) -> Result<Word, AdviceError> {
-        if self.stack.len() < 4 {
-            return Err(AdviceError::StackReadFailed);
-        }
-
-        let w0 = self.stack.pop_front().expect("checked len");
-        let w1 = self.stack.pop_front().expect("checked len");
-        let w2 = self.stack.pop_front().expect("checked len");
-        let w3 = self.stack.pop_front().expect("checked len");
-
-        Ok(Word::new([w0, w1, w2, w3]))
+        self.stack.consume_word().ok_or(AdviceError::StackReadFailed)
     }
 
     /// Pops a double word (8 elements) from the advice stack and returns them.
@@ -312,10 +255,7 @@ impl AdviceProvider {
     /// # Errors
     /// Returns an error if the advice stack does not contain two words.
     fn pop_stack_dword(&mut self) -> Result<[Word; 2], AdviceError> {
-        let word0 = self.pop_stack_word()?;
-        let word1 = self.pop_stack_word()?;
-
-        Ok([word0, word1])
+        self.stack.consume_dword().ok_or(AdviceError::StackReadFailed)
     }
 
     /// Checks that pushing `count` elements would not exceed the advice stack size limit.
@@ -337,16 +277,14 @@ impl AdviceProvider {
     /// Pushes a single value onto the advice stack.
     pub fn push_stack(&mut self, value: Felt) -> Result<(), AdviceError> {
         self.check_stack_capacity(1)?;
-        self.stack.push_front(value);
+        self.stack.push_element(value);
         Ok(())
     }
 
     /// Pushes a word (4 elements) onto the stack.
     pub fn push_stack_word(&mut self, word: &Word) -> Result<(), AdviceError> {
         self.check_stack_capacity(4)?;
-        for &value in word.iter().rev() {
-            self.stack.push_front(value);
-        }
+        self.stack.prepend_word(*word);
         Ok(())
     }
 
@@ -400,21 +338,18 @@ impl AdviceProvider {
             })?;
         self.check_stack_capacity(total_push)?;
 
+        let mut stack = AdviceStack::new();
+        if include_len {
+            stack.append_element(Felt::new_unchecked(values.len() as u64));
+        }
+        stack.append_elements(values.iter().copied());
+
         // if pad_to was provided (not equal 0), push some zeros to the advice stack so that the
         // final (padded) elements list length will be the next multiple of pad_to
         for _ in 0..num_pad_elements {
-            self.stack.push_front(Felt::default());
+            stack.append_element(Felt::default());
         }
-
-        // Treat map values as already canonical sequences of FELTs.
-        // The advice stack is LIFO; extend in reverse so that the first element of `values`
-        // becomes the first element returned by a subsequent `adv_push`.
-        for &value in values.iter().rev() {
-            self.stack.push_front(value);
-        }
-        if include_len {
-            self.stack.push_front(Felt::new_unchecked(values.len() as u64));
-        }
+        self.stack.prepend_stack(stack);
         Ok(())
     }
 
@@ -423,16 +358,10 @@ impl AdviceProvider {
         self.stack.iter().copied().collect()
     }
 
-    /// Extends the stack with the given elements.
-    pub fn extend_stack<I>(&mut self, iter: I) -> Result<(), AdviceError>
-    where
-        I: IntoIterator<Item = Felt>,
-    {
-        let values: Vec<Felt> = iter.into_iter().collect();
-        self.check_stack_capacity(values.len())?;
-        for value in values.into_iter().rev() {
-            self.stack.push_front(value);
-        }
+    /// Extends the stack with typed advice stack values.
+    pub fn extend_advice_stack(&mut self, stack: AdviceStack) -> Result<(), AdviceError> {
+        self.check_stack_capacity(stack.len())?;
+        self.stack.prepend_stack(stack);
         Ok(())
     }
 
@@ -741,93 +670,21 @@ impl AdviceProvider {
         Ok(())
     }
 
-    // PRECOMPILE REQUESTS
-    // --------------------------------------------------------------------------------------------
-
-    /// Returns a reference to the precompile requests.
-    ///
-    /// Ordering is the same as the order in which requests are issued during execution. This
-    /// ordering is relied upon when recomputing the precompile sponge during verification.
-    pub fn precompile_requests(&self) -> &[PrecompileRequest] {
-        &self.pc_requests
-    }
-
-    /// Extends the precompile requests with the given entries.
-    pub fn extend_precompile_requests<I>(&mut self, iter: I) -> Result<(), AdviceError>
-    where
-        I: IntoIterator<Item = PrecompileRequest>,
-    {
-        let requests = Vec::from_iter(iter);
-        let added_calldata_bytes = requests
-            .iter()
-            .try_fold(0usize, |acc, request| acc.checked_add(request.calldata().len()));
-        let added_calldata_bytes =
-            added_calldata_bytes.ok_or(AdviceError::PrecompileRequestCalldataBudgetExceeded {
-                current: self.pc_request_calldata_bytes,
-                added: usize::MAX,
-                max: self.max_pc_request_calldata_bytes,
-            })?;
-
-        let request_count = self.pc_requests.len().checked_add(requests.len()).ok_or(
-            AdviceError::PrecompileRequestCountExceeded {
-                current: self.pc_requests.len(),
-                added: requests.len(),
-                max: self.max_pc_requests,
-            },
-        )?;
-        if request_count > self.max_pc_requests {
-            return Err(AdviceError::PrecompileRequestCountExceeded {
-                current: self.pc_requests.len(),
-                added: requests.len(),
-                max: self.max_pc_requests,
-            });
-        }
-
-        let calldata_bytes = self
-            .pc_request_calldata_bytes
-            .checked_add(added_calldata_bytes)
-            .ok_or(AdviceError::PrecompileRequestCalldataBudgetExceeded {
-                current: self.pc_request_calldata_bytes,
-                added: added_calldata_bytes,
-                max: self.max_pc_request_calldata_bytes,
-            })?;
-        if calldata_bytes > self.max_pc_request_calldata_bytes {
-            return Err(AdviceError::PrecompileRequestCalldataBudgetExceeded {
-                current: self.pc_request_calldata_bytes,
-                added: added_calldata_bytes,
-                max: self.max_pc_request_calldata_bytes,
-            });
-        }
-
-        self.pc_request_calldata_bytes = calldata_bytes;
-        self.pc_requests.extend(requests);
-        Ok(())
-    }
-
-    /// Moves all accumulated precompile requests out of this provider, leaving it empty.
-    ///
-    /// Intended for proof packaging, where requests are serialized into the proof and no longer
-    /// needed in the provider after consumption.
-    pub fn take_precompile_requests(&mut self) -> Vec<PrecompileRequest> {
-        self.pc_request_calldata_bytes = 0;
-        core::mem::take(&mut self.pc_requests)
-    }
-
     // MUTATORS
     // --------------------------------------------------------------------------------------------
 
     /// Extends the contents of this instance with the contents of an `AdviceInputs`.
     pub fn extend_from_inputs(&mut self, inputs: &AdviceInputs) -> Result<(), AdviceError> {
-        self.extend_stack(inputs.stack.iter().cloned())?;
+        self.extend_advice_stack(inputs.advice_stack())?;
         self.extend_merkle_store(inputs.store.inner_nodes())?;
         self.extend_map(&inputs.map)
     }
 
-    /// Consumes `self` and return its parts (stack, map, store, precompile_requests).
+    /// Consumes `self` and return its parts (stack, map, store).
     ///
     /// The returned stack vector is ordered from top (index 0) to bottom.
-    pub fn into_parts(self) -> (Vec<Felt>, AdviceMap, MerkleStore, Vec<PrecompileRequest>) {
-        (self.stack.into_iter().collect(), self.map, self.store, self.pc_requests)
+    pub fn into_parts(self) -> (Vec<Felt>, AdviceMap, MerkleStore) {
+        (self.stack.into_elements(), self.map, self.store)
     }
 }
 
@@ -876,12 +733,12 @@ impl AdviceProviderInterface for AdviceProvider {
 mod tests {
     use alloc::{collections::BTreeMap, vec, vec::Vec};
 
-    use miden_core::{WORD_SIZE, events::EventId, precompile::PrecompileRequest};
+    use miden_core::WORD_SIZE;
 
     use super::AdviceProvider;
     use crate::{
         AdviceInputs, ExecutionOptions, Felt, Word,
-        advice::{AdviceError, AdviceMap},
+        advice::{AdviceError, AdviceMap, AdviceMutation, AdviceStack},
         crypto::merkle::{MerkleStore, MerkleTree},
     };
 
@@ -925,6 +782,33 @@ mod tests {
 
         assert_eq!(provider_a, provider_b);
         assert_eq!(provider_a.fingerprint(), provider_b.fingerprint());
+    }
+
+    #[test]
+    fn typed_advice_stack_mutation_prepends_values() {
+        let mut initial_stack = AdviceStack::new();
+        initial_stack.append_elements([Felt::new_unchecked(3), Felt::new_unchecked(4)]);
+        let mut mutation_stack = AdviceStack::new();
+        mutation_stack.append_elements([Felt::new_unchecked(1), Felt::new_unchecked(2)]);
+        let mut provider = AdviceProvider::new(
+            AdviceInputs::default().with_advice_stack(initial_stack),
+            &Default::default(),
+        )
+        .unwrap();
+
+        provider
+            .apply_mutations([AdviceMutation::extend_advice_stack(mutation_stack)])
+            .unwrap();
+
+        assert_eq!(
+            provider.stack(),
+            vec![
+                Felt::new_unchecked(1),
+                Felt::new_unchecked(2),
+                Felt::new_unchecked(3),
+                Felt::new_unchecked(4)
+            ]
+        );
     }
 
     #[test]
@@ -998,52 +882,6 @@ mod tests {
             err,
             AdviceError::AdvMapElementBudgetExceeded { current: 0, added: 5, max: 4 }
         ));
-    }
-
-    #[test]
-    fn precompile_requests_extend_respects_count_budget_atomically() {
-        let options = ExecutionOptions::default().with_max_precompile_requests(2);
-        let mut provider = AdviceProvider::new(AdviceInputs::default(), &options).unwrap();
-        provider.extend_precompile_requests([precompile_request(0, 1)]).unwrap();
-
-        let err = provider
-            .extend_precompile_requests([precompile_request(1, 1), precompile_request(2, 1)])
-            .unwrap_err();
-        assert!(matches!(
-            err,
-            AdviceError::PrecompileRequestCountExceeded { current: 1, added: 2, max: 2 }
-        ));
-
-        assert_eq!(provider.precompile_requests().len(), 1);
-        assert_eq!(provider.precompile_requests()[0], precompile_request(0, 1));
-    }
-
-    #[test]
-    fn precompile_requests_extend_respects_calldata_budget_atomically() {
-        let options = ExecutionOptions::default().with_max_precompile_request_calldata_bytes(3);
-        let mut provider = AdviceProvider::new(AdviceInputs::default(), &options).unwrap();
-        provider.extend_precompile_requests([precompile_request(0, 2)]).unwrap();
-
-        let err = provider.extend_precompile_requests([precompile_request(1, 2)]).unwrap_err();
-        assert!(matches!(
-            err,
-            AdviceError::PrecompileRequestCalldataBudgetExceeded { current: 2, added: 2, max: 3 }
-        ));
-
-        assert_eq!(provider.precompile_requests().len(), 1);
-        assert_eq!(provider.precompile_requests()[0], precompile_request(0, 2));
-    }
-
-    #[test]
-    fn take_precompile_requests_resets_calldata_budget() {
-        let options = ExecutionOptions::default().with_max_precompile_request_calldata_bytes(2);
-        let mut provider = AdviceProvider::new(AdviceInputs::default(), &options).unwrap();
-        provider.extend_precompile_requests([precompile_request(0, 2)]).unwrap();
-
-        assert_eq!(provider.take_precompile_requests(), vec![precompile_request(0, 2)]);
-
-        provider.extend_precompile_requests([precompile_request(1, 2)]).unwrap();
-        assert_eq!(provider.precompile_requests(), &[precompile_request(1, 2)]);
     }
 
     #[test]
@@ -1196,11 +1034,6 @@ mod tests {
         })
         .collect::<BTreeMap<_, _>>()
         .into()
-    }
-
-    fn precompile_request(seed: u64, calldata_len: usize) -> PrecompileRequest {
-        let calldata = (0..calldata_len).map(|offset| seed as u8 + offset as u8).collect();
-        PrecompileRequest::new(EventId::from_u64(seed), calldata)
     }
 
     fn merkle_tree_from_leaves(keys: impl Iterator<Item = u64>) -> MerkleTree {

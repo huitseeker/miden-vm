@@ -32,8 +32,8 @@ use miden_processor::{
     DefaultHost, ExecutionOptions, FastProcessor, StackInputs, advice::AdviceInputs,
 };
 use miden_vm::{
-    Assembler, ExecutionProof, HashFunction, Program, ProgramInfo, ProvingOptions, StackOutputs,
-    prove_sync,
+    Assembler, ExecutionClaim, ExecutionProof, HashFunction, Program, ProgramInfo, ProvingOptions,
+    StackOutputs, Verifier, prove_sync,
 };
 use miden_vm_synthetic_bench::{
     calibrator::{Calibration, calibrate, measure_program},
@@ -288,7 +288,7 @@ fn bench_one_scenario(
     //   exec       -- FastProcessor::execute_sync (no trace data)
     //   trace_prep -- FastProcessor::execute_trace_inputs_sync (the input to prove_from_trace_sync)
     //   prove      -- prove_sync (= trace_prep + STARK prove)
-    //   verify     -- miden_vm::verify against a proof generated once outside the timed loop
+    //   verify     -- Verifier::new().verify against a proof generated once outside the timed loop
     if axes.contains("exec") {
         group.bench_function("exec", |b| {
             b.iter_batched(
@@ -369,10 +369,12 @@ fn bench_one_scenario(
             b.iter_batched(
                 || (program_info.clone(), StackInputs::default(), stack_outputs, proof.clone()),
                 |(program_info, stack_inputs, stack_outputs, proof)| {
-                    black_box(
-                        miden_vm::verify(program_info, stack_inputs, stack_outputs, proof)
-                            .expect("verify"),
+                    let claim = ExecutionClaim::from_program_info(
+                        program_info,
+                        stack_inputs,
+                        stack_outputs,
                     );
+                    black_box(Verifier::new().verify(proof, claim).expect("verify"));
                 },
                 BatchSize::SmallInput,
             );

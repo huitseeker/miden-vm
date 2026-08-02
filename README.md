@@ -27,7 +27,7 @@ In the latest stable release, most of the core features of the VM have been stab
 
 ### Status and features
 
-The next version of the VM is being developed in the [next](https://github.com/0xMiden/miden-vm/tree/next) branch; see the [changelog](https://github.com/0xMiden/miden-vm/blob/next/CHANGELOG.md) for the list of changes made in the currently unreleased version, and every past release.
+The next version of the VM is being developed in the [next](https://github.com/0xMiden/miden-vm/tree/next) branch; see the [changelog](https://github.com/0xMiden/miden-vm/blob/next/CHANGELOG.md) for changes made in the currently unreleased version, and every past release.
 
 #### Feature highlights
 
@@ -53,6 +53,8 @@ In the coming months we plan to finalize the design of the VM and implement supp
 #### Compilation to WebAssembly.
 
 Miden VM is written in pure Rust and can be compiled to WebAssembly. Rust's `std` standard library is linked by default for most crates. To compile to one of the two `wasm32` supported targets, use `cargo`'s `--no-default-features` flag to ensure Rust's standard library isn't linked (*i.e. compiling in `no_std`).
+
+This workspace's [`.cargo/config.toml`](.cargo/config.toml) sets `-C target-feature=+simd128` for the `wasm32-unknown-unknown` target, enabling Plonky3's SIMD128 backend for faster hashing (Blake3, Poseidon2) in WASM. Cargo only applies `.cargo/config.toml` to builds run from this workspace (or a directory nested under it); downstream consumers building Miden as a dependency (e.g. via `web-sdk`) must set this flag themselves, for example with `RUSTFLAGS="-C target-feature=+simd128"` or their own `.cargo/config.toml`, to get the same speedup.
 
 #### Concurrent proof generation
 

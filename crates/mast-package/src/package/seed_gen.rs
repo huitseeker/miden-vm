@@ -24,7 +24,7 @@ fn build_forest() -> (MastForest, MastNodeId) {
         .expect("failed to build basic block");
     builder.mark_root(node_id);
 
-    let (forest, remapping) = builder.finish_with_id_map().expect("failed to build forest");
+    let (forest, remapping) = builder.build_with_id_map().expect("failed to build forest");
     let node_id = remapping.get(node_id).expect("root should be retained");
     (forest, node_id)
 }
@@ -62,7 +62,7 @@ fn build_package(signature: Option<FunctionType>) -> Package {
 fn generate_fuzz_seeds() {
     fn write_seed(target: &str, name: &str, bytes: &[u8]) {
         let corpus_root =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../miden-core-fuzz/corpus");
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/miden-core-fuzz/corpus");
         let corpus_dir = corpus_root.join(target);
         fs::create_dir_all(&corpus_dir).expect("failed to create corpus directory");
         fs::write(corpus_dir.join(name), bytes).expect("failed to write seed");
@@ -81,5 +81,5 @@ fn generate_fuzz_seeds() {
         &package_with_signature.to_bytes(),
     );
 
-    println!("\nSeed corpus generated in ../../miden-core-fuzz/corpus");
+    println!("\nSeed corpus generated in ../../tools/miden-core-fuzz/corpus");
 }

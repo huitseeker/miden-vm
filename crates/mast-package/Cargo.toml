@@ -1,6 +1,6 @@
 [package]
 name = "miden-mast-package"
-version = "0.25.8"
+version = "0.28.0"
 description = "Package containing a compiled Miden MAST artifact with declared dependencies and exports"
 documentation = "https://docs.rs/miden-mast-package"
 readme = "README.md"
@@ -31,10 +31,10 @@ miden-debug-types.workspace = true
 miden-utils-indexing.workspace = true
 
 # External dependencies
+hashbrown.workspace = true
 log.workspace = true
 proptest = { workspace = true, optional = true }
 proptest-derive = { workspace = true, optional = true }
-hashbrown = "0.17"
 rustc-hash = { version = "2.1", default-features = false }
 serde = { workspace = true, optional = true }
 thiserror.workspace = true

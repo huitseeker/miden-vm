@@ -1,43 +1,49 @@
 use miden_ace_codegen::{
-    AceConfig, AceError, EXT_DEGREE, InputKey, LayoutKind, build_ace_circuit_for_air,
-    build_ace_dag_for_air, emit_circuit,
+    AceConfig, AceDag, AceError, EXT_DEGREE, InputKey, InputLayout, LayoutKind, NodeKind,
+    PeriodicColumnData, build_ace_dag_for_air, build_verifier_dag, emit_circuit,
     testing::{
         eval_dag, eval_folded_constraints, eval_periodic_values, eval_quotient, fill_inputs,
         zps_for_chunk,
     },
 };
-use miden_air::{BaseAir, LiftedAir, MidenAir};
+use miden_air::{AIRS, BaseAir, HandwrittenMidenAir, LiftedAir, MIDEN_AIR_COUNT, MidenAir};
 use miden_core::{Felt, field::QuadFelt};
 use miden_crypto::{
     field::{Field, PrimeCharacteristicRing},
     stark::air::symbolic::{AirLayout, SymbolicAirBuilder},
 };
 
-#[test]
-fn core_air_dag_matches_manual_eval() {
-    let air = MidenAir::CORE;
-    let config = AceConfig {
-        num_quotient_chunks: 2,
-        layout: LayoutKind::Native,
-        num_airs: 1,
-    };
-    let artifacts = build_ace_dag_for_air::<_, Felt, QuadFelt>(&air, config).unwrap();
-    let layout = artifacts.layout.clone();
-    let inputs: Vec<QuadFelt> = fill_inputs(&layout);
-    let z_k = inputs[layout.index(InputKey::ZK).unwrap()];
-    let periodic_values = eval_periodic_values::<Felt, QuadFelt>(&air.periodic_columns(), z_k);
-
-    let air_layout = AirLayout {
+fn air_layout_for(air: MidenAir, layout: &InputLayout) -> AirLayout {
+    AirLayout {
         preprocessed_width: 0,
         main_width: layout.counts.width,
         num_public_values: layout.counts.num_public,
         permutation_width: layout.counts.aux_width,
         num_permutation_challenges: layout.counts.num_randomness,
         num_permutation_values: LiftedAir::<Felt, QuadFelt>::num_aux_values(&air),
-        num_periodic_columns: layout.counts.num_periodic,
+        num_periodic_columns: air.periodic_columns().len(),
+    }
+}
+
+/// The DAG's evaluation on arbitrary inputs must equal an independently
+/// computed reference: folded constraints minus recomposed quotient times
+/// vanishing. This anchors the lowered DAG to the constraint semantics rather
+/// than to any particular lowering implementation.
+fn assert_dag_matches_manual_eval(air: MidenAir) {
+    let config = AceConfig {
+        num_quotient_chunks: 2,
+        layout: LayoutKind::Native,
+        num_airs: 1,
     };
-    let mut builder = SymbolicAirBuilder::<Felt, QuadFelt>::new(air_layout);
-    LiftedAir::<Felt, QuadFelt>::eval(&air, &mut builder);
+    let artifacts = build_ace_dag_for_air(&HandwrittenMidenAir(air), config).unwrap();
+    let layout = artifacts.layout.clone();
+    let inputs: Vec<QuadFelt> = fill_inputs(&layout);
+    let z_k = inputs[layout.index(InputKey::ZK).unwrap()];
+    let periodic_columns = air.periodic_columns();
+    let periodic_values = eval_periodic_values::<Felt, QuadFelt>(&periodic_columns, z_k);
+
+    let mut builder = SymbolicAirBuilder::<Felt, QuadFelt>::new(air_layout_for(air, &layout));
+    air.eval_handwritten(&mut builder);
 
     let acc = eval_folded_constraints(
         &builder.base_constraints(),
@@ -56,8 +62,15 @@ fn core_air_dag_matches_manual_eval() {
 }
 
 #[test]
+fn all_airs_dag_matches_manual_eval() {
+    for air in AIRS {
+        assert_dag_matches_manual_eval(air);
+    }
+}
+
+#[test]
 fn core_air_dag_rejects_mismatched_layout() {
-    let air = MidenAir::CORE;
+    let air = MidenAir::Core;
     let dag_config = AceConfig {
         num_quotient_chunks: 8,
         layout: LayoutKind::Native,
@@ -69,41 +82,14 @@ fn core_air_dag_rejects_mismatched_layout() {
         num_airs: 1,
     };
 
-    let dag = build_ace_dag_for_air::<_, Felt, QuadFelt>(&air, dag_config).unwrap().dag;
-    let wrong_layout =
-        build_ace_dag_for_air::<_, Felt, QuadFelt>(&air, layout_config).unwrap().layout;
+    let dag = build_ace_dag_for_air(&air, dag_config).unwrap().dag;
+    let wrong_layout = build_ace_dag_for_air(&air, layout_config).unwrap().layout;
     let inputs: Vec<QuadFelt> = fill_inputs(&wrong_layout);
 
     let err = eval_dag(&dag, &inputs, &wrong_layout).unwrap_err();
     assert!(
         matches!(err, AceError::InvalidInputLayout { .. }),
         "expected InvalidInputLayout, got {err:?}"
-    );
-}
-
-#[test]
-fn chiplets_air_ace_rows() {
-    let air = MidenAir::CHIPLETS;
-    let config = AceConfig {
-        num_quotient_chunks: 8,
-        layout: LayoutKind::Masm,
-        num_airs: 1,
-    };
-
-    let circuit = build_ace_circuit_for_air::<_, Felt, QuadFelt>(&air, config).unwrap();
-    let encoded = circuit.to_ace().unwrap();
-    let read_rows = encoded.num_read_rows();
-    let eval_rows = encoded.num_eval_rows();
-    let total_rows = read_rows + eval_rows;
-
-    eprintln!(
-        "ACE chiplet rows (MidenAir::CHIPLETS): read={}, eval={}, total={}, inputs={}, constants={}, nodes={}",
-        read_rows,
-        eval_rows,
-        total_rows,
-        encoded.num_inputs(),
-        encoded.num_constants(),
-        encoded.num_nodes()
     );
 }
 
@@ -115,8 +101,7 @@ fn synthetic_ood_adjusts_quotient_to_zero() {
         num_airs: 1,
     };
 
-    let artifacts =
-        build_ace_dag_for_air::<_, Felt, QuadFelt>(&MidenAir::CORE, config).expect("ace dag");
+    let artifacts = build_ace_dag_for_air(&MidenAir::Core, config).expect("ace dag");
     let circuit = emit_circuit(&artifacts.dag, artifacts.layout.clone()).expect("ace circuit");
 
     let mut inputs: Vec<QuadFelt> = fill_inputs(&artifacts.layout);
@@ -145,8 +130,7 @@ fn quotient_next_inputs_do_not_affect_eval() {
         num_airs: 1,
     };
 
-    let artifacts =
-        build_ace_dag_for_air::<_, Felt, QuadFelt>(&MidenAir::CORE, config).expect("ace dag");
+    let artifacts = build_ace_dag_for_air(&MidenAir::Core, config).expect("ace dag");
     let circuit = emit_circuit(&artifacts.dag, artifacts.layout.clone()).expect("ace circuit");
 
     let mut inputs: Vec<QuadFelt> = fill_inputs(&artifacts.layout);
@@ -181,90 +165,163 @@ fn quotient_next_inputs_do_not_affect_eval() {
 }
 
 #[test]
-fn multi_air_ace_circuit_builds_and_has_multi_air_beta_slots() {
-    use miden_air::ace::build_multi_air_ace_circuit;
+fn multi_air_ace_circuit_builds_and_has_multi_air_fold_beta_slots() {
+    use miden_air::{ProofOrder, ace::build_multi_air_ace_circuit_for_order};
 
     let config = AceConfig {
         num_quotient_chunks: 8,
         layout: LayoutKind::Masm,
-        num_airs: 2,
+        num_airs: MIDEN_AIR_COUNT,
     };
 
-    let circuit = build_multi_air_ace_circuit::<QuadFelt>(config).expect("multi-AIR ACE circuit");
+    let circuit = build_multi_air_ace_circuit_for_order(config, &ProofOrder::instance_order())
+        .expect("multi-AIR ACE circuit");
     let layout = circuit.layout();
 
-    // Combined main width is each per-AIR width aligned to LMCS rate (8 for Poseidon2)
-    // and concatenated: aligned(51) + aligned(22) = 56 + 24 = 80. Combined aux is
-    // aligned(4*2) + aligned(3*2) = 8 + 8 = 16 base coords = 8 EFs.
+    // Combined main width is each per-AIR width aligned to the LMCS rate:
+    // aligned(51) + aligned(22) + aligned(16) = 56 + 24 + 16 = 96.
     assert_eq!(
-        layout.counts.width, 80,
+        layout.counts.width, 96,
         "combined main width must be sum of per-AIR LMCS-aligned widths"
     );
     assert_eq!(
-        layout.counts.aux_width, 8,
-        "combined aux_width = aligned(4) + aligned(3) = 8 EFs"
+        layout.counts.aux_width, 12,
+        "combined aux_width = aligned(4) + aligned(3) + aligned(1) = 12 EFs"
     );
-    assert_eq!(layout.counts.num_aux_boundary, 2, "one boundary slot per AIR");
+    assert_eq!(layout.counts.num_aux_boundary, 3, "one boundary slot per AIR");
+
+    let beta = layout
+        .index(InputKey::MultiAirFoldBeta)
+        .expect("multi-air layout exposes folding beta");
+    assert!(beta < layout.total_inputs, "beta slot must be within layout bounds");
 
     for key in [
-        InputKey::MultiAirBeta(0),
-        InputKey::MultiAirBeta(1),
         InputKey::IsFirstAir(0),
         InputKey::IsLastAir(0),
         InputKey::IsTransitionAir(0),
         InputKey::IsFirstAir(1),
         InputKey::IsLastAir(1),
         InputKey::IsTransitionAir(1),
-    ] {
-        let idx = layout.index(key).unwrap_or_else(|| panic!("multi-air layout exposes {key:?}"));
-        assert!(idx < layout.total_inputs, "{key:?} slot must be within layout bounds");
-    }
-    for key in [
-        InputKey::MultiAirBeta(2),
         InputKey::IsFirstAir(2),
         InputKey::IsLastAir(2),
         InputKey::IsTransitionAir(2),
     ] {
-        assert!(layout.index(key).is_none(), "{key:?} must be out of range for a 2-AIR layout");
+        let idx = layout.index(key).unwrap_or_else(|| panic!("multi-air layout exposes {key:?}"));
+        assert!(idx < layout.total_inputs, "{key:?} slot must be within layout bounds");
     }
+    assert!(layout.index(InputKey::IsFirstAir(3)).is_none());
 }
 
 #[test]
 fn multi_air_ace_circuit_emits_consistently() {
-    use miden_air::ace::build_multi_air_ace_circuit;
+    use miden_air::{ProofOrder, ace::build_multi_air_ace_circuit_for_order};
 
     let config = AceConfig {
         num_quotient_chunks: 8,
         layout: LayoutKind::Masm,
-        num_airs: 2,
+        num_airs: MIDEN_AIR_COUNT,
     };
 
-    // Just check the ACE encoding is well-formed (size_in_felt is rate-aligned).
-    let circuit = build_multi_air_ace_circuit::<QuadFelt>(config).expect("multi-AIR ACE circuit");
-    let encoded = circuit.to_ace().expect("encoded multi-AIR circuit");
-    assert!(
-        encoded.size_in_felt().is_multiple_of(8),
-        "encoded multi-AIR circuit must be 8-felt aligned for adv_pipe"
-    );
+    for order in ProofOrder::variants() {
+        // Check that the ACE encoding is well-formed and rate-aligned.
+        let circuit = build_multi_air_ace_circuit_for_order(config, &order).expect("ACE circuit");
+        let encoded = circuit.to_ace().expect("encoded multi-AIR circuit");
+        assert!(
+            encoded.size_in_felt().is_multiple_of(8),
+            "encoded multi-AIR circuit must be 8-felt aligned for adv_pipe"
+        );
+    }
 }
 
 #[test]
 fn multi_air_ace_circuit_evaluates_without_panic() {
-    use miden_air::ace::build_multi_air_ace_circuit;
+    use miden_air::{ProofOrder, ace::build_multi_air_ace_circuit_for_order};
 
     let config = AceConfig {
         num_quotient_chunks: 8,
         layout: LayoutKind::Masm,
-        num_airs: 2,
+        num_airs: MIDEN_AIR_COUNT,
     };
 
-    let circuit = build_multi_air_ace_circuit::<QuadFelt>(config).expect("multi-AIR ACE circuit");
-    let layout = circuit.layout();
+    for order in ProofOrder::variants() {
+        let circuit =
+            build_multi_air_ace_circuit_for_order(config, &order).expect("multi-AIR ACE circuit");
+        let layout = circuit.layout();
 
-    // Fill all input slots with deterministic non-zero values. We don't expect the
-    // circuit to evaluate to zero for arbitrary inputs — only that every slot
-    // referenced by the DAG is in-range (i.e., no `wiring bus` panic), which is the
-    // failure mode that surfaces if the chiplets-side index rewrite was wrong.
-    let inputs: Vec<QuadFelt> = fill_inputs(layout);
-    let _root = circuit.eval(&inputs).expect("multi-AIR circuit eval must not panic");
+        // Fill all input slots with deterministic non-zero values. We don't expect the
+        // circuit to evaluate to zero for arbitrary inputs; this only checks that every
+        // DAG input reference is in range.
+        let inputs: Vec<QuadFelt> = fill_inputs(layout);
+        let _root = circuit.eval(&inputs).expect("multi-AIR circuit eval must not panic");
+    }
+}
+
+/// A DAG node relabeled by index: `NodeId` embeds a per-builder dag id, so
+/// nodes from two builders can only be compared through their indices.
+#[derive(Debug, PartialEq)]
+enum Norm {
+    Input(InputKey),
+    Constant(QuadFelt),
+    Add(usize, usize),
+    Sub(usize, usize),
+    Mul(usize, usize),
+    Neg(usize),
+}
+
+fn normalized(dag: &AceDag<QuadFelt>) -> (Vec<Norm>, usize) {
+    let nodes = dag
+        .nodes
+        .iter()
+        .map(|node| match *node {
+            NodeKind::Input(key) => Norm::Input(key),
+            NodeKind::Constant(value) => Norm::Constant(value),
+            NodeKind::Add(a, b) => Norm::Add(a.index(), b.index()),
+            NodeKind::Sub(a, b) => Norm::Sub(a.index(), b.index()),
+            NodeKind::Mul(a, b) => Norm::Mul(a.index(), b.index()),
+            NodeKind::Neg(a) => Norm::Neg(a.index()),
+        })
+        .collect();
+    (nodes, dag.root().index())
+}
+
+/// Node-for-node differential: the IR-driven lowering must replicate the
+/// symbolic-tree lowering's `DagBuilder` interning order exactly (the order is
+/// digest-visible). Compares the complete single-AIR verifier DAGs — periodic
+/// evaluation, constraint bodies, alpha fold, quotient wrapping — and localizes
+/// the first mismatching node.
+#[test]
+fn ir_lowering_matches_symbolic_lowering_node_for_node() {
+    let config = AceConfig {
+        num_quotient_chunks: 8,
+        layout: LayoutKind::Masm,
+        num_airs: 1,
+    };
+    for air in AIRS {
+        // Production path: handwritten capture -> IR -> DAG.
+        let artifacts = build_ace_dag_for_air(&HandwrittenMidenAir(air), config).unwrap();
+
+        // Anchor: the original symbolic-tree lowering over the same constraints.
+        let mut builder =
+            SymbolicAirBuilder::<Felt, QuadFelt>::new(air_layout_for(air, &artifacts.layout));
+        air.eval_handwritten(&mut builder);
+        let periodic_columns = BaseAir::<Felt>::periodic_columns(&air);
+        let periodic_data = (!periodic_columns.is_empty())
+            .then(|| PeriodicColumnData::from_periodic_columns::<Felt>(periodic_columns.to_vec()));
+        let tree_dag = build_verifier_dag(
+            &builder.base_constraints(),
+            &builder.extension_constraints(),
+            &builder.constraint_layout(),
+            &artifacts.layout,
+            periodic_data.as_ref(),
+            periodic_columns.iter().map(Vec::len).max().unwrap_or(1),
+        );
+
+        let (tree_nodes, tree_root) = normalized(&tree_dag);
+        let (ir_nodes, ir_root) = normalized(&artifacts.dag);
+        for (i, (tree, ir)) in tree_nodes.iter().zip(&ir_nodes).enumerate() {
+            assert_eq!(tree, ir, "first mismatch at node {i}");
+        }
+        assert_eq!(tree_nodes.len(), ir_nodes.len(), "node counts differ");
+        assert_eq!(tree_root, ir_root, "roots differ");
+    }
 }

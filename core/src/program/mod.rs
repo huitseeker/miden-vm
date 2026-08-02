@@ -12,8 +12,16 @@ use crate::{
     utils::ToElements,
 };
 
+mod claim;
+pub use claim::{
+    CLAIM_DOMAIN_TAG, ExecutionClaim, NUM_CLAIM_ELEMENTS, REQUEST_DOMAIN_TAG, claim_commitment,
+    request_key,
+};
+
+pub mod domain;
+
 mod kernel;
-pub use kernel::{Kernel, KernelError};
+pub use kernel::{KERNEL_DOMAIN_TAG, KernelDescriptor, KernelError};
 
 mod stack;
 pub use stack::{InputError, MIN_STACK_DEPTH, OutputError, StackInputs, StackOutputs};
@@ -36,7 +44,7 @@ pub struct Program {
     mast_forest: Arc<MastForest>,
     /// The "entrypoint" is the node where execution of the program begins.
     entrypoint: MastNodeId,
-    kernel: Kernel,
+    kernel: KernelDescriptor,
 }
 
 /// Constructors
@@ -48,7 +56,7 @@ impl Program {
     /// - if `mast_forest` doesn't contain the specified entrypoint.
     /// - if the specified entrypoint is not a procedure root in the `mast_forest`.
     pub fn new(mast_forest: Arc<MastForest>, entrypoint: MastNodeId) -> Self {
-        Self::with_kernel(mast_forest, entrypoint, Kernel::default())
+        Self::with_kernel(mast_forest, entrypoint, KernelDescriptor::default())
     }
 
     /// Construct a new [`Program`] from the given MAST forest, entrypoint, and kernel.
@@ -59,7 +67,7 @@ impl Program {
     pub fn with_kernel(
         mast_forest: Arc<MastForest>,
         entrypoint: MastNodeId,
-        kernel: Kernel,
+        kernel: KernelDescriptor,
     ) -> Self {
         assert!(mast_forest.get_node_by_id(entrypoint).is_some(), "invalid entrypoint");
         assert!(mast_forest.is_procedure_root(entrypoint), "entrypoint not a procedure");
@@ -98,7 +106,7 @@ impl Program {
     }
 
     /// Returns the kernel associated with this program.
-    pub fn kernel(&self) -> &Kernel {
+    pub fn kernel(&self) -> &KernelDescriptor {
         &self.kernel
     }
 
@@ -218,12 +226,12 @@ impl fmt::Display for Program {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ProgramInfo {
     program_hash: Word,
-    kernel: Kernel,
+    kernel: KernelDescriptor,
 }
 
 impl ProgramInfo {
     /// Creates a new instance of a program info.
-    pub const fn new(program_hash: Word, kernel: Kernel) -> Self {
+    pub const fn new(program_hash: Word, kernel: KernelDescriptor) -> Self {
         Self { program_hash, kernel }
     }
 
@@ -233,7 +241,7 @@ impl ProgramInfo {
     }
 
     /// Returns the program kernel used during the compilation.
-    pub const fn kernel(&self) -> &Kernel {
+    pub const fn kernel(&self) -> &KernelDescriptor {
         &self.kernel
     }
 
@@ -245,9 +253,14 @@ impl ProgramInfo {
     /// Returns the canonical commitment to the kernel used during the compilation.
     ///
     /// This is the fixed-size identifier the recursive verifier observes in place of the raw
-    /// kernel-procedure digest list. See [`Kernel::commitment`].
+    /// kernel-procedure digest list. See [`KernelDescriptor::commitment`].
     pub fn kernel_commitment(&self) -> Word {
         self.kernel.commitment()
+    }
+
+    /// Splits this program info into its program hash and kernel descriptor.
+    pub fn into_parts(self) -> (Word, KernelDescriptor) {
+        (self.program_hash, self.kernel)
     }
 }
 

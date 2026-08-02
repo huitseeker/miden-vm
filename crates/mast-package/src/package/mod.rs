@@ -22,7 +22,7 @@ use alloc::{
 use miden_assembly_syntax::{
     Path, Report,
     ast::{self, QualifiedProcedureName},
-    module::ModuleInfo,
+    module::ModuleDescriptor,
 };
 #[cfg(feature = "std")]
 use miden_core::serde::DeserializationError;
@@ -31,7 +31,7 @@ use miden_core::{
     advice::AdviceMap,
     crypto::hash::Poseidon2,
     mast::{MastForest, MastNode, MastNodeExt, MastNodeId},
-    program::Kernel,
+    program::KernelDescriptor,
     serde::{ByteReader, ByteWriter, Deserializable, Serializable, SliceReader},
 };
 
@@ -322,9 +322,10 @@ impl Package {
             .and_then(|procedure| procedure.source_node)
     }
 
-    /// Get the [ModuleInfo] corresponding to the kernel module, if this package contains the kernel
-    pub fn kernel_module_info(&self) -> Result<ModuleInfo, Report> {
-        self.try_module_infos()
+    /// Get the [ModuleDescriptor] corresponding to the kernel module, if this package contains the
+    /// kernel
+    pub fn kernel_module_descriptor(&self) -> Result<ModuleDescriptor, Report> {
+        self.try_module_descriptors()
             .map_err(Report::msg)?
             .into_iter()
             .find(|mi| mi.path().is_kernel_path())
@@ -385,7 +386,7 @@ impl Package {
     pub fn get_export_node_id(&self, path: impl AsRef<Path>) -> MastNodeId {
         self.get_export_by_lookup_path(path.as_ref())
             .and_then(PackageExport::as_procedure)
-            .and_then(|export| export.node.or_else(|| self.mast.find_procedure_root(export.digest)))
+            .and_then(|export| self.get_export_node(export))
             .expect("procedure not exported from this package")
     }
 
@@ -393,7 +394,7 @@ impl Package {
     pub fn is_reexport(&self, path: impl AsRef<Path>) -> bool {
         self.get_export_by_lookup_path(path.as_ref())
             .and_then(PackageExport::as_procedure)
-            .and_then(|export| export.node.or_else(|| self.mast.find_procedure_root(export.digest)))
+            .and_then(|export| self.get_export_node(export))
             .map(|node| self.mast[node].is_external())
             .unwrap_or(false)
     }
@@ -410,7 +411,36 @@ impl Package {
     pub fn get_procedure_node_by_path(&self, path: impl AsRef<Path>) -> Option<MastNodeId> {
         self.get_export_by_lookup_path(path.as_ref())
             .and_then(PackageExport::as_procedure)
-            .and_then(|export| export.node.or_else(|| self.mast.find_procedure_root(export.digest)))
+            .and_then(|export| self.get_export_node(export))
+    }
+
+    /// Resolves the MAST node corresponding to `export`, or `None` if it cannot be found.
+    ///
+    /// The returned node is the recorded `export.node` only when it points at a procedure
+    /// root in this package's forest whose digest matches `export.digest`; otherwise this
+    /// falls back to a digest-based lookup.
+    ///
+    /// This is the non-panicking counterpart to [`Package::get_export_node_id`], though the
+    /// two take different arguments: `get_export_node_id` resolves an export by path and
+    /// panics if not found, while this method resolves an already-known `&ProcedureExport`
+    /// and treats its recorded `node` as an untrusted hint rather than authoritative.
+    pub fn get_export_node(&self, export: &ProcedureExport) -> Option<MastNodeId> {
+        export
+            .node
+            .filter(|&node| self.mast.is_procedure_root_with_exact_digest(node, export.digest))
+            .or_else(|| self.mast.find_procedure_root(export.digest))
+    }
+
+    /// Returns an iterator over the procedures exported by this package that carry the attribute
+    /// named `attr`.
+    pub fn procedures_with_attribute<'a>(
+        &'a self,
+        attr: &'a str,
+    ) -> impl Iterator<Item = &'a ProcedureExport> + 'a {
+        self.manifest
+            .exports()
+            .filter_map(PackageExport::as_procedure)
+            .filter(move |export| export.attributes.has(attr))
     }
 
     fn get_export_by_lookup_path(&self, path: &Path) -> Option<&PackageExport> {
@@ -426,21 +456,21 @@ impl Package {
             })
     }
 
-    /// Returns an iterator over the module infos of the library.
-    pub fn module_infos(&self) -> impl Iterator<Item = ModuleInfo> {
+    /// Returns an iterator over the module descriptors of the package.
+    pub fn module_descriptors(&self) -> impl Iterator<Item = ModuleDescriptor> {
         let source_library_commitment =
             self.interface_digest().expect("package manifest exports were validated");
-        let mut modules_by_path: BTreeMap<Arc<Path>, ModuleInfo> = BTreeMap::new();
+        let mut modules_by_path: BTreeMap<Arc<Path>, ModuleDescriptor> = BTreeMap::new();
 
         for module in self.manifest.modules() {
-            let mut module_info = ModuleInfo::new(module.path.clone(), None);
+            let mut module_descriptor = ModuleDescriptor::new(module.path.clone(), None);
             for submodule in module.submodules() {
-                module_info.add_submodule(ast::SubmoduleDecl {
+                module_descriptor.add_submodule(ast::SubmoduleDecl {
                     visibility: ast::Visibility::Public,
                     name: submodule.name.clone(),
                 });
             }
-            modules_by_path.insert(module.path.clone(), module_info);
+            modules_by_path.insert(module.path.clone(), module_descriptor);
         }
 
         for export in self.manifest.exports() {
@@ -448,7 +478,7 @@ impl Package {
                 Arc::from(export.path().parent().unwrap().to_path_buf().into_boxed_path());
             let module = modules_by_path
                 .entry(Arc::clone(&module_name))
-                .or_insert_with(|| ModuleInfo::new(module_name, None));
+                .or_insert_with(|| ModuleDescriptor::new(module_name, None));
             match export {
                 PackageExport::Procedure(ProcedureExport {
                     node,
@@ -487,24 +517,25 @@ impl Package {
         modules_by_path.into_values()
     }
 
-    /// Returns module infos after validating that manifest module-surface metadata is complete.
+    /// Returns module descriptors after validating that manifest module-surface metadata is
+    /// complete.
     ///
-    /// Unlike [`Self::module_infos`], this method does not synthesize missing module surfaces from
-    /// item export paths. Link-time resolution relies on explicit module metadata so that modules
-    /// remain distinct from exported items.
-    pub fn try_module_infos(&self) -> Result<Vec<ModuleInfo>, ManifestValidationError> {
+    /// Unlike [`Self::module_descriptors`], this method does not synthesize missing module surfaces
+    /// from item export paths. Link-time resolution relies on explicit module metadata so that
+    /// modules remain distinct from exported items.
+    pub fn try_module_descriptors(&self) -> Result<Vec<ModuleDescriptor>, ManifestValidationError> {
         let source_library_commitment = self.interface_digest()?;
-        let mut modules_by_path: BTreeMap<Arc<Path>, ModuleInfo> = BTreeMap::new();
+        let mut modules_by_path: BTreeMap<Arc<Path>, ModuleDescriptor> = BTreeMap::new();
 
         for module in self.manifest.modules() {
-            let mut module_info = ModuleInfo::new(module.path.clone(), None);
+            let mut module_descriptor = ModuleDescriptor::new(module.path.clone(), None);
             for submodule in module.submodules() {
-                module_info.add_submodule(ast::SubmoduleDecl {
+                module_descriptor.add_submodule(ast::SubmoduleDecl {
                     visibility: ast::Visibility::Public,
                     name: submodule.name.clone(),
                 });
             }
-            modules_by_path.insert(module.path.clone(), module_info);
+            modules_by_path.insert(module.path.clone(), module_descriptor);
         }
 
         for module in self.manifest.modules() {
@@ -1044,8 +1075,8 @@ where
 
 /// Conversions
 impl Package {
-    /// Get a [Kernel] from this package, if this package contains one.
-    pub fn to_kernel(&self) -> Result<Kernel, Report> {
+    /// Get a [KernelDescriptor] from this package, if this package contains one.
+    pub fn to_kernel_descriptor(&self) -> Result<KernelDescriptor, Report> {
         let exports = self
             .manifest
             .exports()
@@ -1064,7 +1095,8 @@ impl Package {
                 "invalid kernel package: does not export any kernel procedures",
             ));
         }
-        Kernel::new(&exports).map_err(|err| Report::msg(format!("invalid kernel package: {err}")))
+        KernelDescriptor::new(&exports)
+            .map_err(|err| Report::msg(format!("invalid kernel package: {err}")))
     }
 
     // TODO(pauls): This function can be removed when we remove Program
@@ -1086,9 +1118,11 @@ impl Package {
             let mast_forest = self.mast.clone();
             let kernel_dependency = self.kernel_runtime_dependency()?.cloned();
             match (self.try_embedded_kernel_package()?, kernel_dependency) {
-                (Some(kernel_package), _) => {
-                    Ok(Program::with_kernel(mast_forest, entrypoint, kernel_package.to_kernel()?))
-                },
+                (Some(kernel_package), _) => Ok(Program::with_kernel(
+                    mast_forest,
+                    entrypoint,
+                    kernel_package.to_kernel_descriptor()?,
+                )),
                 (None, Some(kernel_dependency)) => Err(Report::msg(format!(
                     "package '{}' declares kernel runtime dependency '{}@{}#{}', but does not embed the kernel package required to reconstruct a program",
                     self.name,
@@ -1411,7 +1445,7 @@ mod tests {
             .push_node(BasicBlockNodeBuilder::new(vec![Operation::Add]))
             .expect("failed to build basic block");
         builder.mark_root(node_id);
-        let (forest, remapping) = builder.finish_with_id_map().expect("failed to build forest");
+        let (forest, remapping) = builder.build_with_id_map().expect("failed to build forest");
         let node_id = remapping.get(node_id).expect("root node should be retained");
         (forest, node_id)
     }
@@ -1428,7 +1462,7 @@ mod tests {
             .push_node(SplitNodeBuilder::new([left_id, right_id]))
             .expect("failed to build split node");
         builder.mark_root(root_id);
-        let (forest, remapping) = builder.finish_with_id_map().expect("failed to build forest");
+        let (forest, remapping) = builder.build_with_id_map().expect("failed to build forest");
         let root_id = remapping.get(root_id).expect("root node should be retained");
         let left_id = remapping.get(left_id).expect("left node should be retained");
         let right_id = remapping.get(right_id).expect("right node should be retained");
@@ -1956,7 +1990,7 @@ mod tests {
     }
 
     #[test]
-    fn to_kernel_rejects_empty_kernel_exports() {
+    fn to_kernel_descriptor_rejects_empty_kernel_exports() {
         let mut package = build_package("kernel", TargetType::Kernel, "$kernel::boot", [], vec![]);
         package.manifest = PackageManifest {
             exports: Default::default(),
@@ -1966,7 +2000,7 @@ mod tests {
         };
 
         let error = package
-            .to_kernel()
+            .to_kernel_descriptor()
             .expect_err("kernel packages without exported procedures should be rejected");
 
         assert!(
@@ -2164,6 +2198,122 @@ mod tests {
     }
 
     #[test]
+    fn get_export_node_prefers_recorded_node_id() {
+        let (forest, node_id) = build_forest();
+        let digest = forest[node_id].digest();
+        let path = relative_path("app::entry");
+        let export = ProcedureExport::new(path, Some(node_id), digest, None);
+        let package = build_package("app", TargetType::Library, "app::entry", [], Vec::new());
+        assert_eq!(package.get_export_node(&export), Some(node_id));
+    }
+
+    #[test]
+    fn get_export_node_falls_back_to_digest_lookup_when_node_is_missing() {
+        let (forest, node_id) = build_forest();
+        let digest = forest[node_id].digest();
+        let path = absolute_path("app::entry");
+        let export = ProcedureExport::new(Arc::clone(&path), None, digest, None);
+        let package = Package::create(
+            PackageId::from("app"),
+            Version::new(1, 0, 0),
+            TargetType::Library,
+            Arc::new(forest),
+            vec![PackageExport::Procedure(export.clone())],
+            None,
+        )
+        .expect("package should be valid");
+
+        assert_eq!(package.get_export_node(&export), Some(node_id));
+    }
+
+    #[test]
+    fn get_export_node_returns_none_when_procedure_is_not_in_forest() {
+        let (forest, node_id) = build_forest();
+        let digest = forest[node_id].digest();
+        let path = absolute_path("app::entry");
+        let export = ProcedureExport::new(Arc::clone(&path), Some(node_id), digest, None);
+        let package = Package::create(
+            PackageId::from("app"),
+            Version::new(1, 0, 0),
+            TargetType::Library,
+            Arc::new(forest),
+            vec![PackageExport::Procedure(export)],
+            None,
+        )
+        .expect("package should be valid");
+
+        let dangling_export = ProcedureExport::new(path, None, Word::default(), None);
+        assert_eq!(package.get_export_node(&dangling_export), None);
+    }
+
+    #[test]
+    fn get_export_node_falls_back_when_recorded_node_digest_mismatches() {
+        let mut forest = MastForest::new();
+        let matching_id = BasicBlockNodeBuilder::new(vec![Operation::Add])
+            .add_to_forest(&mut forest)
+            .expect("failed to build matching basic block");
+        forest.make_root(matching_id);
+        let stale_id = BasicBlockNodeBuilder::new(vec![Operation::Mul])
+            .add_to_forest(&mut forest)
+            .expect("failed to build stale basic block");
+        forest.make_root(stale_id);
+
+        let matching_digest = forest[matching_id].digest();
+        let path = absolute_path("app::entry");
+        let valid_export =
+            ProcedureExport::new(path.clone(), Some(matching_id), matching_digest, None);
+        let package = Package::create(
+            PackageId::from("app"),
+            Version::new(1, 0, 0),
+            TargetType::Library,
+            Arc::new(forest),
+            vec![PackageExport::Procedure(valid_export)],
+            None,
+        )
+        .expect("package should be valid");
+
+        // A caller-supplied export (not part of the package's own manifest) whose recorded
+        // node id points at a real root, but one whose digest no longer matches
+        // `export.digest` — e.g. a stale or hand-constructed `ProcedureExport`.
+        let stale_export = ProcedureExport::new(path, Some(stale_id), matching_digest, None);
+
+        // Must fall back to the digest-based lookup and return `matching_id`, never the
+        // mismatched `stale_id` recorded on the export — this is the regression a future
+        // "simplification" back to `export.node.or_else(...)` would silently reintroduce.
+        assert_eq!(package.get_export_node(&stale_export), Some(matching_id));
+    }
+
+    #[test]
+    fn procedures_with_attribute_filters_by_attribute_name() {
+        use miden_assembly_syntax::ast::{Attribute, Ident};
+
+        let (mast, exports, _) = build_same_digest_package_exports(&[
+            ("app::tagged", "tagged"),
+            ("app::untagged", "untagged"),
+        ]);
+        let mut exports = exports;
+        if let PackageExport::Procedure(proc) = &mut exports[0] {
+            proc.attributes.insert(Attribute::Marker(Ident::new("account").unwrap()));
+        }
+        let package = Package::create(
+            PackageId::from("app"),
+            Version::new(1, 0, 0),
+            TargetType::Library,
+            mast,
+            exports,
+            None,
+        )
+        .expect("package should be valid");
+
+        let tagged: Vec<_> = package
+            .procedures_with_attribute("account")
+            .map(|proc| proc.path.to_string())
+            .collect();
+        assert_eq!(tagged, vec![absolute_path("app::tagged").to_string()]);
+        assert!(package.procedures_with_attribute("missing").next().is_none());
+    }
+
+    #[test]
     fn make_executable_preserves_selected_same_digest_root_metadata() {
         let (mast, exports, sections) = build_same_digest_package_exports(&[
             ("app::alias_a", "alias_a"),
@@ -2281,7 +2431,7 @@ mod tests {
             .push_node(BasicBlockNodeBuilder::new(vec![Operation::Add]))
             .unwrap();
         concrete_builder.mark_root(concrete_root);
-        let (concrete_forest, concrete_remapping) = concrete_builder.finish_with_id_map().unwrap();
+        let (concrete_forest, concrete_remapping) = concrete_builder.build_with_id_map().unwrap();
         let concrete_root = concrete_remapping.get(concrete_root).unwrap();
         let concrete_digest = concrete_forest[concrete_root].digest();
 
@@ -2291,7 +2441,7 @@ mod tests {
             .unwrap();
         placeholder_builder.mark_root(placeholder_root);
         let (placeholder_forest, placeholder_remapping) =
-            placeholder_builder.finish_with_id_map().unwrap();
+            placeholder_builder.build_with_id_map().unwrap();
         let placeholder_root = placeholder_remapping.get(placeholder_root).unwrap();
 
         let placeholder_debug = debug_info_for_root(placeholder_root, "placeholder");

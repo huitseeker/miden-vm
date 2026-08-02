@@ -25,7 +25,7 @@ use miden_core::{
     WORD_SIZE, Word,
     mast::{MastNodeExt, MastNodeId},
     operations::{AssemblyOp, Operation},
-    program::Kernel,
+    program::KernelDescriptor,
     serde::Serializable,
 };
 use miden_mast_package::{
@@ -376,7 +376,7 @@ impl Assembler {
     /// Returns a reference to the kernel for this assembler.
     ///
     /// If the assembler was instantiated without a kernel, the internal kernel will be empty.
-    pub fn kernel(&self) -> &Kernel {
+    pub fn kernel(&self) -> &KernelDescriptor {
         self.linker.kernel()
     }
 
@@ -1128,11 +1128,7 @@ impl Assembler {
                         )));
                     },
                 };
-                Ok(StaticLibrary::new(lib.mast().as_ref(), debug_info)
-                    .with_source_library_commitment(lib.commitment())
-                    .with_alternate_source_library_commitment(
-                        lib.package.interface_digest().into_diagnostic()?,
-                    ))
+                StaticLibrary::from_link_library(lib, debug_info).into_diagnostic()
             })
             .collect()
     }
@@ -1315,6 +1311,9 @@ impl Assembler {
             _ => panic!("expected item to be a procedure AST"),
         };
         let body_wrapper = if proc_ctx.is_program_entrypoint() {
+            // The primary check now lives at the AST mutation site (`Procedure::set_num_locals`).
+            // This backstop still catches entrypoints constructed with locals directly via
+            // `Procedure::new`, which bypasses that setter.
             assert!(num_locals == 0, "program entrypoint cannot have locals");
 
             Some(BodyWrapper {

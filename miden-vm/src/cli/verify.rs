@@ -7,7 +7,7 @@ use miden_assembly::{
 };
 use miden_mast_package::Package;
 use miden_prover::serde::Deserializable;
-use miden_vm::{Kernel, ProgramInfo, internal::InputFile};
+use miden_vm::{KernelDescriptor, ProgramInfo, internal::InputFile};
 
 use super::data::{OutputFile, ProgramHash, ProofFile};
 
@@ -67,15 +67,17 @@ impl VerifyCmd {
                     kernel_path.display()
                 )));
             }
-            load_kernel(kernel_path)?
+            load_kernel_descriptor(kernel_path)?
         } else {
-            Kernel::default()
+            KernelDescriptor::default()
         };
         let program_info = ProgramInfo::new(program_hash, kernel);
 
         // verify proof
         let stack_outputs = outputs_data.stack_outputs().map_err(Report::msg)?;
-        miden_vm::verify(program_info, stack_inputs, stack_outputs, proof)
+        let claim =
+            miden_vm::ExecutionClaim::from_program_info(program_info, stack_inputs, stack_outputs);
+        miden_vm::verify(proof, claim)
             .into_diagnostic()
             .wrap_err("Program failed verification!")?;
 
@@ -101,8 +103,8 @@ impl VerifyCmd {
     }
 }
 
-/// Loads a kernel from a file (.masm or .masp) and returns the Kernel.
-fn load_kernel(kernel_path: &PathBuf) -> Result<Kernel, Report> {
+/// Loads a kernel descriptor from a file (.masm or .masp).
+fn load_kernel_descriptor(kernel_path: &PathBuf) -> Result<KernelDescriptor, Report> {
     // Determine file type based on extension
     let ext = kernel_path.extension().and_then(|s| s.to_str()).unwrap_or("").to_lowercase();
 
@@ -143,8 +145,8 @@ fn load_kernel(kernel_path: &PathBuf) -> Result<Kernel, Report> {
         },
     };
 
-    // Extract kernel from kernel library
-    kernel_pkg.to_kernel()
+    // Extract the kernel descriptor from the kernel package.
+    kernel_pkg.to_kernel_descriptor()
 }
 
 #[cfg(test)]

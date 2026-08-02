@@ -1444,11 +1444,11 @@ fn test_frie2f4() {
     // --- build stack inputs ---------------------------------------------
     // FastProcessor::new expects inputs in natural order: first element goes to top.
     // After Push(42), the stack layout becomes:
-    //   [v0, v1, v2, v3, v4, v5, v6, v7, f_pos, p, poe, pe0, pe1, a0, a1, cptr, ...]
-    //    ^0   1   2   3   4   5   6   7    8     9  10   11   12   13  14   15
+    //   [v0, v1, v2, v3, v4, v5, v6, v7, f_pos, coset, poe, pe0, pe1, a0, a1, cptr, ...]
+    //    ^0   1   2   3   4   5   6   7    8      9    10   11   12   13  14   15
     //
-    // p is the bit-reversed tree index; the instruction computes d_seg = p & 3.
-    // With p=38 (d_seg=2, f_pos=9), query_values[2] = (v4, v5) must equal prev_value = (pe0, pe1).
+    // With coset=1, the instruction checks the bit-reversed row at index 2. Thus,
+    // query_values[2] = (v4, v5) must equal prev_value = (pe0, pe1).
     let previous_value: [Felt; 2] = [Felt::from_u32(10), Felt::from_u32(11)];
     let stack_inputs = StackInputs::new(&[
         Felt::from_u32(16), // pos 0 -> pos 1 (v1) after push
@@ -1459,7 +1459,7 @@ fn test_frie2f4() {
         Felt::from_u32(11), // pos 5 -> pos 6 (v6) after push
         Felt::from_u32(10), // pos 6 -> pos 7 (v7) after push
         Felt::from_u32(9),  // pos 7 -> pos 8 (f_pos) after push
-        Felt::from_u32(38), // pos 8 -> pos 9 (p=4*9+2=38, d_seg=2) after push
+        Felt::from_u32(1),  // pos 8 -> pos 9 (coset) after push
         Felt::from_u32(7),  // pos 9 -> pos 10 (poe) after push
         previous_value[0],  // pos 10 -> pos 11 (pe0) after push
         previous_value[1],  // pos 11 -> pos 12 (pe1) after push
@@ -2203,6 +2203,40 @@ fn test_continuation_stack_limit_exactly_max_continuations_succeeds() {
             .expect("processor advice inputs should fit advice map limits");
 
     processor.execute_sync(&program, &mut host).unwrap();
+}
+
+/// Tests that restore_context returns an error when the stack overflow save stack is empty.
+#[test]
+fn test_restore_context_empty_stack_overflow_save_stack() {
+    let mut processor = FastProcessor::new(StackInputs::default());
+
+    // Manually clear the stack overflow save stack to simulate an empty state
+    processor.stack_overflow_save_stack.clear();
+
+    let result = StackInterface::restore_context(&mut processor);
+
+    assert!(result.is_err());
+    assert_matches!(
+        result.unwrap_err(),
+        OperationError::Internal(msg) if msg.contains("stack overflow save stack should never be empty")
+    );
+}
+
+/// Tests that restore_call_state returns an error when the system call state stack is empty.
+#[test]
+fn test_restore_call_state_empty_system_call_state_stack() {
+    let mut processor = FastProcessor::new(StackInputs::default());
+
+    // Manually clear the system call state stack to simulate an empty state
+    processor.system_call_state_stack.clear();
+
+    let result = SystemInterface::restore_call_state(&mut processor);
+
+    assert!(result.is_err());
+    assert_matches!(
+        result.unwrap_err(),
+        OperationError::Internal(msg) if msg.contains("system call state stack should never be empty")
+    );
 }
 
 // TEST HELPERS

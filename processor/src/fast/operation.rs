@@ -7,7 +7,7 @@ use miden_air::{
 use miden_core::{
     WORD_SIZE, Word, ZERO,
     crypto::{hash::Poseidon2, merkle::MerklePath},
-    precompile::{PrecompileTranscript, PrecompileTranscriptState},
+    deferred::Digest,
     program::MIN_STACK_DEPTH,
     utils::range,
 };
@@ -138,13 +138,25 @@ impl SystemInterface for FastProcessor {
     }
 
     #[inline(always)]
-    fn precompile_transcript_state(&self) -> PrecompileTranscriptState {
-        self.pc_transcript.state()
+    fn deferred_root(&self) -> Word {
+        self.deferred_state.root()
     }
 
     #[inline(always)]
     fn increment_clock(&mut self) {
         self.clk += 1_u32;
+    }
+
+    #[inline(always)]
+    fn log_deferred_statement(
+        &mut self,
+        statement_digest: Digest,
+        expected_new_root: Word,
+    ) -> Result<(), OperationError> {
+        self.deferred_state
+            .log_verified_statement(statement_digest, expected_new_root)
+            .map(|_| ())
+            .map_err(OperationError::from)
     }
 
     #[inline(always)]
@@ -158,11 +170,6 @@ impl SystemInterface for FastProcessor {
     }
 
     #[inline(always)]
-    fn set_precompile_transcript_state(&mut self, state: PrecompileTranscriptState) {
-        self.pc_transcript = PrecompileTranscript::from_state(state);
-    }
-
-    #[inline(always)]
     fn save_call_state(&mut self) {
         self.system_call_state_stack.push(SystemCallState {
             ctx: self.ctx,
@@ -172,10 +179,9 @@ impl SystemInterface for FastProcessor {
 
     #[inline(always)]
     fn restore_call_state(&mut self) -> Result<(), OperationError> {
-        let saved = self
-            .system_call_state_stack
-            .pop()
-            .expect("system call state stack should never be empty when restoring context");
+        let saved = self.system_call_state_stack.pop().ok_or(OperationError::Internal(
+            "system call state stack should never be empty when restoring context",
+        ))?;
         self.ctx = saved.ctx;
         self.caller_hash = saved.caller_hash;
         Ok(())
@@ -310,10 +316,10 @@ impl StackInterface for FastProcessor {
             return Err(OperationError::InvalidStackDepthOnReturn { depth: self.stack_size() });
         }
 
-        let overflow_stack = self
-            .stack_overflow_save_stack
-            .pop()
-            .expect("stack overflow save stack should never be empty when restoring context");
+        let overflow_stack =
+            self.stack_overflow_save_stack.pop().ok_or(OperationError::Internal(
+                "stack overflow save stack should never be empty when restoring context",
+            ))?;
 
         let target_overflow_len = overflow_stack.len();
         debug_assert!(

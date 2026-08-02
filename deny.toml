@@ -16,6 +16,7 @@ db-urls = ["https://github.com/rustsec/advisory-db"]
 yanked = "warn"
 ignore = [
     "RUSTSEC-2024-0436", # paste is unmaintained but no alternative available
+    "RUSTSEC-2021-0139", # ansi_term is pulled by tracing-forest; no patched release exists
 ]
 
 # License configuration
@@ -27,9 +28,10 @@ allow = [
     "BSD-2-Clause",
     "BSD-3-Clause",
     "CC0-1.0",
+    "ISC",
     "Unicode-3.0",
     "MPL-2.0",
-    "Zlib"
+    "Zlib",
 ]
 exceptions = [
     # Each entry is the crate and version constraint, and its specific allowed licenses
@@ -50,19 +52,29 @@ deny = [
 skip = [
     # Allow duplicate spin versions - transitively pulled by p3-dft and flume
     { name = "spin" },
+    # Allow duplicate rand versions - miden-crypto uses 0.10, proptest pulls 0.9
+    { name = "rand" },
+    { name = "rand_core" },
+    { name = "rand_chacha" },
+    # Allow duplicate itertools versions
+    { name = "itertools" },
+    # Allow duplicate num-bigint versions - miden-field depends directly on
+    # 0.5.x to match p3-field's BigUint type, while miden-crypto's `num`
+    # dependency (Falcon signature math, SMT ops; unrelated to p3-field)
+    # still pulls 0.4.x
+    { name = "num-bigint" },
+    # Allow duplicate shlex versions from bindgen/librocksdb-sys and cc
+    { name = "shlex" },
 ]
 skip-tree = [
-    # Allow rand v0.9.x for now - legacy dependency
-    { name = "rand", version = "=0.9.5" },
-    { name = "rand_core", version = "=0.9.5" },
-    { name = "rand_chacha", version = "=0.9.0" },
+    # Allow getrandom v0.3.x for now - will be updated when miden-crypto upgrades
+    { name = "getrandom", version = "=0.3.4" },
     # Allow rustc_version v0.2.x - build dependency
     { name = "rustc_version", version = "=0.2.3" },
     # Allow unicode-width v0.1.x - miden-miette vs miden-formatting conflict (complex to fix)
     { name = "unicode-width", version = "=0.1.14" },
     # Allow syn v1.x and v2.x - our derive macros need v1.x while ecosystem uses v2.x
     { name = "syn", version = "=1.0.109" },
-    { name = "syn", version = "=2.0.119" },
 ]
 
 # Sources configuration

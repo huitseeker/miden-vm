@@ -9,19 +9,22 @@ pub use miden_assembly::{
     ast::{Module, ModuleKind},
     diagnostics,
 };
-pub use miden_core::proof::{ExecutionProof, HashFunction};
+pub use miden_core::{
+    program::ExecutionClaim,
+    proof::{DeferredProof, ExecutionProof, HashFunction, StarkProof},
+};
 #[cfg(not(target_family = "wasm"))]
 pub use miden_processor::execute_sync;
 pub use miden_processor::{
     BaseHost, DefaultHost, ExecutionError, ExecutionOptions, ExecutionOutput, FastProcessor,
-    FutureMaybeSend, Host, Kernel, Program, ProgramInfo, StackInputs, SyncHost, TraceBuildInputs,
-    TraceGenerationContext, ZERO, advice, crypto, execute, field, operation::Operation, serde,
-    trace, trace::ExecutionTrace, utils,
+    FutureMaybeSend, Host, KernelDescriptor, Program, ProgramInfo, StackInputs, SyncHost,
+    TraceBuildInputs, TraceGenerationContext, ZERO, advice, crypto, execute, field,
+    operation::Operation, serde, trace, trace::ExecutionTrace, utils,
 };
 pub use miden_prover::{InputError, ProvingOptions, StackOutputs, TraceProvingInputs, Word, prove};
 #[cfg(not(target_family = "wasm"))]
 pub use miden_prover::{prove_from_trace_sync, prove_sync};
-pub use miden_verifier::VerificationError;
+pub use miden_verifier::{Unsettled, VerificationError, Verifier};
 
 // (private) exports
 // ================================================================================================
@@ -29,22 +32,10 @@ pub use miden_verifier::VerificationError;
 #[cfg(feature = "internal")]
 pub mod internal;
 
-/// Verifies a Miden proof.
+/// Verifies a final Miden proof of the given execution claim.
 ///
-/// See [miden_verifier::verify] for more details.
-pub fn verify(
-    program_info: ProgramInfo,
-    stack_inputs: StackInputs,
-    stack_outputs: StackOutputs,
-    proof: ExecutionProof,
-) -> Result<u32, VerificationError> {
-    let registry = miden_core_lib::CoreLibrary::default().verifier_registry();
-    let (security_level, _) = miden_verifier::verify_with_precompiles(
-        program_info,
-        stack_inputs,
-        stack_outputs,
-        proof,
-        &registry,
-    )?;
-    Ok(security_level)
+/// Wire-backed deferred proofs are partial/delegable proof material and are rejected here; use
+/// [`Verifier::verify_partial`] to verify and hydrate wire-backed partial proofs.
+pub fn verify(proof: ExecutionProof, claim: ExecutionClaim) -> Result<u32, VerificationError> {
+    miden_verifier::verify(proof, claim)
 }

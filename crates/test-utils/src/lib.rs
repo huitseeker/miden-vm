@@ -26,7 +26,7 @@ pub use miden_core::{
     EMPTY_WORD, Felt, ONE, WORD_SIZE, Word, ZERO,
     chiplets::hasher::{STATE_WIDTH, hash_elements},
     field::{Field, PrimeCharacteristicRing, PrimeField64, QuadFelt},
-    program::{MIN_STACK_DEPTH, StackInputs, StackOutputs},
+    program::{ExecutionClaim, MIN_STACK_DEPTH, StackInputs, StackOutputs},
     utils::{IntoBytes, ToElements, group_slice_elements},
 };
 use miden_core::{
@@ -38,11 +38,12 @@ use miden_mast_package::{Package, debug_info::PackageDebugInfo};
 use miden_processor::trace::build_trace;
 pub use miden_processor::{
     ContextId, ExecutionError, ProcessorState,
-    advice::{AdviceInputs, AdviceProvider, AdviceStackBuilder},
+    advice::{AdviceInputs, AdviceProvider, AdviceStack},
     trace::ExecutionTrace,
 };
 use miden_processor::{
-    DefaultHost, ExecutionOutput, FastProcessor, Program, TraceBuildInputs, event::EventHandler,
+    DefaultHost, ExecutionOptions, ExecutionOutput, FastProcessor, Program, TraceBuildInputs,
+    event::{EventHandler, TraceHandler},
 };
 #[cfg(not(target_family = "wasm"))]
 pub use miden_prover::prove_sync;
@@ -70,9 +71,9 @@ pub mod rand;
 pub mod recursive_verifier;
 
 mod test_builders;
-
 #[cfg(all(feature = "arbitrary", not(target_family = "wasm")))]
 pub use proptest;
+pub use test_builders::{IntoAdviceStackInput, advice_stack_from};
 
 pub fn module_source(path: impl AsRef<Path>, source: impl ToString) -> String {
     let source = source.to_string();
@@ -83,6 +84,17 @@ pub fn module_source(path: impl AsRef<Path>, source: impl ToString) -> String {
         let namespace = path.strip_prefix("::").unwrap_or(&path);
         format!("namespace {namespace}\n\n{source}")
     }
+}
+
+#[cfg(not(target_family = "wasm"))]
+/// Constructs a processor with the default VM environment.
+fn new_vm_default_processor(
+    stack_inputs: StackInputs,
+    advice_inputs: AdviceInputs,
+    options: ExecutionOptions,
+) -> Result<FastProcessor, ExecutionError> {
+    FastProcessor::new_with_options(stack_inputs, advice_inputs, options)
+        .map_err(ExecutionError::advice_error_no_context)
 }
 
 // CONSTANTS
@@ -245,6 +257,7 @@ pub struct Test {
     pub in_tracing_mode: bool,
     pub libraries: Vec<Arc<Package>>,
     pub handlers: Vec<(EventName, Arc<dyn EventHandler>)>,
+    pub trace_handlers: Vec<(EventName, Arc<dyn TraceHandler>)>,
     pub add_modules: Vec<(Arc<Path>, String)>,
 }
 
@@ -265,6 +278,7 @@ impl Test {
             in_tracing_mode,
             libraries: Vec::default(),
             handlers: Vec::new(),
+            trace_handlers: Vec::new(),
             add_modules: Vec::default(),
         }
     }
@@ -320,6 +334,21 @@ impl Test {
         self
     }
 
+    /// Adds a trace handler for a specific trace event when running the `Host`.
+    pub fn with_trace_handler(mut self, event: EventName, handler: impl TraceHandler) -> Self {
+        self.add_trace_handler(event, handler);
+        self
+    }
+
+    /// Adds trace handlers for specific trace events when running the `Host`.
+    pub fn with_trace_handlers(
+        mut self,
+        handlers: Vec<(EventName, Arc<dyn TraceHandler>)>,
+    ) -> Self {
+        self.add_trace_handlers(handlers);
+        self
+    }
+
     /// Adds an extra module to link in during assembly.
     pub fn with_module(mut self, path: impl AsRef<Path>, source: impl ToString) -> Self {
         self.add_module(path, source);
@@ -353,6 +382,26 @@ impl Test {
         }
     }
 
+    /// Add a trace handler for a specific event when running the `Host`.
+    pub fn add_trace_handler(&mut self, event: EventName, handler: impl TraceHandler) {
+        self.add_trace_handlers(vec![(event, Arc::new(handler))]);
+    }
+
+    /// Add trace handlers for specific events when running the `Host`.
+    pub fn add_trace_handlers(&mut self, handlers: Vec<(EventName, Arc<dyn TraceHandler>)>) {
+        for (event, handler) in handlers {
+            let event_name = event.as_str();
+            if SystemEvent::from_name(event_name).is_some() {
+                panic!("tried to register trace handler for reserved system event: {event_name}")
+            }
+            let event_id = event.to_event_id();
+            if self.trace_handlers.iter().any(|(e, _)| e.to_event_id() == event_id) {
+                panic!("trace handler for event '{event_name}' was already added")
+            }
+            self.trace_handlers.push((event, handler));
+        }
+    }
+
     // TEST METHODS
     // --------------------------------------------------------------------------------------------
 
@@ -382,9 +431,12 @@ impl Test {
         let mut host = host.with_source_manager(self.source_manager.clone());
 
         // execute the test
-        let processor = FastProcessor::new(self.stack_inputs)
-            .with_advice(self.advice_inputs.clone())
-            .expect("test advice inputs should fit default advice map limits");
+        let processor = new_vm_default_processor(
+            self.stack_inputs,
+            self.advice_inputs.clone(),
+            ExecutionOptions::default(),
+        )
+        .expect("test processor should initialize with default precompiles");
         let execution_output = processor.execute_sync(&program, &mut host).unwrap();
 
         // validate the memory state
@@ -563,14 +615,13 @@ impl Test {
         let debug_info = self.in_tracing_mode.then_some(debug_info).flatten();
 
         let fast_stack_result = {
-            let fast_processor = FastProcessor::new_with_options(
+            let fast_processor = new_vm_default_processor(
                 stack_inputs,
                 self.advice_inputs.clone(),
-                miden_processor::ExecutionOptions::default()
+                ExecutionOptions::default()
                     .with_core_trace_fragment_size(FRAGMENT_SIZE)
                     .unwrap(),
-            )
-            .map_err(ExecutionError::advice_error_no_context)?;
+            )?;
             if let Some(debug_info) = debug_info.as_ref() {
                 fast_processor.execute_trace_inputs_with_package_debug_info_sync(
                     &program, debug_info, &mut host,
@@ -600,9 +651,11 @@ impl Test {
         let mut host = host.with_source_manager(self.source_manager.clone());
         let debug_info = self.in_tracing_mode.then_some(debug_info).flatten();
 
-        let processor = FastProcessor::new(self.stack_inputs)
-            .with_advice(self.advice_inputs.clone())
-            .map_err(ExecutionError::advice_error_no_context)?;
+        let processor = new_vm_default_processor(
+            self.stack_inputs,
+            self.advice_inputs.clone(),
+            ExecutionOptions::default(),
+        )?;
 
         if let Some(debug_info) = debug_info.as_ref() {
             processor
@@ -629,7 +682,7 @@ impl Test {
             stack_inputs,
             self.advice_inputs.clone(),
             &mut host,
-            miden_processor::ExecutionOptions::default(),
+            ExecutionOptions::default(),
             ProvingOptions::default(),
         )
         .unwrap();
@@ -641,9 +694,13 @@ impl Test {
             elements[0] += ONE;
             let stack_outputs =
                 StackOutputs::new(&elements).expect("stack outputs should fit the VM stack");
-            assert!(verify(program_info, stack_inputs, stack_outputs, proof).is_err());
+            let claim =
+                ExecutionClaim::from_program_info(program_info, stack_inputs, stack_outputs);
+            assert!(verify(proof, claim).is_err());
         } else {
-            let result = verify(program_info, stack_inputs, stack_outputs, proof);
+            let claim =
+                ExecutionClaim::from_program_info(program_info, stack_inputs, stack_outputs);
+            let result = verify(proof, claim);
             assert!(result.is_ok(), "error: {result:?}");
         }
     }
@@ -707,6 +764,9 @@ impl Test {
         for (event, handler) in &self.handlers {
             host.register_handler(event.clone(), handler.clone()).unwrap();
         }
+        for (event, handler) in &self.trace_handlers {
+            host.register_trace_handler(event.clone(), handler.clone()).unwrap();
+        }
 
         (program, host, debug_info)
     }
@@ -769,9 +829,12 @@ impl Test {
         let compare_error_diagnostics = debug_info.is_none();
 
         let fast_result_by_step = {
-            let fast_process = FastProcessor::new(stack_inputs)
-                .with_advice(self.advice_inputs.clone())
-                .expect("test advice inputs should fit default advice map limits");
+            let fast_process = new_vm_default_processor(
+                stack_inputs,
+                self.advice_inputs.clone(),
+                ExecutionOptions::default(),
+            )
+            .expect("test processor should initialize with default precompiles");
             if let Some(debug_info) = debug_info.as_ref() {
                 fast_process
                     .execute_by_step_with_package_debug_info_sync(&program, debug_info, &mut host)
