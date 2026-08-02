@@ -717,7 +717,7 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "miden-assembly"
-version = "0.28.0"
+version = "0.29.0"
 dependencies = [
  "log",
  "miden-assembly-syntax",
@@ -732,7 +732,7 @@ dependencies = [
 
 [[package]]
 name = "miden-assembly-syntax"
-version = "0.28.0"
+version = "0.29.0"
 dependencies = [
  "log",
  "miden-assembly-syntax-cst",
@@ -751,7 +751,7 @@ dependencies = [
 
 [[package]]
 name = "miden-assembly-syntax-cst"
-version = "0.28.0"
+version = "0.29.0"
 dependencies = [
  "miden-debug-types",
  "miden-rowan",
@@ -761,7 +761,7 @@ dependencies = [
 
 [[package]]
 name = "miden-core"
-version = "0.28.0"
+version = "0.29.0"
 dependencies = [
  "derive_more",
  "log",
@@ -792,7 +792,7 @@ dependencies = [
 
 [[package]]
 name = "miden-crypto"
-version = "0.28.2"
+version = "0.29.0"
 dependencies = [
  "blake3",
  "cc",
@@ -831,7 +831,7 @@ dependencies = [
 
 [[package]]
 name = "miden-crypto-derive"
-version = "0.28.2"
+version = "0.29.0"
 dependencies = [
  "quote",
  "syn 2.0.119",
@@ -839,7 +839,7 @@ dependencies = [
 
 [[package]]
 name = "miden-debug-types"
-version = "0.28.0"
+version = "0.29.0"
 dependencies = [
  "memchr",
  "miden-crypto",
@@ -857,7 +857,7 @@ dependencies = [
 
 [[package]]
 name = "miden-field"
-version = "0.28.2"
+version = "0.29.0"
 dependencies = [
  "miden-serde-utils",
  "num-bigint 0.5.1",
@@ -883,7 +883,7 @@ dependencies = [
 
 [[package]]
 name = "miden-lifted-air"
-version = "0.28.2"
+version = "0.29.0"
 dependencies = [
  "p3-air",
  "p3-challenger",
@@ -895,7 +895,7 @@ dependencies = [
 
 [[package]]
 name = "miden-lifted-stark"
-version = "0.28.2"
+version = "0.29.0"
 dependencies = [
  "miden-lifted-air",
  "miden-stark-transcript",
@@ -916,7 +916,7 @@ dependencies = [
 
 [[package]]
 name = "miden-mast-package"
-version = "0.28.0"
+version = "0.29.0"
 dependencies = [
  "hashbrown",
  "log",
@@ -968,7 +968,7 @@ dependencies = [
 
 [[package]]
 name = "miden-package-registry"
-version = "0.28.0"
+version = "0.29.0"
 dependencies = [
  "miden-assembly-syntax",
  "miden-core",
@@ -982,7 +982,7 @@ dependencies = [
 
 [[package]]
 name = "miden-project"
-version = "0.28.0"
+version = "0.29.0"
 dependencies = [
  "miden-assembly-syntax",
  "miden-core",
@@ -1007,7 +1007,7 @@ dependencies = [
 
 [[package]]
 name = "miden-serde-utils"
-version = "0.28.2"
+version = "0.29.0"
 dependencies = [
  "p3-field",
  "p3-goldilocks",
@@ -1015,7 +1015,7 @@ dependencies = [
 
 [[package]]
 name = "miden-stark-transcript"
-version = "0.28.2"
+version = "0.29.0"
 dependencies = [
  "p3-challenger",
  "p3-field",
@@ -1025,7 +1025,7 @@ dependencies = [
 
 [[package]]
 name = "miden-stateful-hasher"
-version = "0.28.2"
+version = "0.29.0"
 dependencies = [
  "p3-field",
  "p3-symmetric",
@@ -1033,7 +1033,7 @@ dependencies = [
 
 [[package]]
 name = "miden-utils-core-derive"
-version = "0.28.0"
+version = "0.29.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1042,7 +1042,7 @@ dependencies = [
 
 [[package]]
 name = "miden-utils-diagnostics"
-version = "0.28.0"
+version = "0.29.0"
 dependencies = [
  "miden-debug-types",
  "miden-miette",
@@ -1051,7 +1051,7 @@ dependencies = [
 
 [[package]]
 name = "miden-utils-indexing"
-version = "0.28.0"
+version = "0.29.0"
 dependencies = [
  "miden-serde-utils",
  "proptest",
@@ -1061,7 +1061,7 @@ dependencies = [
 
 [[package]]
 name = "miden-utils-sync"
-version = "0.28.0"
+version = "0.29.0"
 dependencies = [
  "lock_api",
  "loom",
@@ -2147,9 +2147,9 @@ dependencies = [
 
 [[package]]
 name = "trybuild"
-version = "1.0.118"
+version = "1.0.119"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "06649c6f63d86604ba0c8950d5a1829fc9a17afd70fc6629f481d75b6a624c78"
+checksum = "4c5c9f7b7b1a048dd2bebdb7260b0cc71ec5587b19352fa5c3cd9e1c067103f0"
 dependencies = [
  "dissimilar",
  "glob",
