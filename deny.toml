@@ -75,6 +75,7 @@ skip-tree = [
     { name = "unicode-width", version = "=0.1.14" },
     # Allow syn v1.x and v2.x - our derive macros need v1.x while ecosystem uses v2.x
     { name = "syn", version = "=1.0.109" },
+    { name = "syn", version = "=2.0.119" },
 ]
 
 # Sources configuration
