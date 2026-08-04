@@ -4,6 +4,11 @@
 
 #### Changes
 
+- [BREAKING] Recursive MASM verification now accepts a claim commitment and authenticates the advice-supplied claim and kernel witness. Rust callers construct request-addressed inputs with `RecursiveVerifierInputs::for_request` ([#3447](https://github.com/0xMiden/miden-vm/pull/3447)).
+
+#### Fixes
+
+- [BREAKING] Fixed collisions between empty input and full rate blocks in domain-separated field-element hashing by marking nonzero-domain empty input in capacity. This changes empty domain-separated commitments ([#3447](https://github.com/0xMiden/miden-vm/pull/3447)).
 - Moved the `miden-precompiles` and `miden-precompiles-prover` crate sources from the repository root into `crates/`, aligning them with the rest of the workspace layout ([#3462](https://github.com/0xMiden/miden-vm/pull/3462)).
 
 ## v0.28.0 (2026-08-01)
