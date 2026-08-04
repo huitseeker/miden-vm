@@ -1,4 +1,5 @@
 # Changelog
+## v0.30.0 (Unreleased)
 
 ## v0.29.0 (2026-08-04)
 
