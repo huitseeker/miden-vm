@@ -709,13 +709,13 @@ mod tests {
             mmr.add(leaf).unwrap();
         }
 
-        // the clone is an unchanged snapshot of the original at the time of cloning
+        // The clone is an unchanged snapshot of the original at the time of cloning.
         let reference = Mmr::try_from_iter(leaves(num_leaves)).unwrap();
         assert_eq!(clone.forest, reference.forest);
         assert_eq!(clone.nodes, reference.nodes);
         assert_eq!(clone.peaks(), reference.peaks());
 
-        // the original matches a freshly built MMR of the same size
+        // The original matches a freshly built MMR of the same size.
         let reference = Mmr::try_from_iter(leaves(3 * NODE_CHUNK_CAPACITY as u64)).unwrap();
         assert_eq!(mmr.forest, reference.forest);
         assert_eq!(mmr.nodes, reference.nodes);
@@ -728,7 +728,7 @@ mod tests {
         let clone = mmr.clone();
         mmr.add(Word::empty()).unwrap();
 
-        // pushing into the original diverges only the last (shared) chunk
+        // Pushing into the original diverges only the last (shared) chunk.
         let orig_chunks = &mmr.nodes.chunks;
         let clone_chunks = &clone.nodes.chunks;
         assert_eq!(orig_chunks.len(), clone_chunks.len());
