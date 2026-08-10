@@ -134,7 +134,6 @@ impl PartialEq<&[Word]> for NodeStore {
 /// after a clone copies at most one chunk.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
-#[cfg_attr(feature = "serde", serde(from = "SerdeMmr", into = "SerdeMmr"))]
 pub struct Mmr {
     /// Refer to the `forest` method documentation for details of the semantics of this value.
     pub(super) forest: Forest,
@@ -512,40 +511,50 @@ impl Deserializable for Mmr {
     }
 }
 
-/// Shadow struct that [Mmr] converts through when (de)serialized with serde, via
-/// `#[serde(from/into)]`.
-///
-/// [Mmr] used to store its nodes as a flat `Vec<Word>` and derive serde directly, so that shape
-/// is the wire format previously-serialized data was written in. Deriving serde on the current
-/// representation would instead emit [NodeStore]'s chunked layout (a sequence of 1024-node
-/// sequences), breaking compatibility with that data and leaking the chunk size into the wire
-/// format. This struct preserves the original format by mirroring the old [Mmr] exactly: same
-/// struct name (via the rename, as some formats include it), same field names, order, and types.
+/// [Mmr] used to store its nodes as a flat `Vec<Word>` and derive serde directly, so a flat
+/// sequence of words is the wire format previously-serialized data was written in. Deriving serde
+/// on [NodeStore] would instead emit its chunked layout (a sequence of 1024-node sequences),
+/// breaking compatibility with that data and leaking the chunk size into the wire format. These
+/// impls preserve the original format by mirroring `Vec<Word>`'s serde representation — a length-
+/// hinted sequence — streaming directly from/into the chunks with no intermediate flat copy.
 #[cfg(feature = "serde")]
-#[derive(serde::Deserialize, serde::Serialize)]
-#[serde(rename = "Mmr")]
-struct SerdeMmr {
-    forest: Forest,
-    nodes: Vec<Word>,
-}
+impl serde::Serialize for NodeStore {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeSeq;
 
-#[cfg(feature = "serde")]
-impl From<Mmr> for SerdeMmr {
-    fn from(mmr: Mmr) -> Self {
-        Self {
-            forest: mmr.forest,
-            nodes: mmr.nodes.iter().copied().collect(),
+        let mut seq = serializer.serialize_seq(Some(self.len()))?;
+        for node in self.iter() {
+            seq.serialize_element(node)?;
         }
+        seq.end()
     }
 }
 
 #[cfg(feature = "serde")]
-impl From<SerdeMmr> for Mmr {
-    fn from(mmr: SerdeMmr) -> Self {
-        Self {
-            forest: mmr.forest,
-            nodes: mmr.nodes.into_iter().collect(),
+impl<'de> serde::Deserialize<'de> for NodeStore {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct SeqVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for SeqVisitor {
+            type Value = NodeStore;
+
+            fn expecting(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                f.write_str("a sequence of MMR nodes")
+            }
+
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> Result<NodeStore, A::Error> {
+                let mut store = NodeStore::new();
+                while let Some(node) = seq.next_element::<Word>()? {
+                    store.push(node);
+                }
+                Ok(store)
+            }
         }
+
+        deserializer.deserialize_seq(SeqVisitor)
     }
 }
 
