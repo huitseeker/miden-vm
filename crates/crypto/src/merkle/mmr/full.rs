@@ -507,10 +507,7 @@ impl Deserializable for Mmr {
                 forest.num_nodes()
             )));
         }
-        let mut nodes = NodeStore::new();
-        for _ in 0..count {
-            nodes.push(Word::read_from(source)?);
-        }
+        let nodes = source.read_many_iter(count)?.collect::<Result<NodeStore, _>>()?;
         Ok(Self { forest, nodes })
     }
 }
