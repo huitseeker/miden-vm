@@ -10,7 +10,8 @@
 //! depths, i.e. as part of adding a new element to the forest the trees with same depth are
 //! merged, creating a new tree with depth d+1, this process is continued until the property is
 //! reestablished.
-use alloc::vec::Vec;
+use alloc::{sync::Arc, vec::Vec};
+use core::ops::Index;
 
 use super::{
     super::{InnerNodeInfo, MerklePath},
@@ -24,6 +25,101 @@ use crate::{
     utils::{ByteReader, ByteWriter, Deserializable, DeserializationError, Serializable},
 };
 
+// NODE STORE
+// ===============================================================================================
+
+/// Number of nodes per chunk in [NodeStore]: 1024 nodes * 32 bytes = 32 KiB per chunk.
+const NODE_CHUNK_CAPACITY: usize = 1024;
+
+/// Append-only node storage backed by fixed-size chunks shared between clones via [Arc].
+///
+/// The MMR's postorder node buffer is strictly append-only, so a clone taken at any point is
+/// fully described by a frozen prefix of the buffer. Cloning a [NodeStore] copies only the spine
+/// of [Arc] pointers, sharing all chunk contents with the original. [NodeStore::push] copies the
+/// last chunk before appending if (and only if) it is shared with a clone, bounding the
+/// copy-on-write cost at one chunk regardless of how many nodes the store holds.
+///
+/// Invariant: every chunk except the last contains exactly [NODE_CHUNK_CAPACITY] nodes, and no
+/// chunk is empty.
+#[derive(Debug, Clone, Default)]
+pub(super) struct NodeStore {
+    chunks: Vec<Arc<Vec<Word>>>,
+}
+
+impl NodeStore {
+    /// Constructor for an empty [NodeStore].
+    pub fn new() -> Self {
+        Self { chunks: Vec::new() }
+    }
+
+    /// Returns the number of nodes in the store.
+    pub fn len(&self) -> usize {
+        match self.chunks.last() {
+            Some(last) => (self.chunks.len() - 1) * NODE_CHUNK_CAPACITY + last.len(),
+            None => 0,
+        }
+    }
+
+    /// Appends a node to the store.
+    pub fn push(&mut self, node: Word) {
+        match self.chunks.last_mut() {
+            Some(last) if last.len() < NODE_CHUNK_CAPACITY => {
+                if Arc::get_mut(last).is_none() {
+                    // The chunk is shared with a clone; copy it before appending. A plain
+                    // `Arc::make_mut` would clone with capacity == len, growing past
+                    // NODE_CHUNK_CAPACITY on later pushes, so copy with the full capacity instead.
+                    let mut copy = Vec::with_capacity(NODE_CHUNK_CAPACITY);
+                    copy.extend_from_slice(last);
+                    *last = Arc::new(copy);
+                }
+                Arc::get_mut(last).expect("chunk is unique").push(node);
+            },
+            _ => {
+                let mut chunk = Vec::with_capacity(NODE_CHUNK_CAPACITY);
+                chunk.push(node);
+                self.chunks.push(Arc::new(chunk));
+            },
+        }
+    }
+
+    /// Returns an iterator over all nodes in the store, in insertion (postorder) order.
+    pub fn iter(&self) -> impl Iterator<Item = &Word> {
+        self.chunks.iter().flat_map(|chunk| chunk.iter())
+    }
+}
+
+impl Index<usize> for NodeStore {
+    type Output = Word;
+
+    fn index(&self, index: usize) -> &Word {
+        &self.chunks[index / NODE_CHUNK_CAPACITY][index % NODE_CHUNK_CAPACITY]
+    }
+}
+
+impl FromIterator<Word> for NodeStore {
+    fn from_iter<T: IntoIterator<Item = Word>>(iter: T) -> Self {
+        let mut store = Self::new();
+        for node in iter {
+            store.push(node);
+        }
+        store
+    }
+}
+
+impl PartialEq for NodeStore {
+    fn eq(&self, other: &Self) -> bool {
+        self.len() == other.len() && self.iter().eq(other.iter())
+    }
+}
+
+impl Eq for NodeStore {}
+
+impl PartialEq<&[Word]> for NodeStore {
+    fn eq(&self, other: &&[Word]) -> bool {
+        self.len() == other.len() && self.iter().eq(other.iter())
+    }
+}
+
 // MMR
 // ===============================================================================================
 
@@ -32,8 +128,13 @@ use crate::{
 ///
 /// Since this is a full representation of the MMR, elements are never removed and the MMR will
 /// grow roughly `O(2n)` in number of leaf elements.
+///
+/// Cloning is cheap: the nodes are stored in chunks shared between clones, so a clone copies
+/// `O(num_nodes / 1024)` pointers instead of the full node buffer, and appending to the original
+/// after a clone copies at most one chunk.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(from = "SerdeMmr", into = "SerdeMmr"))]
 pub struct Mmr {
     /// Refer to the `forest` method documentation for details of the semantics of this value.
     pub(super) forest: Forest,
@@ -44,7 +145,7 @@ pub struct Mmr {
     /// the elements of every tree in the forest to be stored in the same sequential buffer. It
     /// also means new elements can be added to the forest, and merging of trees is very cheap with
     /// no need to copy elements.
-    pub(super) nodes: Vec<Word>,
+    pub(super) nodes: NodeStore,
 }
 
 impl Default for Mmr {
@@ -61,7 +162,7 @@ impl Mmr {
     pub fn new() -> Mmr {
         Mmr {
             forest: Forest::empty(),
-            nodes: Vec::new(),
+            nodes: NodeStore::new(),
         }
     }
 
@@ -389,15 +490,65 @@ impl Mmr {
 impl Serializable for Mmr {
     fn write_into<W: ByteWriter>(&self, target: &mut W) {
         self.forest.write_into(target);
-        self.nodes.write_into(target);
+        // Matches the wire format of `Vec<Word>`: a `write_usize` length prefix followed by the
+        // elements in postorder.
+        target.write_usize(self.nodes.len());
+        target.write_many(self.nodes.iter());
     }
 }
 
 impl Deserializable for Mmr {
     fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
         let forest = Forest::read_from(source)?;
-        let nodes = Vec::<Word>::read_from(source)?;
+        let count = source.read_usize()?;
+        if count != forest.num_nodes() {
+            return Err(DeserializationError::InvalidValue(alloc::format!(
+                "MMR node count {count} does not match forest node count {}",
+                forest.num_nodes()
+            )));
+        }
+        let mut nodes = NodeStore::new();
+        for _ in 0..count {
+            nodes.push(Word::read_from(source)?);
+        }
         Ok(Self { forest, nodes })
+    }
+}
+
+/// Shadow struct that [Mmr] converts through when (de)serialized with serde, via
+/// `#[serde(from/into)]`.
+///
+/// [Mmr] used to store its nodes as a flat `Vec<Word>` and derive serde directly, so that shape
+/// is the wire format previously-serialized data was written in. Deriving serde on the current
+/// representation would instead emit [NodeStore]'s chunked layout (a sequence of 1024-node
+/// sequences), breaking compatibility with that data and leaking the chunk size into the wire
+/// format. This struct preserves the original format by mirroring the old [Mmr] exactly: same
+/// struct name (via the rename, as some formats include it), same field names, order, and types.
+#[cfg(feature = "serde")]
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(rename = "Mmr")]
+struct SerdeMmr {
+    forest: Forest,
+    nodes: Vec<Word>,
+}
+
+#[cfg(feature = "serde")]
+impl From<Mmr> for SerdeMmr {
+    fn from(mmr: Mmr) -> Self {
+        Self {
+            forest: mmr.forest,
+            nodes: mmr.nodes.iter().copied().collect(),
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+impl From<SerdeMmr> for Mmr {
+    fn from(mmr: SerdeMmr) -> Self {
+        Self {
+            forest: mmr.forest,
+            nodes: mmr.nodes.into_iter().collect(),
+        }
     }
 }
 
@@ -484,14 +635,18 @@ impl Iterator for MmrNodes<'_> {
 // ================================================================================================
 #[cfg(test)]
 mod tests {
-    use alloc::vec::Vec;
+    use alloc::{sync::Arc, vec::Vec};
 
-    use super::super::nodes_from_mask;
+    use super::{super::nodes_from_mask, NODE_CHUNK_CAPACITY};
     use crate::{
         Felt, Word, ZERO,
         merkle::mmr::{Forest, Mmr},
         utils::{Deserializable, DeserializationError, Serializable},
     };
+
+    fn leaves(count: u64) -> impl Iterator<Item = Word> {
+        (0..count).map(|value| Word::new([ZERO, ZERO, ZERO, Felt::new_unchecked(value)]))
+    }
 
     #[test]
     fn test_serialization() {
@@ -513,6 +668,74 @@ mod tests {
 
         let result = Mmr::read_from_bytes(&bytes);
         assert!(matches!(result, Err(DeserializationError::InvalidValue(_))));
+    }
+
+    #[test]
+    fn test_serialization_matches_vec_format() {
+        // Build an MMR spanning multiple chunks (> 2048 nodes) to cover chunk boundaries.
+        let num_leaves = NODE_CHUNK_CAPACITY as u64 + NODE_CHUNK_CAPACITY as u64 / 2;
+        let mmr = Mmr::try_from_iter(leaves(num_leaves)).unwrap();
+        assert!(mmr.nodes.len() > 2 * NODE_CHUNK_CAPACITY);
+
+        let mut expected = mmr.forest.to_bytes();
+        let nodes_vec: Vec<Word> = mmr.nodes.iter().copied().collect();
+        expected.extend_from_slice(&nodes_vec.to_bytes());
+
+        assert_eq!(mmr.to_bytes(), expected);
+        let deserialized = Mmr::read_from_bytes(&expected).unwrap();
+        assert_eq!(mmr.forest, deserialized.forest);
+        assert_eq!(mmr.nodes, deserialized.nodes);
+    }
+
+    #[test]
+    fn test_deserialization_rejects_node_count_mismatch() {
+        let mmr = Mmr::try_from_iter(leaves(8)).unwrap();
+        let mut bytes = mmr.forest.to_bytes();
+        let mut nodes_vec: Vec<Word> = mmr.nodes.iter().copied().collect();
+        nodes_vec.pop();
+        bytes.extend_from_slice(&nodes_vec.to_bytes());
+
+        let result = Mmr::read_from_bytes(&bytes);
+        assert!(matches!(result, Err(DeserializationError::InvalidValue(_))));
+    }
+
+    #[test]
+    fn test_clone_stays_frozen_after_push() {
+        let num_leaves = 2 * NODE_CHUNK_CAPACITY as u64;
+        let mut mmr = Mmr::try_from_iter(leaves(num_leaves)).unwrap();
+        let clone = mmr.clone();
+
+        for leaf in leaves(3 * NODE_CHUNK_CAPACITY as u64).skip(num_leaves as usize) {
+            mmr.add(leaf).unwrap();
+        }
+
+        // the clone is an unchanged snapshot of the original at the time of cloning
+        let reference = Mmr::try_from_iter(leaves(num_leaves)).unwrap();
+        assert_eq!(clone.forest, reference.forest);
+        assert_eq!(clone.nodes, reference.nodes);
+        assert_eq!(clone.peaks(), reference.peaks());
+
+        // the original matches a freshly built MMR of the same size
+        let reference = Mmr::try_from_iter(leaves(3 * NODE_CHUNK_CAPACITY as u64)).unwrap();
+        assert_eq!(mmr.forest, reference.forest);
+        assert_eq!(mmr.nodes, reference.nodes);
+        assert_eq!(mmr.peaks(), reference.peaks());
+    }
+
+    #[test]
+    fn test_clone_shares_full_chunks() {
+        let mut mmr = Mmr::try_from_iter(leaves(NODE_CHUNK_CAPACITY as u64)).unwrap();
+        let clone = mmr.clone();
+        mmr.add(Word::empty()).unwrap();
+
+        // pushing into the original diverges only the last (shared) chunk
+        let orig_chunks = &mmr.nodes.chunks;
+        let clone_chunks = &clone.nodes.chunks;
+        assert_eq!(orig_chunks.len(), clone_chunks.len());
+        for (orig, cloned) in orig_chunks.iter().zip(clone_chunks).take(orig_chunks.len() - 1) {
+            assert!(Arc::ptr_eq(orig, cloned));
+        }
+        assert!(!Arc::ptr_eq(orig_chunks.last().unwrap(), clone_chunks.last().unwrap()));
     }
 
     #[test]
