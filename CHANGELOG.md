@@ -20,6 +20,10 @@
 - [BREAKING] `verify`, `Verifier::verify`, and `Verifier::verify_partial` now borrow the proof and the claim instead of consuming them.
 - [BREAKING] Renamed the `AdviceMutation::ExtendMap` field `other` to `map` and the `AdviceMutation::ExtendMerkleStore` field `infos` to `inner_nodes`.
 
+#### Fixes
+
+- Fixed `Polynomial::div` panicking when the numerator is zero by adding the missing `return` keyword ([#3534](https://github.com/0xMiden/miden-vm/issues/3534)).
+
 ## v0.29.0 (2026-08-04)
 
 #### Changes
