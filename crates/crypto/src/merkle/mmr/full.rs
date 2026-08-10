@@ -693,6 +693,42 @@ mod tests {
         assert_eq!(mmr.nodes, deserialized.nodes);
     }
 
+    /// Verifies the custom serde impls on [NodeStore] produce the exact representation the
+    /// pre-[NodeStore] `Mmr` derive did (a flat `Vec<Word>` field), in both a self-describing
+    /// format (JSON: struct/field names, flat array shape) and a compact binary format
+    /// (postcard: length-prefixed, exercising the `serialize_seq` length hint).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn test_serde_matches_vec_format() {
+        /// Replica of `Mmr` as it was when its nodes were a `Vec<Word>` and serde was derived.
+        #[derive(serde::Deserialize, serde::Serialize)]
+        #[serde(rename = "Mmr")]
+        struct VecMmr {
+            forest: Forest,
+            nodes: Vec<Word>,
+        }
+
+        // span multiple chunks to cover chunk boundaries
+        let num_leaves = NODE_CHUNK_CAPACITY as u64 + NODE_CHUNK_CAPACITY as u64 / 2;
+        let mmr = Mmr::try_from_iter(leaves(num_leaves)).unwrap();
+        let vec_mmr = VecMmr {
+            forest: mmr.forest,
+            nodes: mmr.nodes.iter().copied().collect(),
+        };
+
+        let json = serde_json::to_string(&mmr).unwrap();
+        assert_eq!(json, serde_json::to_string(&vec_mmr).unwrap());
+        let from_json: Mmr = serde_json::from_str(&json).unwrap();
+        assert_eq!(mmr.forest, from_json.forest);
+        assert_eq!(mmr.nodes, from_json.nodes);
+
+        let bytes = postcard::to_allocvec(&mmr).unwrap();
+        assert_eq!(bytes, postcard::to_allocvec(&vec_mmr).unwrap());
+        let from_bytes: Mmr = postcard::from_bytes(&bytes).unwrap();
+        assert_eq!(mmr.forest, from_bytes.forest);
+        assert_eq!(mmr.nodes, from_bytes.nodes);
+    }
+
     #[test]
     fn test_deserialization_rejects_node_count_mismatch() {
         let mmr = Mmr::try_from_iter(leaves(8)).unwrap();
