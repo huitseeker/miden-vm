@@ -223,10 +223,9 @@ pub(crate) fn assert_hash_precompile<H: HashFunction>() {
     }
 
     let fresh = || {
-        DeferredState::new(
-            Arc::new(PrecompileRegistry::new().with_precompile(HashPrecompile::<H>::default())),
-            usize::MAX,
-        )
+        DeferredState::new(Arc::new(
+            PrecompileRegistry::new().with_precompile(HashPrecompile::<H>::default()),
+        ))
         .expect("hash precompile initialization should fit the test budget")
     };
     let assert_registers = |state: &mut DeferredState,
@@ -379,7 +378,6 @@ pub(crate) fn assert_hash_precompile<H: HashFunction>() {
     let mut rehydrated = DeferredState::from_wire(
         Arc::new(PrecompileRegistry::new().with_precompile(HashPrecompile::<H>::default())),
         &wire,
-        usize::MAX,
     )
     .expect("wire should rehydrate under the hash registry");
     assert_eq!(rehydrated.evaluate_digest(rehydrated.root()).unwrap(), TRUE_DIGEST);

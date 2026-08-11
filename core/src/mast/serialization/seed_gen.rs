@@ -8,11 +8,11 @@ use std::println;
 use crate::{
     Felt, Word,
     advice::{AdviceInputs, AdviceMap},
-    deferred::{DeferredStateWire, TRUE_INDEX, Tag, WireEntry},
+    deferred::{DeferredStateWire, TRUE_DIGEST, TRUE_INDEX, Tag, WireEntry},
     mast::{BasicBlockNodeBuilder, JoinNodeBuilder, MastForest},
     operations::Operation,
     program::{KernelDescriptor, Program, StackInputs, StackOutputs},
-    proof::{DeferredProof, ExecutionProof, HashFunction},
+    proof::{ExecutionProof, HashFunction, StarkProof, VmProof},
     serde::{ByteWriter, Serializable},
 };
 
@@ -309,49 +309,21 @@ fn generate_fuzz_seeds() {
         }
     }
 
-    // Execution proof seed (minimal)
+    // Execution proof seed (minimal complete proof with no precompile obligation).
     {
-        let proof =
-            ExecutionProof::from_parts(Vec::new(), HashFunction::Rpo256, DeferredProof::empty());
-        write_seed("execution_proof_deserialize", "minimal_proof.bin", &proof.to_bytes());
+        let stark = StarkProof::new(Vec::new(), HashFunction::Rpo256);
+        let vm = VmProof::from_parts(stark, TRUE_DIGEST);
+        let proof = ExecutionProof::new_complete(vm, None).expect("minimal proof should compose");
+        let proof = proof.to_bytes().expect("minimal proof should encode");
+        write_seed("execution_proof_deserialize", "minimal_proof.bin", &proof);
     }
 
-    // Execution proof seeds for malicious length-prefix deserialization.
+    // Execution proof seed for malicious VM STARK length-prefix deserialization.
     {
         let mut oversized_proof_len = Vec::new();
+        oversized_proof_len.write_u8(1); // Complete execution proof discriminant.
         oversized_proof_len.write_usize(usize::MAX);
         write_seed("execution_proof_deserialize", "oversized_proof_len.bin", &oversized_proof_len);
-
-        let mut oversized_deferred_wire_entries_len = Vec::new();
-        oversized_deferred_wire_entries_len.write_usize(0);
-        oversized_deferred_wire_entries_len.write_u8(HashFunction::Blake3_256 as u8);
-        oversized_deferred_wire_entries_len.write_u8(DeferredProof::WIRE_TAG);
-        oversized_deferred_wire_entries_len.write_usize(usize::MAX);
-        write_seed(
-            "execution_proof_deserialize",
-            "oversized_deferred_wire_entries_len.bin",
-            &oversized_deferred_wire_entries_len,
-        );
-    }
-
-    // Execution proof seed with many small deferred-wire entries.
-    {
-        let deferred_wire = DeferredStateWire {
-            entries: (0..64)
-                .map(|idx| WireEntry::Join {
-                    tag: Tag::AND,
-                    lhs: if idx == 0 { TRUE_INDEX } else { idx },
-                    rhs: TRUE_INDEX,
-                })
-                .collect(),
-        };
-        let proof =
-            ExecutionProof::from_parts(vec![1, 2, 3], HashFunction::Blake3_256, deferred_wire);
-        write_seed(
-            "execution_proof_deserialize",
-            "many_minimal_deferred_wire_entries.bin",
-            &proof.to_bytes(),
-        );
     }
 
     println!("\nSeed corpus generated in ../tools/miden-core-fuzz/corpus");

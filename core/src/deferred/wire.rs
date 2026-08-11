@@ -1,16 +1,15 @@
 //! Compact wire format for deferred-state witnesses.
 //!
-//! Partial proofs carry a canonical, topologically ordered stream of the explicit DAG entries
-//! needed to justify a deferred root before a precompile VM STARK proof is produced. Wire index 0
-//! is reserved for the implicit TRUE node; entry `i` has wire index `i + 1`, and structural child
-//! references may only point to TRUE or earlier entries. Empty wire opens [`TRUE_DIGEST`];
+//! This low-level transport format is a canonical, topologically ordered stream of the explicit DAG
+//! entries needed to reconstruct a deferred state. It is not embedded in final execution proofs.
+//! Wire index 0 is reserved for the implicit TRUE node; entry `i` has wire index `i + 1`, and
+//! structural child references may only point to TRUE or earlier entries. Empty wire opens
+//! [`TRUE_DIGEST`];
 //! otherwise the root is the digest of the final entry.
 //!
 //! Rehydration decodes the untrusted stream into ordinary [`DeferredState`] nodes, rejects
 //! non-canonical/dangling wire by comparing with [`DeferredState::to_wire`], and finally evaluates
-//! the implicit root to repopulate evaluation memos. This supports explicit partial verification:
-//! public final verification rejects `DeferredProof::Wire`, while the partial verifier rehydrates
-//! it and verifies the VM proof against the resulting root.
+//! the implicit root to repopulate evaluation memos.
 
 use alloc::{
     collections::{BTreeMap, BTreeSet},
@@ -20,11 +19,16 @@ use alloc::{
 };
 
 #[cfg(feature = "serde")]
-use serde::{Deserialize, Serialize};
+use serde::{
+    Deserialize, Deserializer, Serialize,
+    de::{
+        self, DeserializeSeed, EnumAccess, IgnoredAny, MapAccess, SeqAccess, VariantAccess, Visitor,
+    },
+};
 
 use super::{
-    DataChunk, DeferredError, DeferredState, Digest, Node, NodeType, PrecompileError,
-    PrecompileRegistry, TRUE_DIGEST, Tag,
+    DataChunk, DeferredError, DeferredState, Digest, MAX_DEFERRED_ELEMENTS, Node, NodeType,
+    PrecompileError, PrecompileRegistry, TRUE_DIGEST, Tag,
 };
 use crate::{
     Felt, ZERO,
@@ -40,6 +44,31 @@ use crate::{
 /// Reserved index for the always-known [`super::TRUE_DIGEST`] / [`super::Node::TRUE`] node.
 pub const TRUE_INDEX: u32 = 0;
 
+const MAX_WIRE_ENTRIES: usize = MAX_DEFERRED_ELEMENTS / Tag::FELT_LEN;
+
+fn reserve_wire_elements(
+    remaining_elements: &mut usize,
+    requested_elements: usize,
+) -> Result<(), DeserializationError> {
+    *remaining_elements = remaining_elements.checked_sub(requested_elements).ok_or_else(|| {
+        DeserializationError::InvalidValue(format!(
+            "deferred wire exceeds the {MAX_DEFERRED_ELEMENTS} element limit"
+        ))
+    })?;
+    Ok(())
+}
+
+fn reserve_wire_payload(
+    remaining_elements: &mut usize,
+    payload_count: usize,
+) -> Result<(), DeserializationError> {
+    let payload_elements =
+        payload_count.checked_mul(Node::DATA_CHUNK_FELT_LEN).ok_or_else(|| {
+            DeserializationError::InvalidValue("deferred wire element count overflow".into())
+        })?;
+    reserve_wire_elements(remaining_elements, payload_elements)
+}
+
 // WIRE ENTRY
 // ================================================================================================
 
@@ -49,7 +78,7 @@ pub const TRUE_INDEX: u32 = 0;
 /// reference `TRUE_INDEX` or an earlier entry. Pair-list pairs store structural child references in
 /// payload order.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize))]
 pub enum WireEntry {
     /// Raw data payload interpreted by the tag's precompile.
     ///
@@ -69,11 +98,10 @@ pub enum WireEntry {
 ///
 /// The root is implicit: empty `entries` opens [`TRUE_DIGEST`], otherwise the root is the digest of
 /// the last entry. Accepted wire must be topologically ordered, root-last, duplicate-free,
-/// canonical, and semantically valid under the installed [`PrecompileRegistry`]. Wire-backed
-/// deferred proofs are partial material: public final verification rejects them, and explicit
-/// partial verification rehydrates them before checking the VM proof.
+/// canonical, and semantically valid under the installed [`PrecompileRegistry`]. This remains a
+/// low-level deferred-state transport type and is not embedded in final execution proofs.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize))]
 pub struct DeferredStateWire {
     pub entries: Vec<WireEntry>,
 }
@@ -90,10 +118,10 @@ impl DeferredStateWire {
     pub(crate) fn rehydrate(
         &self,
         precompiles: Arc<PrecompileRegistry>,
-        max_elements: usize,
     ) -> Result<DeferredState, IntegrityError> {
+        self.validate_element_limit()?;
         let (entries, root) = WireDecoder::new(self, precompiles.as_ref())?.decode()?;
-        let mut state = DeferredState::new(Arc::clone(&precompiles), max_elements)?;
+        let mut state = DeferredState::new(Arc::clone(&precompiles))?;
 
         // Register entries in strict topological wire order. Structural children have already been
         // decoded to earlier digests, so ordinary DeferredState registration enforces the
@@ -120,6 +148,28 @@ impl DeferredStateWire {
 
         Ok(state)
     }
+
+    fn validate_element_limit(&self) -> Result<(), IntegrityError> {
+        let mut remaining_elements = MAX_DEFERRED_ELEMENTS;
+        for entry in &self.entries {
+            let payload_count = match entry {
+                WireEntry::Data { chunks, .. } => chunks.len(),
+                WireEntry::Join { .. } => 1,
+                WireEntry::PairList { pairs, .. } => pairs.len(),
+            };
+            let payload_elements = payload_count
+                .checked_mul(Node::DATA_CHUNK_FELT_LEN)
+                .and_then(|elements| Tag::FELT_LEN.checked_add(elements))
+                .ok_or(IntegrityError::InvalidStructure)?;
+            remaining_elements = remaining_elements.checked_sub(payload_elements).ok_or(
+                IntegrityError::DeferredStateTooLarge {
+                    num_elements: payload_elements,
+                    max: remaining_elements,
+                },
+            )?;
+        }
+        Ok(())
+    }
 }
 
 // INTEGRITY ERROR
@@ -142,7 +192,7 @@ pub enum IntegrityError {
     /// The root evaluated, but not to the canonical TRUE node.
     #[error("deferred root evaluated to a non-TRUE canonical form")]
     RootNotTrue,
-    /// Rehydrating the wire would exceed the configured deferred-state budget.
+    /// Rehydrating the wire would exceed the fixed deferred-state budget.
     #[error("deferred insertion requires {num_elements} elements but only {max} remain")]
     DeferredStateTooLarge { num_elements: usize, max: usize },
 }
@@ -443,6 +493,486 @@ enum WireEncodeStep {
     Emit(Digest),
 }
 
+// SERDE DECODING
+// ================================================================================================
+
+#[cfg(feature = "serde")]
+impl<'de> Deserialize<'de> for WireEntry {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        WireEntrySeed {
+            remaining_elements: MAX_DEFERRED_ELEMENTS,
+        }
+        .deserialize(deserializer)
+        .map(|(entry, _)| entry)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> Deserialize<'de> for DeferredStateWire {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_struct("DeferredStateWire", &["entries"], DeferredStateWireVisitor)
+    }
+}
+
+#[cfg(feature = "serde")]
+struct DeferredStateWireVisitor;
+
+#[cfg(feature = "serde")]
+impl<'de> Visitor<'de> for DeferredStateWireVisitor {
+    type Value = DeferredStateWire;
+
+    fn expecting(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("a deferred state wire")
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+        let entries = seq
+            .next_element_seed(WireEntriesSeed)?
+            .ok_or_else(|| de::Error::invalid_length(0, &self))?;
+        Ok(DeferredStateWire { entries })
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+        let mut entries = None;
+        while let Some(field) = map.next_key::<DeferredStateWireField>()? {
+            match field {
+                DeferredStateWireField::Entries => {
+                    if entries.is_some() {
+                        return Err(de::Error::duplicate_field("entries"));
+                    }
+                    entries = Some(map.next_value_seed(WireEntriesSeed)?);
+                },
+                DeferredStateWireField::Ignore => {
+                    let _: IgnoredAny = map.next_value()?;
+                },
+            }
+        }
+        let entries = entries.ok_or_else(|| de::Error::missing_field("entries"))?;
+        Ok(DeferredStateWire { entries })
+    }
+}
+
+#[cfg(feature = "serde")]
+#[derive(Deserialize)]
+#[serde(field_identifier, rename_all = "lowercase")]
+enum DeferredStateWireField {
+    Entries,
+    #[serde(other)]
+    Ignore,
+}
+
+#[cfg(feature = "serde")]
+struct WireEntriesSeed;
+
+#[cfg(feature = "serde")]
+impl<'de> DeserializeSeed<'de> for WireEntriesSeed {
+    type Value = Vec<WireEntry>;
+
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<Self::Value, D::Error> {
+        deserializer.deserialize_seq(WireEntriesVisitor)
+    }
+}
+
+#[cfg(feature = "serde")]
+struct WireEntriesVisitor;
+
+#[cfg(feature = "serde")]
+impl<'de> Visitor<'de> for WireEntriesVisitor {
+    type Value = Vec<WireEntry>;
+
+    fn expecting(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("a bounded sequence of deferred wire entries")
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+        let size_hint = seq.size_hint().unwrap_or(0);
+        if size_hint > MAX_WIRE_ENTRIES {
+            return Err(de::Error::custom(format!(
+                "deferred wire contains {size_hint} entries, maximum is {MAX_WIRE_ENTRIES}"
+            )));
+        }
+
+        let mut entries = Vec::with_capacity(size_hint);
+        let mut remaining_elements = MAX_DEFERRED_ELEMENTS;
+        loop {
+            let Some((entry, used_elements)) =
+                seq.next_element_seed(WireEntrySeed { remaining_elements })?
+            else {
+                break;
+            };
+            remaining_elements = remaining_elements
+                .checked_sub(used_elements)
+                .expect("the wire entry seed enforces the remaining element budget");
+            entries.push(entry);
+        }
+        Ok(entries)
+    }
+}
+
+#[cfg(feature = "serde")]
+struct WireEntrySeed {
+    remaining_elements: usize,
+}
+
+#[cfg(feature = "serde")]
+impl<'de> DeserializeSeed<'de> for WireEntrySeed {
+    type Value = (WireEntry, usize);
+
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<Self::Value, D::Error> {
+        deserializer.deserialize_enum(
+            "WireEntry",
+            &["Data", "Join", "PairList"],
+            WireEntryVisitor {
+                remaining_elements: self.remaining_elements,
+            },
+        )
+    }
+}
+
+#[cfg(feature = "serde")]
+struct WireEntryVisitor {
+    remaining_elements: usize,
+}
+
+#[cfg(feature = "serde")]
+impl<'de> Visitor<'de> for WireEntryVisitor {
+    type Value = (WireEntry, usize);
+
+    fn expecting(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("a deferred wire entry")
+    }
+
+    fn visit_enum<A: EnumAccess<'de>>(self, data: A) -> Result<Self::Value, A::Error> {
+        let (variant, access) = data.variant::<WireEntryVariant>()?;
+        match variant {
+            WireEntryVariant::Data => access.struct_variant(
+                &["tag", "chunks"],
+                DataEntryVisitor {
+                    remaining_elements: self.remaining_elements,
+                },
+            ),
+            WireEntryVariant::Join => access.struct_variant(
+                &["tag", "lhs", "rhs"],
+                JoinEntryVisitor {
+                    remaining_elements: self.remaining_elements,
+                },
+            ),
+            WireEntryVariant::PairList => access.struct_variant(
+                &["tag", "pairs"],
+                PairListEntryVisitor {
+                    remaining_elements: self.remaining_elements,
+                },
+            ),
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+#[derive(Deserialize)]
+#[serde(variant_identifier)]
+enum WireEntryVariant {
+    Data,
+    Join,
+    PairList,
+}
+
+#[cfg(feature = "serde")]
+struct DataEntryVisitor {
+    remaining_elements: usize,
+}
+
+#[cfg(feature = "serde")]
+impl<'de> Visitor<'de> for DataEntryVisitor {
+    type Value = (WireEntry, usize);
+
+    fn expecting(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("a deferred data wire entry")
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+        let max_chunks = max_payload_count::<A::Error>(self.remaining_elements)?;
+        let tag = seq.next_element()?.ok_or_else(|| de::Error::invalid_length(0, &self))?;
+        let chunks = seq
+            .next_element_seed(BoundedSequenceSeed::<DataChunk>::new(max_chunks))?
+            .ok_or_else(|| de::Error::invalid_length(1, &self))?;
+        let used_elements = wire_entry_elements::<A::Error>(chunks.len())?;
+        Ok((WireEntry::Data { tag, chunks }, used_elements))
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+        let max_chunks = max_payload_count::<A::Error>(self.remaining_elements)?;
+        let mut tag = None;
+        let mut chunks = None;
+        while let Some(field) = map.next_key::<DataEntryField>()? {
+            match field {
+                DataEntryField::Tag => {
+                    if tag.is_some() {
+                        return Err(de::Error::duplicate_field("tag"));
+                    }
+                    tag = Some(map.next_value()?);
+                },
+                DataEntryField::Chunks => {
+                    if chunks.is_some() {
+                        return Err(de::Error::duplicate_field("chunks"));
+                    }
+                    chunks = Some(
+                        map.next_value_seed(BoundedSequenceSeed::<DataChunk>::new(max_chunks))?,
+                    );
+                },
+                DataEntryField::Ignore => {
+                    let _: IgnoredAny = map.next_value()?;
+                },
+            }
+        }
+        let tag = tag.ok_or_else(|| de::Error::missing_field("tag"))?;
+        let chunks = chunks.ok_or_else(|| de::Error::missing_field("chunks"))?;
+        let used_elements = wire_entry_elements::<A::Error>(chunks.len())?;
+        Ok((WireEntry::Data { tag, chunks }, used_elements))
+    }
+}
+
+#[cfg(feature = "serde")]
+#[derive(Deserialize)]
+#[serde(field_identifier, rename_all = "lowercase")]
+enum DataEntryField {
+    Tag,
+    Chunks,
+    #[serde(other)]
+    Ignore,
+}
+
+#[cfg(feature = "serde")]
+struct JoinEntryVisitor {
+    remaining_elements: usize,
+}
+
+#[cfg(feature = "serde")]
+impl<'de> Visitor<'de> for JoinEntryVisitor {
+    type Value = (WireEntry, usize);
+
+    fn expecting(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("a deferred join wire entry")
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+        let used_elements = wire_entry_elements::<A::Error>(1)?;
+        ensure_serde_budget::<A::Error>(self.remaining_elements, used_elements)?;
+        let tag = seq.next_element()?.ok_or_else(|| de::Error::invalid_length(0, &self))?;
+        let lhs = seq.next_element()?.ok_or_else(|| de::Error::invalid_length(1, &self))?;
+        let rhs = seq.next_element()?.ok_or_else(|| de::Error::invalid_length(2, &self))?;
+        Ok((WireEntry::Join { tag, lhs, rhs }, used_elements))
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+        let used_elements = wire_entry_elements::<A::Error>(1)?;
+        ensure_serde_budget::<A::Error>(self.remaining_elements, used_elements)?;
+        let mut tag = None;
+        let mut lhs = None;
+        let mut rhs = None;
+        while let Some(field) = map.next_key::<JoinEntryField>()? {
+            match field {
+                JoinEntryField::Tag => set_map_value(&mut tag, "tag", &mut map)?,
+                JoinEntryField::Lhs => set_map_value(&mut lhs, "lhs", &mut map)?,
+                JoinEntryField::Rhs => set_map_value(&mut rhs, "rhs", &mut map)?,
+                JoinEntryField::Ignore => {
+                    let _: IgnoredAny = map.next_value()?;
+                },
+            }
+        }
+        Ok((
+            WireEntry::Join {
+                tag: tag.ok_or_else(|| de::Error::missing_field("tag"))?,
+                lhs: lhs.ok_or_else(|| de::Error::missing_field("lhs"))?,
+                rhs: rhs.ok_or_else(|| de::Error::missing_field("rhs"))?,
+            },
+            used_elements,
+        ))
+    }
+}
+
+#[cfg(feature = "serde")]
+#[derive(Deserialize)]
+#[serde(field_identifier, rename_all = "lowercase")]
+enum JoinEntryField {
+    Tag,
+    Lhs,
+    Rhs,
+    #[serde(other)]
+    Ignore,
+}
+
+#[cfg(feature = "serde")]
+struct PairListEntryVisitor {
+    remaining_elements: usize,
+}
+
+#[cfg(feature = "serde")]
+impl<'de> Visitor<'de> for PairListEntryVisitor {
+    type Value = (WireEntry, usize);
+
+    fn expecting(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("a deferred pair-list wire entry")
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+        let max_pairs = max_payload_count::<A::Error>(self.remaining_elements)?;
+        let tag = seq.next_element()?.ok_or_else(|| de::Error::invalid_length(0, &self))?;
+        let pairs = seq
+            .next_element_seed(BoundedSequenceSeed::<(u32, u32)>::new(max_pairs))?
+            .ok_or_else(|| de::Error::invalid_length(1, &self))?;
+        let used_elements = wire_entry_elements::<A::Error>(pairs.len())?;
+        Ok((WireEntry::PairList { tag, pairs }, used_elements))
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+        let max_pairs = max_payload_count::<A::Error>(self.remaining_elements)?;
+        let mut tag = None;
+        let mut pairs = None;
+        while let Some(field) = map.next_key::<PairListEntryField>()? {
+            match field {
+                PairListEntryField::Tag => {
+                    if tag.is_some() {
+                        return Err(de::Error::duplicate_field("tag"));
+                    }
+                    tag = Some(map.next_value()?);
+                },
+                PairListEntryField::Pairs => {
+                    if pairs.is_some() {
+                        return Err(de::Error::duplicate_field("pairs"));
+                    }
+                    pairs = Some(
+                        map.next_value_seed(BoundedSequenceSeed::<(u32, u32)>::new(max_pairs))?,
+                    );
+                },
+                PairListEntryField::Ignore => {
+                    let _: IgnoredAny = map.next_value()?;
+                },
+            }
+        }
+        let tag = tag.ok_or_else(|| de::Error::missing_field("tag"))?;
+        let pairs = pairs.ok_or_else(|| de::Error::missing_field("pairs"))?;
+        let used_elements = wire_entry_elements::<A::Error>(pairs.len())?;
+        Ok((WireEntry::PairList { tag, pairs }, used_elements))
+    }
+}
+
+#[cfg(feature = "serde")]
+#[derive(Deserialize)]
+#[serde(field_identifier, rename_all = "lowercase")]
+enum PairListEntryField {
+    Tag,
+    Pairs,
+    #[serde(other)]
+    Ignore,
+}
+
+#[cfg(feature = "serde")]
+struct BoundedSequenceSeed<T> {
+    max_len: usize,
+    marker: core::marker::PhantomData<T>,
+}
+
+#[cfg(feature = "serde")]
+impl<T> BoundedSequenceSeed<T> {
+    const fn new(max_len: usize) -> Self {
+        Self {
+            max_len,
+            marker: core::marker::PhantomData,
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de, T: Deserialize<'de>> DeserializeSeed<'de> for BoundedSequenceSeed<T> {
+    type Value = Vec<T>;
+
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<Self::Value, D::Error> {
+        deserializer.deserialize_seq(BoundedSequenceVisitor::<T> {
+            max_len: self.max_len,
+            marker: core::marker::PhantomData,
+        })
+    }
+}
+
+#[cfg(feature = "serde")]
+struct BoundedSequenceVisitor<T> {
+    max_len: usize,
+    marker: core::marker::PhantomData<T>,
+}
+
+#[cfg(feature = "serde")]
+impl<'de, T: Deserialize<'de>> Visitor<'de> for BoundedSequenceVisitor<T> {
+    type Value = Vec<T>;
+
+    fn expecting(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(formatter, "a sequence of at most {} elements", self.max_len)
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+        let size_hint = seq.size_hint().unwrap_or(0);
+        if size_hint > self.max_len {
+            return Err(de::Error::invalid_length(size_hint, &self));
+        }
+
+        let mut values = Vec::with_capacity(size_hint);
+        while values.len() < self.max_len {
+            let Some(value) = seq.next_element()? else {
+                return Ok(values);
+            };
+            values.push(value);
+        }
+        if seq.next_element::<IgnoredAny>()?.is_some() {
+            return Err(de::Error::invalid_length(self.max_len + 1, &self));
+        }
+        Ok(values)
+    }
+}
+
+#[cfg(feature = "serde")]
+fn max_payload_count<E: de::Error>(remaining_elements: usize) -> Result<usize, E> {
+    let remaining_payload = remaining_elements
+        .checked_sub(Tag::FELT_LEN)
+        .ok_or_else(|| serde_wire_limit_error())?;
+    Ok(remaining_payload / Node::DATA_CHUNK_FELT_LEN)
+}
+
+#[cfg(feature = "serde")]
+fn wire_entry_elements<E: de::Error>(payload_count: usize) -> Result<usize, E> {
+    payload_count
+        .checked_mul(Node::DATA_CHUNK_FELT_LEN)
+        .and_then(|payload_elements| Tag::FELT_LEN.checked_add(payload_elements))
+        .ok_or_else(|| de::Error::custom("deferred wire element count overflow"))
+}
+
+#[cfg(feature = "serde")]
+fn ensure_serde_budget<E: de::Error>(
+    remaining_elements: usize,
+    used_elements: usize,
+) -> Result<(), E> {
+    if used_elements > remaining_elements {
+        return Err(serde_wire_limit_error());
+    }
+    Ok(())
+}
+
+#[cfg(feature = "serde")]
+fn serde_wire_limit_error<E: de::Error>() -> E {
+    de::Error::custom(format!("deferred wire exceeds the {MAX_DEFERRED_ELEMENTS} element limit"))
+}
+
+#[cfg(feature = "serde")]
+fn set_map_value<'de, A: MapAccess<'de>, T: Deserialize<'de>>(
+    slot: &mut Option<T>,
+    field: &'static str,
+    map: &mut A,
+) -> Result<(), A::Error> {
+    if slot.is_some() {
+        return Err(de::Error::duplicate_field(field));
+    }
+    *slot = Some(map.next_value()?);
+    Ok(())
+}
+
 // SERIALIZATION
 // ================================================================================================
 
@@ -480,36 +1010,8 @@ impl Serializable for WireEntry {
 
 impl Deserializable for WireEntry {
     fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
-        let discriminant = source.read_u8()?;
-        match discriminant {
-            0 => {
-                let tag = Tag::read_from(source)?;
-                let chunk_count = source.read_usize()?;
-                let chunks = source
-                    .read_many_iter::<WireDataChunk>(chunk_count)?
-                    .map(|chunk| chunk.map(|chunk| chunk.0))
-                    .collect::<Result<_, _>>()?;
-                Ok(Self::Data { tag, chunks })
-            },
-            1 => {
-                let tag = Tag::read_from(source)?;
-                let lhs = source.read_u32()?;
-                let rhs = source.read_u32()?;
-                Ok(Self::Join { tag, lhs, rhs })
-            },
-            2 => {
-                let tag = Tag::read_from(source)?;
-                let pair_count = source.read_usize()?;
-                let pairs = source
-                    .read_many_iter::<WirePair>(pair_count)?
-                    .map(|pair| pair.map(|pair| pair.0))
-                    .collect::<Result<_, _>>()?;
-                Ok(Self::PairList { tag, pairs })
-            },
-            other => Err(DeserializationError::InvalidValue(format!(
-                "invalid deferred wire entry discriminant: {other}"
-            ))),
-        }
+        let mut remaining_elements = MAX_DEFERRED_ELEMENTS;
+        read_wire_entry(source, &mut remaining_elements)
     }
 
     fn min_serialized_size() -> usize {
@@ -557,13 +1059,64 @@ impl Serializable for DeferredStateWire {
 impl Deserializable for DeferredStateWire {
     fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
         let entry_count = source.read_usize()?;
-        let entries = source.read_many_iter::<WireEntry>(entry_count)?.collect::<Result<_, _>>()?;
+        if entry_count > MAX_WIRE_ENTRIES {
+            return Err(DeserializationError::InvalidValue(format!(
+                "deferred wire contains {entry_count} entries, maximum is {MAX_WIRE_ENTRIES}"
+            )));
+        }
+
+        let mut remaining_elements = MAX_DEFERRED_ELEMENTS;
+        let mut entries = Vec::with_capacity(entry_count);
+        for _ in 0..entry_count {
+            entries.push(read_wire_entry(source, &mut remaining_elements)?);
+        }
         Ok(Self { entries })
     }
 
     fn read_from_bytes(bytes: &[u8]) -> Result<Self, DeserializationError> {
         let mut reader = BudgetedReader::new(SliceReader::new(bytes), bytes.len());
         Self::read_from(&mut reader)
+    }
+}
+
+fn read_wire_entry<R: ByteReader>(
+    source: &mut R,
+    remaining_elements: &mut usize,
+) -> Result<WireEntry, DeserializationError> {
+    let discriminant = source.read_u8()?;
+    match discriminant {
+        0 => {
+            reserve_wire_elements(remaining_elements, Tag::FELT_LEN)?;
+            let tag = Tag::read_from(source)?;
+            let chunk_count = source.read_usize()?;
+            reserve_wire_payload(remaining_elements, chunk_count)?;
+            let chunks = source
+                .read_many_iter::<WireDataChunk>(chunk_count)?
+                .map(|chunk| chunk.map(|chunk| chunk.0))
+                .collect::<Result<_, _>>()?;
+            Ok(WireEntry::Data { tag, chunks })
+        },
+        1 => {
+            reserve_wire_elements(remaining_elements, Tag::FELT_LEN + Node::DATA_CHUNK_FELT_LEN)?;
+            let tag = Tag::read_from(source)?;
+            let lhs = source.read_u32()?;
+            let rhs = source.read_u32()?;
+            Ok(WireEntry::Join { tag, lhs, rhs })
+        },
+        2 => {
+            reserve_wire_elements(remaining_elements, Tag::FELT_LEN)?;
+            let tag = Tag::read_from(source)?;
+            let pair_count = source.read_usize()?;
+            reserve_wire_payload(remaining_elements, pair_count)?;
+            let pairs = source
+                .read_many_iter::<WirePair>(pair_count)?
+                .map(|pair| pair.map(|pair| pair.0))
+                .collect::<Result<_, _>>()?;
+            Ok(WireEntry::PairList { tag, pairs })
+        },
+        other => Err(DeserializationError::InvalidValue(format!(
+            "invalid deferred wire entry discriminant: {other}"
+        ))),
     }
 }
 
@@ -644,11 +1197,45 @@ mod tests {
     }
 
     #[test]
+    fn empty_wire_rehydrates_with_the_fixed_deferred_element_limit() {
+        let state = DeferredState::from_wire(
+            Arc::new(PrecompileRegistry::new()),
+            &DeferredStateWire::default(),
+        )
+        .unwrap();
+
+        assert_eq!(state.num_elements(), 0);
+        assert_eq!(state.remaining_elements(), MAX_DEFERRED_ELEMENTS);
+    }
+
+    #[test]
+    fn in_memory_wire_element_limit_accepts_exact_and_rejects_next_entry() {
+        let join = WireEntry::Join {
+            tag: Tag::AND,
+            lhs: TRUE_INDEX,
+            rhs: TRUE_INDEX,
+        };
+        let join_elements = Tag::FELT_LEN + Node::DATA_CHUNK_FELT_LEN;
+        let join_count = MAX_DEFERRED_ELEMENTS / join_elements;
+        let mut entries = alloc::vec![join; join_count];
+        entries.push(WireEntry::Data { tag: Tag::CHUNKS, chunks: Vec::new() });
+        let mut wire = DeferredStateWire { entries };
+
+        wire.validate_element_limit().unwrap();
+
+        wire.entries.push(WireEntry::Data { tag: Tag::CHUNKS, chunks: Vec::new() });
+        assert!(matches!(
+            wire.validate_element_limit(),
+            Err(IntegrityError::DeferredStateTooLarge { .. })
+        ));
+    }
+
+    #[test]
     fn rehydration_rejects_empty_data_and_pair_list_entries() {
         let empty_data =
             wire(alloc::vec![WireEntry::Data { tag: Tag::CHUNKS, chunks: Vec::new() }]);
         assert!(matches!(
-            DeferredState::from_wire(Arc::new(PrecompileRegistry::new()), &empty_data, usize::MAX,),
+            DeferredState::from_wire(Arc::new(PrecompileRegistry::new()), &empty_data),
             Err(IntegrityError::InvalidStructure)
         ));
 
@@ -660,7 +1247,6 @@ mod tests {
             DeferredState::from_wire(
                 Arc::new(PrecompileRegistry::new().with_precompile(PairListFixture)),
                 &empty_pairs,
-                usize::MAX,
             ),
             Err(IntegrityError::InvalidStructure)
         ));
@@ -702,6 +1288,68 @@ mod tests {
         assert_wire_round_trips(DeferredStateWire::default());
     }
 
+    #[cfg(feature = "serde")]
+    #[test]
+    fn serde_wire_round_trips_without_changing_the_representation() {
+        let wire = wire(alloc::vec![
+            WireEntry::Data {
+                tag: tag(1),
+                chunks: alloc::vec![felts(10)]
+            },
+            WireEntry::Join { tag: tag(2), lhs: 1, rhs: TRUE_INDEX },
+            WireEntry::PairList {
+                tag: tag(3),
+                pairs: alloc::vec![(1, TRUE_INDEX)],
+            },
+        ]);
+        let encoded = serde_json::to_vec(&wire).unwrap();
+
+        assert_eq!(serde_json::from_slice::<DeferredStateWire>(&encoded).unwrap(), wire);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn serde_wire_entry_seed_accepts_exact_budget_and_rejects_one_less() {
+        use serde::de::{DeserializeSeed, IntoDeserializer};
+
+        let entry = WireEntry::Join {
+            tag: tag(1),
+            lhs: TRUE_INDEX,
+            rhs: TRUE_INDEX,
+        };
+        let encoded = serde_json::to_value(entry.clone()).unwrap();
+        let used_elements = Tag::FELT_LEN + Node::DATA_CHUNK_FELT_LEN;
+
+        let (decoded, used) = WireEntrySeed { remaining_elements: used_elements }
+            .deserialize(encoded.clone().into_deserializer())
+            .unwrap();
+        assert_eq!(decoded, entry);
+        assert_eq!(used, used_elements);
+
+        assert!(
+            WireEntrySeed { remaining_elements: used_elements - 1 }
+                .deserialize(encoded.into_deserializer())
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn wire_encoder_omits_nodes_unreachable_from_root() {
+        let mut state = DeferredState::default();
+        let orphan = state.register(Node::chunks(alloc::vec![[ZERO; 8]]).unwrap()).unwrap();
+        state.log_statement(TRUE_DIGEST).unwrap();
+
+        assert!(state.get_node(&orphan).is_some());
+        assert_eq!(
+            state.to_wire().unwrap().entries,
+            alloc::vec![WireEntry::Join {
+                tag: Tag::AND,
+                lhs: TRUE_INDEX,
+                rhs: TRUE_INDEX,
+            }]
+        );
+    }
+
     #[test]
     fn wire_encoder_handles_deep_roots_iteratively() {
         let mut state = DeferredState::default();
@@ -722,7 +1370,7 @@ mod tests {
             })
         );
         assert_eq!(
-            DeferredState::from_wire(Arc::new(PrecompileRegistry::new()), &wire, usize::MAX)
+            DeferredState::from_wire(Arc::new(PrecompileRegistry::new()), &wire)
                 .unwrap()
                 .root(),
             root
@@ -737,7 +1385,19 @@ mod tests {
 
     #[test]
     fn wire_rejects_over_budget_entry_count() {
-        assert!(DeferredStateWire::read_from_bytes(&encoded_entry_count(usize::MAX)).is_err());
+        assert!(
+            DeferredStateWire::read_from_bytes(&encoded_entry_count(MAX_WIRE_ENTRIES + 1)).is_err()
+        );
+    }
+
+    #[test]
+    fn wire_element_budget_accepts_exact_limit_and_rejects_one_more() {
+        let mut exact = MAX_DEFERRED_ELEMENTS;
+        reserve_wire_elements(&mut exact, MAX_DEFERRED_ELEMENTS).unwrap();
+        assert_eq!(exact, 0);
+
+        let mut oversized = MAX_DEFERRED_ELEMENTS;
+        assert!(reserve_wire_elements(&mut oversized, MAX_DEFERRED_ELEMENTS + 1).is_err());
     }
 
     #[test]

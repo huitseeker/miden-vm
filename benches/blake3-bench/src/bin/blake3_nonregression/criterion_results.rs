@@ -69,7 +69,7 @@ fn select_primary_metric(
         PRIMARY_METRIC,
         "prove_trace_sync",
         "build_trace",
-        "execute_trace_inputs_sync",
+        "execute_for_proving_sync",
         "execute_sync",
     ]
     .into_iter()
@@ -153,9 +153,9 @@ pub(crate) fn selected_criterion_axes(bench_axes: &str) -> Option<BTreeSet<Strin
 
 fn report_span_metric_name(name: &str) -> Option<String> {
     match name {
-        "execute_trace_inputs_with_package_debug_info_sync"
-        | "execute_trace_inputs_with_package_debug_info_at_source_node_sync" => {
-            Some("execute_trace_inputs_sync".to_string())
+        "execute_for_proving_with_package_debug_info_sync"
+        | "execute_for_proving_with_package_debug_info_at_source_node_sync" => {
+            Some("execute_for_proving_sync".to_string())
         },
         "build aux traces" => Some("build_aux_trace".to_string()),
         "to_core_chiplets_matrices" => Some("to_row_major_matrix".to_string()),

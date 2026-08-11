@@ -53,11 +53,10 @@ use miden_core_lib::CoreLibrary;
 use miden_processor::{
     DefaultHost, ExecutionOptions, FastProcessor, advice::AdviceInputs, trace::TraceLenSummary,
 };
-use miden_prover::prove_sync;
 use miden_verifier::recursive::RecursiveVerifierInputs;
 use miden_vm::{
-    Assembler, ExecutionProof, HashFunction, Program, ProgramInfo, ProvingOptions, StackInputs,
-    StackOutputs, TraceBuildInputs, trace::build_trace,
+    Assembler, ExecutionProof, ExecutionWitness, HashFunction, Program, ProgramInfo, Prover,
+    StackInputs, StackOutputs, prove_sync, read_execution_proof_from_bytes, trace::build_trace,
 };
 
 const DEFAULT_PROOF_COUNTS: [usize; 7] = [2, 3, 4, 5, 6, 7, 8];
@@ -309,7 +308,7 @@ fn load_cached_tx_proof(
             return None;
         },
     };
-    let proof = match ExecutionProof::from_bytes(&proof_bytes) {
+    let proof = match read_execution_proof_from_bytes(&proof_bytes) {
         Ok(proof) => proof,
         Err(err) => {
             eprintln!("ignoring undecodable cached proof {}: {err}", proof_path.display());
@@ -317,7 +316,7 @@ fn load_cached_tx_proof(
         },
     };
     assert_eq!(
-        proof.miden_proof().hash_fn(),
+        proof.vm().proof().hash_fn(),
         hash_fn,
         "cached transaction proof hash function mismatch"
     );
@@ -351,7 +350,8 @@ fn store_cached_tx_proof(
         .unwrap_or_else(|err| panic!("create proof cache {}: {err}", cache_dir.display()));
     let (proof_path, outputs_path) = tx_proof_cache_paths(cache_dir, proof_index, cache_key);
 
-    std::fs::write(&proof_path, proof.to_bytes())
+    let proof_bytes = proof.to_bytes().expect("cached proof should encode");
+    std::fs::write(&proof_path, proof_bytes)
         .unwrap_or_else(|err| panic!("write cached proof {}: {err}", proof_path.display()));
 
     let mut output_bytes = Vec::new();
@@ -393,10 +393,11 @@ fn print_tx_fixture_shape(
         FastProcessor::new_with_options(stack_inputs, advice_inputs, ExecutionOptions::default())
             .expect("transaction fixture advice should fit provider limits");
     let mut host = recursive_host();
-    let trace_inputs = processor
-        .execute_trace_inputs_sync(program, &mut host)
+    let witness = processor
+        .execute_for_proving_sync(program, &mut host)
         .expect("execute transaction fixture");
-    let trace = build_trace(trace_inputs).expect("build transaction fixture trace");
+    let (vm_witness, _) = witness.into_parts();
+    let trace = build_trace(vm_witness).expect("build transaction fixture trace");
     let summary = trace.trace_len_summary();
     let record = format!("BENCH_TX_SHAPE index={proof_index}");
     let shape = trace_shape_summary_for(proof_index, summary);
@@ -447,15 +448,13 @@ fn load_tx_fixtures(config: &BenchConfig, proof_count: usize) -> Vec<TxProofFixt
                 (stack_outputs, proof, "hit")
             } else {
                 let mut host = recursive_host();
-                let (stack_outputs, proof) = prove_sync(
+                let (stack_outputs, proof) = execute_and_prove(
                     &program,
                     stack_inputs,
                     advice_inputs,
                     &mut host,
-                    ExecutionOptions::default(),
-                    ProvingOptions::new(config.hash_fn),
-                )
-                .expect("prove transaction fixture");
+                    config.hash_fn,
+                );
                 if let Some(cache_dir) = config.tx_proof_cache_dir.as_deref() {
                     store_cached_tx_proof(
                         cache_dir,
@@ -467,12 +466,14 @@ fn load_tx_fixtures(config: &BenchConfig, proof_count: usize) -> Vec<TxProofFixt
                 }
                 (stack_outputs, proof, "miss")
             };
+            let precompile_roots =
+                proof.precompile().map_or(0, |precompile| precompile.roots().len());
             assert!(
-                proof.deferred_proof().is_empty(),
-                "recursive_verify fixture at proof index {proof_index} emits deferred proof data; \
-                 this benchmark expects precompile-free fixtures"
+                proof.is_complete() && proof.precompile().is_none(),
+                "recursive_verify fixture at proof index {proof_index} is not complete and \
+                 precompile-free"
             );
-            let proof_bytes = proof.to_bytes();
+            let proof_bytes = proof.to_bytes().expect("recursive fixture proof should encode");
             let proof_bytes_len = proof_bytes.len();
             let proof_digest: [u8; 32] = Blake3_256::hash(&proof_bytes).into();
             let proof_prefix = hex_prefix(&proof_bytes);
@@ -484,11 +485,11 @@ fn load_tx_fixtures(config: &BenchConfig, proof_count: usize) -> Vec<TxProofFixt
             let proof_digest_hex = to_hex(proof_digest);
             println!(
                 "    proof={proof_index} stack={stack_values:?} proof_bytes={proof_bytes_len} \
-                 deferred_entries=0",
+                 precompile_roots={precompile_roots}",
             );
             println!(
                 "BENCH_TX_PROOF index={proof_index} stack={stack_values:?} \
-                 proof_bytes={proof_bytes_len} deferred_entries=0 \
+                 proof_bytes={proof_bytes_len} precompile_roots={precompile_roots} \
                  proof_cache={proof_cache_status} proof_digest={proof_digest_hex} \
                  proof_prefix={proof_prefix}",
             );
@@ -616,7 +617,25 @@ fn recursive_host() -> DefaultHost {
     host
 }
 
-fn execute_trace_inputs(case: RecursionCase, mut host: DefaultHost) -> TraceBuildInputs {
+fn execute_and_prove(
+    program: &Program,
+    stack_inputs: StackInputs,
+    advice_inputs: AdviceInputs,
+    host: &mut DefaultHost,
+    hash_fn: HashFunction,
+) -> (StackOutputs, ExecutionProof) {
+    prove_sync(
+        &Prover::new().with_hash_fn(hash_fn),
+        program,
+        stack_inputs,
+        advice_inputs,
+        host,
+        ExecutionOptions::default(),
+    )
+    .expect("execute and prove program")
+}
+
+fn execute_for_proving(case: RecursionCase, mut host: DefaultHost) -> ExecutionWitness {
     let processor = FastProcessor::new_with_options(
         StackInputs::default(),
         case.advice_inputs,
@@ -624,35 +643,34 @@ fn execute_trace_inputs(case: RecursionCase, mut host: DefaultHost) -> TraceBuil
     )
     .expect("recursive verifier advice should fit provider limits");
     processor
-        .execute_trace_inputs_sync(&case.program, &mut host)
+        .execute_for_proving_sync(&case.program, &mut host)
         .expect("execute recursive verifier")
 }
 
 fn execute_recursive_case((case, host): (RecursionCase, DefaultHost)) {
-    let trace_inputs = execute_trace_inputs(case, host);
-    black_box(trace_inputs);
+    let execution_witness = execute_for_proving(case, host);
+    black_box(execution_witness);
 }
 
-fn build_trace_case(trace_inputs: TraceBuildInputs) {
-    let trace = build_trace(trace_inputs).expect("build recursive verifier trace");
+fn build_trace_case(witness: ExecutionWitness) {
+    let (vm_witness, _) = witness.into_parts();
+    let trace = build_trace(vm_witness).expect("build recursive verifier trace");
     black_box(trace);
 }
 
 fn execute_and_build_case((case, host): (RecursionCase, DefaultHost)) {
-    let trace_inputs = execute_trace_inputs(case, host);
-    build_trace_case(trace_inputs);
+    let execution_witness = execute_for_proving(case, host);
+    build_trace_case(execution_witness);
 }
 
 fn prove_recursive_case((case, mut host, hash_fn): (RecursionCase, DefaultHost, HashFunction)) {
-    let proof = prove_sync(
+    let proof = execute_and_prove(
         &case.program,
         StackInputs::default(),
         case.advice_inputs,
         &mut host,
-        ExecutionOptions::default(),
-        ProvingOptions::new(hash_fn),
-    )
-    .expect("prove recursive verifier");
+        hash_fn,
+    );
     black_box(proof);
 }
 
@@ -660,17 +678,10 @@ fn prove_recursive_once(case: &RecursionCase, hash_fn: HashFunction) -> (f64, us
     let advice_inputs = case.advice_inputs.clone();
     let start = Instant::now();
     let mut host = recursive_host();
-    let (_, proof) = prove_sync(
-        &case.program,
-        StackInputs::default(),
-        advice_inputs,
-        &mut host,
-        ExecutionOptions::default(),
-        ProvingOptions::new(hash_fn),
-    )
-    .expect("prove recursive verifier");
+    let (_, proof) =
+        execute_and_prove(&case.program, StackInputs::default(), advice_inputs, &mut host, hash_fn);
     let elapsed_ms = start.elapsed().as_secs_f64() * 1_000.0;
-    let proof_bytes = proof.to_bytes().len();
+    let proof_bytes = proof.to_bytes().expect("recursive proof should encode").len();
     black_box(proof);
     (elapsed_ms, proof_bytes)
 }
@@ -768,10 +779,11 @@ fn trace_shape_summary(case: &RecursionCase) -> TraceShapeSummary {
     )
     .expect("recursive verifier advice should fit provider limits");
     let mut host = recursive_host();
-    let trace_inputs = processor
-        .execute_trace_inputs_sync(&case.program, &mut host)
+    let witness = processor
+        .execute_for_proving_sync(&case.program, &mut host)
         .expect("execute recursive verifier");
-    let trace = build_trace(trace_inputs).expect("build recursive verifier trace");
+    let (vm_witness, _) = witness.into_parts();
+    let trace = build_trace(vm_witness).expect("build recursive verifier trace");
     let summary = trace.trace_len_summary();
     trace_shape_summary_for(case.proof_count, summary)
 }
@@ -897,7 +909,7 @@ fn bench_recursive_verify(c: &mut Criterion) {
 
         group.bench_function(format!("build_trace/{} proofs", case.proof_count), |b| {
             b.iter_batched(
-                || execute_trace_inputs(case.clone(), recursive_host()),
+                || execute_for_proving(case.clone(), recursive_host()),
                 build_trace_case,
                 BatchSize::SmallInput,
             );

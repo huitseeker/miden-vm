@@ -15,11 +15,14 @@ use miden_assembly::{
 use miden_core::{Felt, field::QuotientMap};
 use miden_core_lib::CoreLibrary;
 use miden_mast_package::Package;
-use miden_vm::{ExecutionProof, Program, StackOutputs, Word, serde::SliceReader};
+use miden_vm::{
+    ExecutionProof, Program, StackOutputs, Word, read_execution_proof_from_bytes,
+    serde::SliceReader,
+};
 #[cfg(feature = "arbitrary")]
 use proptest::prelude::*;
 use serde::{Deserialize, Serialize};
-use tracing::instrument;
+use tracing::{field::Empty, instrument};
 
 // HELPERS
 // ================================================================================================
@@ -209,8 +212,8 @@ impl ProofFile {
         let file = fs::read(&path)
             .map_err(|err| format!("Failed to open proof file `{}` - {}", path.display(), err))?;
 
-        // deserialize bytes into a stark proof
-        ExecutionProof::from_bytes(&file)
+        // deserialize bytes into an execution proof
+        read_execution_proof_from_bytes(&file)
             .map_err(|err| format!("Failed to decode proof data - {err}"))
     }
 
@@ -218,7 +221,7 @@ impl ProofFile {
     #[instrument(name = "write_data_to_proof_file",
                  fields(
                     path = %proof_path.clone().unwrap_or(program_path.with_extension("proof")).display(),
-                    size = format!("{} KB", proof.to_bytes().len() / 1024)), skip_all)]
+                    size = Empty), skip_all)]
     pub fn write(
         proof: ExecutionProof,
         proof_path: &Option<PathBuf>,
@@ -231,11 +234,14 @@ impl ProofFile {
             None => program_path.with_extension("proof"),
         };
 
-        // create output fille
+        let proof_bytes =
+            proof.to_bytes().map_err(|err| format!("Failed to encode proof data - {err}"))?;
+        tracing::Span::current()
+            .record("size", tracing::field::display(format!("{} KB", proof_bytes.len() / 1024)));
+
+        // create output file
         let mut file = fs::File::create(&path)
             .map_err(|err| format!("Failed to create proof file `{}` - {}", path.display(), err))?;
-
-        let proof_bytes = proof.to_bytes();
 
         // write proof bytes to file
         file.write_all(&proof_bytes)

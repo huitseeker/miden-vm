@@ -1,6 +1,8 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 #![doc = include_str!("../README.md")]
 
+extern crate alloc;
+
 // EXPORTS
 // ================================================================================================
 
@@ -11,29 +13,35 @@ pub use miden_assembly::{
 };
 pub use miden_core::{
     program::ExecutionClaim,
-    proof::{DeferredProof, ExecutionProof, HashFunction, StarkProof},
+    proof::{
+        ExecutionProof, ExecutionProofError, ExecutionProofTransportError, HashFunction,
+        PrecompileProof, StarkProof, VmProof,
+    },
 };
 pub use miden_processor::{
-    BaseHost, DefaultHost, ExecutionError, ExecutionOptions, ExecutionOutput, FastProcessor,
-    FutureMaybeSend, Host, KernelDescriptor, Program, ProgramInfo, StackInputs, SyncHost,
-    TraceBuildInputs, TraceGenerationContext, ZERO, advice, crypto, field, operation::Operation,
-    serde, trace, trace::ExecutionTrace, utils,
+    BaseHost, DefaultHost, ExecutionError, ExecutionOptions, ExecutionOutput, ExecutionWitness,
+    FastProcessor, FutureMaybeSend, Host, KernelDescriptor, PrecompileWitness, Program,
+    ProgramExecutor, ProgramInfo, StackInputs, SyncHost, VmWitness, ZERO, advice, crypto, field,
+    operation::Operation, serde, trace, trace::VmTrace, utils,
 };
-pub use miden_prover::{InputError, ProvingOptions, StackOutputs, TraceProvingInputs, Word, prove};
-#[cfg(not(target_family = "wasm"))]
-pub use miden_prover::{prove_from_trace_sync, prove_sync};
-pub use miden_verifier::{Unsettled, VerificationError, Verifier};
+pub use miden_prover::{InputError, Prover, ProverError, StackOutputs, Word, prove_sync};
+pub use miden_verifier::{VerificationError, VerificationOutcome, Verifier};
+
+/// Decodes an execution proof using the standard bundled precompile registry and fixed
+/// deferred-state element ceiling.
+///
+/// Decoding establishes transport syntax, canonical representation, and deferred witness
+/// hydration; it does not establish proof validity. Call [`Verifier::verify`] on the decoded value.
+///
+/// Use [`ExecutionProof::read_from_bytes`] directly when decoding against a custom registry.
+pub fn read_execution_proof_from_bytes(
+    bytes: &[u8],
+) -> Result<ExecutionProof, ExecutionProofTransportError> {
+    ExecutionProof::read_from_bytes(bytes, alloc::sync::Arc::new(miden_precompiles::registry()))
+}
 
 // (private) exports
 // ================================================================================================
 
 #[cfg(feature = "internal")]
 pub mod internal;
-
-/// Verifies a final Miden proof of the given execution claim.
-///
-/// Wire-backed deferred proofs are partial/delegable proof material and are rejected here; use
-/// [`Verifier::verify_partial`] to verify and hydrate wire-backed partial proofs.
-pub fn verify(proof: &ExecutionProof, claim: &ExecutionClaim) -> Result<u32, VerificationError> {
-    miden_verifier::verify(proof, claim)
-}
