@@ -5,21 +5,34 @@ While [Miden](../miden-vm) crate also contains verifier functionality, if a proj
 
 ## Usage
 
-Use `verify(&proof, &claim)` to verify a final `ExecutionProof`. The `ExecutionClaim` contains the
-program information and public stack inputs and outputs. The function returns the proof's security
-level, or a `VerificationError` if verification fails.
+Use `Verifier::new().verify(&claim, &proof)` to verify a deferred or complete `ExecutionProof`
+against its `ExecutionClaim`. The claim contains the program information and public stack inputs and
+outputs. The VM STARK authenticates the precompile root in either state. For a deferred proof, the
+retained witness is checked structurally but is not cryptographic evidence; for a complete proof,
+the aggregate precompile STARK is also verified when present.
 
-Wire-backed deferred proofs are partial proof material. Verify them with
-`Verifier::verify_partial`, which returns their security level and an `Unsettled` deferred-state
-obligation. The caller must settle or re-expose that obligation.
+Stack inputs are in push order (the last value is on top), while stack outputs are in pop order (the
+first value is on top).
 
-Stack inputs and outputs are ordered from top to bottom: element zero is at the top of the stack.
+`Verifier::verify` returns a `VerificationOutcome`. Its `security_level()` is the minimum security
+level among the VM and precompile STARK components actually verified. Deferred verification exposes
+the authenticated obligation through `outstanding_precompile_root()` and reports
+`is_complete() == false`; complete verification returns no outstanding root. The components may use
+different hash functions. Each encoded STARK and its decoder preallocation are capped at a fixed
+64 MiB ceiling.
 
-Verifying execution proof of a program basically means the following:
+Ordinary façade callers decode with the standard bundled registry and fixed
+`MAX_DEFERRED_ELEMENTS` ceiling via `miden_vm::read_execution_proof_from_bytes(bytes)`. Low-level or
+custom-precompile callers use `ExecutionProof::read_from_bytes(bytes, registry)` with an explicit
+trusted registry; proof decoding uses the same fixed hydration ceiling.
 
-> If a program with the provided hash is executed against some secret inputs and the provided public inputs, it will produce the provided outputs.
+Encoding and decoding preserve the transport representation but do not establish proof validity.
+Malformed cross-artifact values may serialize and decode; call `Verifier::verify` to validate all
+structure and supplied STARKs.
 
-Notice how the verifier needs to know only the hash of the program - not what the actual program was.
+The fixed STARK ceiling applies independently to each inner STARK. It does not bound the outer
+execution-proof bytes, deferred witness, file, or network payload. Root counts and hydrated
+deferred state have separate fixed ceilings.
 
 ## Crate features
 Miden verifier can be compiled with the following features:

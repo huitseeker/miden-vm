@@ -101,16 +101,12 @@ cargo +nightly fuzz run operation_deserialize --fuzz-dir tools/miden-core-fuzz
 cargo +nightly fuzz run operation_serde_deserialize --fuzz-dir tools/miden-core-fuzz
 ```
 
-**`execution_proof_deserialize`** — Tests `ExecutionProof::from_bytes` and `ExecutionProof::read_from_bytes`.
+**`execution_proof_deserialize`** — Tests `ExecutionProof::read_from_bytes` with a precompile
+registry and the fixed deferred-element ceiling. The empty registry intentionally exercises
+framework-only decoding.
 
 ```bash
 cargo +nightly fuzz run execution_proof_deserialize --fuzz-dir tools/miden-core-fuzz
-```
-
-**`execution_proof_serde_deserialize`** — Tests `ExecutionProof` JSON deserialization via `serde_json`.
-
-```bash
-cargo +nightly fuzz run execution_proof_serde_deserialize --fuzz-dir tools/miden-core-fuzz
 ```
 
 **`deferred_state_wire_deserialize`** — Tests `DeferredStateWire::read_from_bytes`.
