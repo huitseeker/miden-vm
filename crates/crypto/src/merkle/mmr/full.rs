@@ -41,7 +41,7 @@ const NODE_CHUNK_CAPACITY: usize = 1024;
 ///
 /// Invariant: every chunk except the last contains exactly [NODE_CHUNK_CAPACITY] nodes, and no
 /// chunk is empty.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(super) struct NodeStore {
     chunks: Vec<Arc<Vec<Word>>>,
 }
@@ -105,14 +105,6 @@ impl FromIterator<Word> for NodeStore {
         store
     }
 }
-
-impl PartialEq for NodeStore {
-    fn eq(&self, other: &Self) -> bool {
-        self.len() == other.len() && self.iter().eq(other.iter())
-    }
-}
-
-impl Eq for NodeStore {}
 
 impl PartialEq<&[Word]> for NodeStore {
     fn eq(&self, other: &&[Word]) -> bool {
