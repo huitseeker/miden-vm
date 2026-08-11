@@ -86,6 +86,19 @@ impl NodeStore {
     pub fn iter(&self) -> impl Iterator<Item = &Word> {
         self.chunks.iter().flat_map(|chunk| chunk.iter())
     }
+
+    /// Returns an iterator over the nodes at indices `start..`, in insertion (postorder) order.
+    ///
+    /// Skips directly to the chunk containing `start` instead of walking from the front. Returns
+    /// an empty iterator if `start >= self.len()`.
+    pub fn iter_from(&self, start: usize) -> impl Iterator<Item = &Word> {
+        let first_chunk = start / NODE_CHUNK_CAPACITY;
+        let offset = start % NODE_CHUNK_CAPACITY;
+        self.chunks.iter().enumerate().skip(first_chunk).flat_map(move |(i, chunk)| {
+            let skip = if i == first_chunk { offset.min(chunk.len()) } else { 0 };
+            chunk[skip..].iter()
+        })
+    }
 }
 
 impl Index<usize> for NodeStore {
@@ -192,6 +205,16 @@ impl Mmr {
     /// Returns the MMR forest representation. See [`Forest`].
     pub const fn forest(&self) -> Forest {
         self.forest
+    }
+
+    /// Returns an iterator over the MMR's nodes at indices `start..`, in insertion (postorder)
+    /// order. Returns an empty iterator if `start` is greater than or equal to the total node
+    /// count, which is given by `self.forest().num_nodes()`.
+    ///
+    /// The node buffer is strictly append-only, so a consumer that has persisted the first
+    /// `start` nodes can incrementally sync by appending only the nodes returned here.
+    pub fn nodes_from(&self, start: usize) -> impl Iterator<Item = &Word> {
+        self.nodes.iter_from(start)
     }
 
     // FUNCTIONALITY
@@ -770,6 +793,49 @@ mod tests {
             assert!(Arc::ptr_eq(orig, cloned));
         }
         assert!(!Arc::ptr_eq(orig_chunks.last().unwrap(), clone_chunks.last().unwrap()));
+    }
+
+    #[test]
+    fn test_nodes_from() {
+        // Span multiple chunks to cover chunk boundaries.
+        let mmr = Mmr::try_from_iter(leaves(2 * NODE_CHUNK_CAPACITY as u64)).unwrap();
+        let num_nodes = mmr.forest().num_nodes();
+        let all: Vec<Word> = mmr.nodes_from(0).copied().collect();
+        assert_eq!(all.len(), num_nodes);
+
+        // Starts at chunk boundaries, mid-chunk, and in the last (partial) chunk.
+        for start in [
+            0,
+            1,
+            NODE_CHUNK_CAPACITY - 1,
+            NODE_CHUNK_CAPACITY,
+            NODE_CHUNK_CAPACITY + 1,
+            num_nodes - 1,
+            num_nodes,
+            num_nodes + 1,
+        ] {
+            let suffix: Vec<Word> = mmr.nodes_from(start).copied().collect();
+            assert_eq!(suffix, all[start.min(num_nodes)..]);
+        }
+    }
+
+    #[test]
+    fn test_nodes_from_incremental_persistence() {
+        // Simulate a flat-file consumer: persist all nodes, grow the MMR, append only the new
+        // nodes, and verify the result matches a full dump of the final state.
+        let initial_leaves = NODE_CHUNK_CAPACITY as u64 / 2;
+        let final_leaves = 2 * NODE_CHUNK_CAPACITY as u64;
+
+        let mut mmr = Mmr::try_from_iter(leaves(initial_leaves)).unwrap();
+        let mut persisted: Vec<Word> = mmr.nodes_from(0).copied().collect();
+
+        for leaf in leaves(final_leaves).skip(initial_leaves as usize) {
+            mmr.add(leaf).unwrap();
+        }
+        persisted.extend(mmr.nodes_from(persisted.len()).copied());
+
+        assert_eq!(persisted.len(), mmr.forest().num_nodes());
+        assert!(mmr.nodes == persisted.as_slice());
     }
 
     #[test]

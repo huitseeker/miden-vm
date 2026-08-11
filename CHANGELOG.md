@@ -4,6 +4,8 @@
 #### Features
 
 - [BREAKING] Added `trace`, `trace.CONST`, and `trace.event("...")` assembly as syntactic sugar for emitting optional read-only trace events. This adds variants `Trace` and `TraceImm` to the public enum `miden_assembly_syntax::ast::Instruction` ([#3478](https://github.com/0xMiden/miden-vm/pull/3478)).
+- Added `trace`, `trace.CONST`, and `trace.event("...")` assembly as syntactic sugar for emitting optional read-only trace events ([#3478](https://github.com/0xMiden/miden-vm/pull/3478)).
+- Added `Mmr::nodes_from(start)`, returning the MMR's nodes at indices `start..` in insertion (postorder) order.
 
 #### Changes
 
