@@ -11,7 +11,7 @@
 //! merged, creating a new tree with depth d+1, this process is continued until the property is
 //! reestablished.
 use alloc::{sync::Arc, vec::Vec};
-use core::ops::Index;
+use core::{iter::FusedIterator, ops::Index, slice};
 
 use super::{
     super::{InnerNodeInfo, MerklePath},
@@ -83,21 +83,24 @@ impl NodeStore {
     }
 
     /// Returns an iterator over all nodes in the store, in insertion (postorder) order.
-    pub fn iter(&self) -> impl Iterator<Item = &Word> {
-        self.chunks.iter().flat_map(|chunk| chunk.iter())
+    pub fn iter(&self) -> MmrNodeIter<'_> {
+        self.iter_from(0)
     }
 
     /// Returns an iterator over the nodes at indices `start..`, in insertion (postorder) order.
     ///
     /// Skips directly to the chunk containing `start` instead of walking from the front. Returns
     /// an empty iterator if `start >= self.len()`.
-    pub fn iter_from(&self, start: usize) -> impl Iterator<Item = &Word> {
+    pub fn iter_from(&self, start: usize) -> MmrNodeIter<'_> {
         let first_chunk = start / NODE_CHUNK_CAPACITY;
         let offset = start % NODE_CHUNK_CAPACITY;
-        self.chunks.iter().enumerate().skip(first_chunk).flat_map(move |(i, chunk)| {
-            let skip = if i == first_chunk { offset.min(chunk.len()) } else { 0 };
-            chunk[skip..].iter()
-        })
+        match self.chunks.get(first_chunk) {
+            Some(chunk) => MmrNodeIter {
+                current: chunk[offset.min(chunk.len())..].iter(),
+                chunks: &self.chunks[first_chunk + 1..],
+            },
+            None => MmrNodeIter { current: [].iter(), chunks: &[] },
+        }
     }
 }
 
@@ -213,7 +216,7 @@ impl Mmr {
     ///
     /// The node buffer is strictly append-only, so a consumer that has persisted the first
     /// `start` nodes can incrementally sync by appending only the nodes returned here.
-    pub fn nodes_from(&self, start: usize) -> impl Iterator<Item = &Word> {
+    pub fn nodes_from(&self, start: usize) -> MmrNodeIter<'_> {
         self.nodes.iter_from(start)
     }
 
@@ -576,6 +579,84 @@ impl<'de> serde::Deserialize<'de> for NodeStore {
 // ITERATOR
 // ===============================================================================================
 
+/// Iterator over a suffix of the [Mmr]'s node buffer, in insertion (postorder) order.
+///
+/// Returned by [Mmr::nodes_from]. Positioning is cheap: [Iterator::nth] (and therefore
+/// [Iterator::skip]) jumps over whole chunks instead of advancing one node at a time, and the
+/// iterator knows its exact remaining length ([ExactSizeIterator]).
+#[derive(Clone, Debug)]
+pub struct MmrNodeIter<'a> {
+    /// Remainder of the chunk currently being yielded.
+    current: slice::Iter<'a, Word>,
+    /// Chunks after the current one; every chunk except the last is full.
+    chunks: &'a [Arc<Vec<Word>>],
+}
+
+impl<'a> MmrNodeIter<'a> {
+    /// Advances `current` to the next chunk, or returns `None` if no chunks remain.
+    ///
+    /// On `None` the iterator is left exhausted even if `current` still held items, so a caller
+    /// skipping past the end (see [Iterator::nth]) doesn't leave the skipped items behind.
+    fn advance_chunk(&mut self) -> Option<()> {
+        match self.chunks.split_first() {
+            Some((chunk, rest)) => {
+                self.current = chunk.iter();
+                self.chunks = rest;
+                Some(())
+            },
+            None => {
+                self.current = [].iter();
+                None
+            },
+        }
+    }
+}
+
+impl<'a> Iterator for MmrNodeIter<'a> {
+    type Item = &'a Word;
+
+    fn next(&mut self) -> Option<&'a Word> {
+        loop {
+            if let Some(node) = self.current.next() {
+                return Some(node);
+            }
+            self.advance_chunk()?;
+        }
+    }
+
+    fn nth(&mut self, mut n: usize) -> Option<&'a Word> {
+        loop {
+            let len = self.current.len();
+            if n < len {
+                return self.current.nth(n);
+            }
+            n -= len;
+            self.advance_chunk()?;
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let len = self.len();
+        (len, Some(len))
+    }
+
+    fn count(self) -> usize {
+        self.len()
+    }
+}
+
+impl ExactSizeIterator for MmrNodeIter<'_> {
+    fn len(&self) -> usize {
+        self.current.len()
+            + match self.chunks.split_last() {
+                Some((last, full)) => full.len() * NODE_CHUNK_CAPACITY + last.len(),
+                None => 0,
+            }
+    }
+}
+
+impl FusedIterator for MmrNodeIter<'_> {}
+
 /// Yields inner nodes of the [Mmr].
 pub struct MmrNodes<'a> {
     /// [Mmr] being yielded, when its `forest` value is matched, the iterations is finished.
@@ -817,6 +898,58 @@ mod tests {
             let suffix: Vec<Word> = mmr.nodes_from(start).copied().collect();
             assert_eq!(suffix, all[start.min(num_nodes)..]);
         }
+    }
+
+    #[test]
+    fn test_node_iter_skip_matches_nodes_from() {
+        // Span multiple chunks so skips cross chunk boundaries.
+        let mmr = Mmr::try_from_iter(leaves(2 * NODE_CHUNK_CAPACITY as u64)).unwrap();
+        let num_nodes = mmr.forest().num_nodes();
+        let all: Vec<Word> = mmr.nodes_from(0).copied().collect();
+
+        for start in [
+            0,
+            1,
+            NODE_CHUNK_CAPACITY - 1,
+            NODE_CHUNK_CAPACITY,
+            NODE_CHUNK_CAPACITY + 1,
+            num_nodes - 1,
+            num_nodes,
+            num_nodes + 1,
+        ] {
+            let skipped: Vec<Word> = mmr.nodes_from(0).skip(start).copied().collect();
+            assert_eq!(skipped, all[start.min(num_nodes)..]);
+        }
+
+        // `nth` positions across a chunk boundary and resumes in order.
+        let mut iter = mmr.nodes_from(0);
+        assert_eq!(iter.nth(NODE_CHUNK_CAPACITY + 1), Some(&all[NODE_CHUNK_CAPACITY + 1]));
+        assert_eq!(iter.next(), Some(&all[NODE_CHUNK_CAPACITY + 2]));
+
+        // `nth` past the end exhausts the iterator.
+        let mut iter = mmr.nodes_from(0);
+        assert_eq!(iter.nth(num_nodes), None);
+        assert_eq!(iter.next(), None);
+    }
+
+    #[test]
+    fn test_node_iter_len() {
+        let mmr = Mmr::try_from_iter(leaves(2 * NODE_CHUNK_CAPACITY as u64)).unwrap();
+        let num_nodes = mmr.forest().num_nodes();
+
+        for start in [0, 1, NODE_CHUNK_CAPACITY, num_nodes - 1, num_nodes, num_nodes + 1] {
+            let iter = mmr.nodes_from(start);
+            assert_eq!(iter.len(), num_nodes.saturating_sub(start));
+            assert_eq!(iter.size_hint(), (iter.len(), Some(iter.len())));
+        }
+
+        // The length stays exact as the iterator advances, including across chunks.
+        let mut iter = mmr.nodes_from(0);
+        iter.next();
+        assert_eq!(iter.len(), num_nodes - 1);
+        iter.nth(NODE_CHUNK_CAPACITY);
+        assert_eq!(iter.len(), num_nodes - NODE_CHUNK_CAPACITY - 2);
+        assert_eq!(iter.count(), num_nodes - NODE_CHUNK_CAPACITY - 2);
     }
 
     #[test]
