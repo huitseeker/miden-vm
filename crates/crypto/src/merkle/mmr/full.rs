@@ -10,7 +10,7 @@
 //! depths, i.e. as part of adding a new element to the forest the trees with same depth are
 //! merged, creating a new tree with depth d+1, this process is continued until the property is
 //! reestablished.
-use alloc::{sync::Arc, vec::Vec};
+use alloc::{string::ToString, sync::Arc, vec::Vec};
 use core::{iter::FusedIterator, ops::Index, slice};
 
 use super::{
@@ -179,6 +179,33 @@ impl Mmr {
     /// Returns an error if the maximum forest size is exceeded.
     pub fn try_from_iter<T: IntoIterator<Item = Word>>(values: T) -> Result<Self, MmrError> {
         Self::try_from_iter_with_limit(values, Forest::MAX_LEAVES)
+    }
+
+    /// Constructs an MMR from its forest and complete node array, in insertion (postorder) order,
+    /// e.g. as previously obtained from [Mmr::nodes_from].
+    ///
+    /// The nodes are taken verbatim: no hashes are recomputed or verified, so the caller is
+    /// responsible for checking the result against a trusted commitment (e.g. via [Mmr::peaks]).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the number of nodes does not match the node count of `forest`.
+    pub fn from_nodes_unchecked(
+        forest: Forest,
+        nodes: impl IntoIterator<Item = Word>,
+    ) -> Result<Self, MmrError> {
+        Self::from_store(forest, nodes.into_iter().collect())
+    }
+
+    /// Constructs an MMR from its forest and node store, validating the node count.
+    fn from_store(forest: Forest, nodes: NodeStore) -> Result<Self, MmrError> {
+        if nodes.len() != forest.num_nodes() {
+            return Err(MmrError::InvalidNodeCount {
+                expected: forest.num_nodes(),
+                actual: nodes.len(),
+            });
+        }
+        Ok(Self { forest, nodes })
     }
 
     pub(crate) fn try_from_iter_with_limit<T: IntoIterator<Item = Word>>(
@@ -518,14 +545,9 @@ impl Deserializable for Mmr {
     fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
         let forest = Forest::read_from(source)?;
         let count = source.read_usize()?;
-        if count != forest.num_nodes() {
-            return Err(DeserializationError::InvalidValue(alloc::format!(
-                "MMR node count {count} does not match forest node count {}",
-                forest.num_nodes()
-            )));
-        }
         let nodes = source.read_many_iter(count)?.collect::<Result<NodeStore, _>>()?;
-        Ok(Self { forest, nodes })
+        Self::from_store(forest, nodes)
+            .map_err(|err| DeserializationError::InvalidValue(err.to_string()))
     }
 }
 
@@ -742,7 +764,7 @@ mod tests {
     use super::{super::nodes_from_mask, NODE_CHUNK_CAPACITY};
     use crate::{
         Felt, Word, ZERO,
-        merkle::mmr::{Forest, Mmr},
+        merkle::mmr::{Forest, Mmr, MmrError},
         utils::{Deserializable, DeserializationError, Serializable},
     };
 
@@ -969,6 +991,52 @@ mod tests {
 
         assert_eq!(persisted.len(), mmr.forest().num_nodes());
         assert!(mmr.nodes == persisted.as_slice());
+    }
+
+    #[test]
+    fn test_from_nodes_unchecked_round_trip() {
+        // Sizes: empty forest, single-chunk, and multi-chunk with a partial last chunk.
+        let multi_chunk = NODE_CHUNK_CAPACITY as u64 + NODE_CHUNK_CAPACITY as u64 / 2;
+        for num_leaves in [0, 1, 8, multi_chunk] {
+            let mmr = Mmr::try_from_iter(leaves(num_leaves)).unwrap();
+            let rebuilt =
+                Mmr::from_nodes_unchecked(mmr.forest(), mmr.nodes_from(0).copied()).unwrap();
+            assert_eq!(mmr.forest, rebuilt.forest);
+            assert_eq!(mmr.nodes, rebuilt.nodes);
+            assert_eq!(mmr.peaks(), rebuilt.peaks());
+
+            // Openings from the rebuilt MMR still verify against its peaks.
+            let peaks = rebuilt.peaks();
+            for pos in [0, num_leaves.saturating_sub(1) as usize] {
+                if num_leaves > 0 {
+                    let proof = rebuilt.open(pos).unwrap();
+                    let leaf = rebuilt.get(pos).unwrap();
+                    peaks.verify(leaf, proof).unwrap();
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_from_nodes_unchecked_rejects_count_mismatch() {
+        let mmr = Mmr::try_from_iter(leaves(8)).unwrap();
+        let nodes: Vec<Word> = mmr.nodes_from(0).copied().collect();
+
+        let too_few =
+            Mmr::from_nodes_unchecked(mmr.forest(), nodes.iter().copied().take(nodes.len() - 1));
+        assert!(matches!(
+            too_few,
+            Err(MmrError::InvalidNodeCount { expected, actual })
+                if expected == nodes.len() && actual == nodes.len() - 1
+        ));
+
+        let too_many =
+            Mmr::from_nodes_unchecked(mmr.forest(), nodes.iter().copied().chain([Word::empty()]));
+        assert!(matches!(
+            too_many,
+            Err(MmrError::InvalidNodeCount { expected, actual })
+                if expected == nodes.len() && actual == nodes.len() + 1
+        ));
     }
 
     #[test]
