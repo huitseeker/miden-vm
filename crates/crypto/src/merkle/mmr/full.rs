@@ -184,8 +184,12 @@ impl Mmr {
     /// Constructs an MMR from its forest and complete node array, in insertion (postorder) order,
     /// e.g. as previously obtained from [Mmr::nodes_from].
     ///
-    /// The nodes are taken verbatim: no hashes are recomputed or verified, so the caller is
-    /// responsible for checking the result against a trusted commitment (e.g. via [Mmr::peaks]).
+    /// The only validation performed is structural: the node count must match `forest`. The
+    /// nodes are otherwise taken verbatim — no hashes are recomputed or verified.
+    /// Comparing the result's [Mmr::peaks] against a trusted commitment checks the accumulator
+    /// state, but because the peaks are read from the stored nodes rather than recomputed, it does
+    /// not validate any non-peak nodes. The nodes must therefore come from a trusted source, e.g.
+    /// the caller's own previously validated state.
     ///
     /// # Errors
     ///
