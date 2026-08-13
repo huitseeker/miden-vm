@@ -25,7 +25,7 @@ fn nodes_from_mask(mask: usize) -> usize {
 pub use delta::MmrDelta;
 pub use error::MmrError;
 pub use forest::Forest;
-pub use full::{Mmr, MmrNodeIter};
+pub use full::Mmr;
 pub use inorder::InOrderIndex;
 pub use partial::PartialMmr;
 pub use peaks::MmrPeaks;

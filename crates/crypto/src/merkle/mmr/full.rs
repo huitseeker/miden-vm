@@ -247,7 +247,10 @@ impl Mmr {
     ///
     /// The node buffer is strictly append-only, so a consumer that has persisted the first
     /// `start` nodes can incrementally sync by appending only the nodes returned here.
-    pub fn nodes_from(&self, start: usize) -> MmrNodeIter<'_> {
+    ///
+    /// Positioning is cheap: the iterator starts directly at `start` without walking the
+    /// preceding nodes, and it knows its exact remaining length.
+    pub fn nodes_from(&self, start: usize) -> impl ExactSizeIterator<Item = &Word> + Clone {
         self.nodes.iter_from(start)
     }
 
@@ -617,11 +620,11 @@ impl<'de> serde::Deserialize<'de> for NodeStore {
 
 /// Iterator over a suffix of the [Mmr]'s node buffer, in insertion (postorder) order.
 ///
-/// Returned by [Mmr::nodes_from]. Positioning is cheap: [Iterator::nth] (and therefore
-/// [Iterator::skip]) jumps over whole chunks instead of advancing one node at a time, and the
-/// iterator knows its exact remaining length ([ExactSizeIterator]).
+/// Underlies [Mmr::nodes_from], which returns it opaquely. Positioning is cheap: [Iterator::nth]
+/// (and therefore [Iterator::skip]) jumps over whole chunks instead of advancing one node at a
+/// time, and the iterator knows its exact remaining length ([ExactSizeIterator]).
 #[derive(Clone, Debug)]
-pub struct MmrNodeIter<'a> {
+pub(super) struct MmrNodeIter<'a> {
     /// Remainder of the chunk currently being yielded.
     current: slice::Iter<'a, Word>,
     /// Chunks after the current one; every chunk except the last is full.
