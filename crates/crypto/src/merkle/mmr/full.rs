@@ -545,6 +545,16 @@ impl Deserializable for Mmr {
     fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
         let forest = Forest::read_from(source)?;
         let count = source.read_usize()?;
+        // Reject a forest/count mismatch before reading the nodes, so malformed input fails fast.
+        if count != forest.num_nodes() {
+            return Err(DeserializationError::InvalidValue(
+                MmrError::InvalidNodeCount {
+                    expected: forest.num_nodes(),
+                    actual: count,
+                }
+                .to_string(),
+            ));
+        }
         let nodes = source.read_many_iter(count)?.collect::<Result<NodeStore, _>>()?;
         Self::from_store(forest, nodes)
             .map_err(|err| DeserializationError::InvalidValue(err.to_string()))
