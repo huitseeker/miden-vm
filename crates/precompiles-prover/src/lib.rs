@@ -21,7 +21,9 @@ pub use session::VerifyError;
 
 #[cfg(any(test, feature = "std"))]
 pub(crate) mod ace;
-
+pub(crate) mod ace_registry;
+#[cfg(feature = "registry-tools")]
+pub mod ace_registry_regen;
 pub(crate) mod ec;
 pub(crate) mod hash;
 pub(crate) mod logup;
