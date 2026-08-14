@@ -12,10 +12,10 @@ pub use miden_assembly::{
     diagnostics,
 };
 pub use miden_core::{
+    deferred::{DeferredStateWire, PrecompileWitnessError},
     program::ExecutionClaim,
     proof::{
-        ExecutionProof, ExecutionProofError, ExecutionProofTransportError, HashFunction,
-        PrecompileProof, StarkProof, VmProof,
+        ExecutionProof, ExecutionProofError, HashFunction, PrecompileProof, StarkProof, VmProof,
     },
 };
 pub use miden_processor::{
@@ -27,17 +27,18 @@ pub use miden_processor::{
 pub use miden_prover::{InputError, Prover, ProverError, StackOutputs, Word, prove_sync};
 pub use miden_verifier::{VerificationError, VerificationOutcome, Verifier};
 
-/// Decodes an execution proof using the standard bundled precompile registry and fixed
-/// deferred-state element ceiling.
+/// Hydrates a passive deferred-state wire using the standard bundled precompile registry.
 ///
-/// Decoding establishes transport syntax, canonical representation, and deferred witness
-/// hydration; it does not establish proof validity. Call [`Verifier::verify`] on the decoded value.
-///
-/// Use [`ExecutionProof::read_from_bytes`] directly when decoding against a custom registry.
-pub fn read_execution_proof_from_bytes(
-    bytes: &[u8],
-) -> Result<ExecutionProof, ExecutionProofTransportError> {
-    ExecutionProof::read_from_bytes(bytes, alloc::sync::Arc::new(miden_precompiles::registry()))
+/// This is the public factory for precompile witnesses produced outside local execution. It
+/// validates the wire under the facade's installed precompiles before constructing the witness.
+pub fn precompile_witness_from_wire(
+    wire: &DeferredStateWire,
+) -> Result<PrecompileWitness, PrecompileWitnessError> {
+    let state = miden_core::deferred::DeferredState::from_wire(
+        alloc::sync::Arc::new(miden_precompiles::registry()),
+        wire,
+    )?;
+    PrecompileWitness::new(state)
 }
 
 // (private) exports
