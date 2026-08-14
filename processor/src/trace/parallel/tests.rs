@@ -1328,7 +1328,7 @@ fn collect_end_flags(trace: &VmTrace) -> Vec<Word> {
 
 fn read_opcode(main_trace: &MainTrace, row_idx: RowIndex) -> u8 {
     let opcode = main_trace.get_op_code(row_idx).as_canonical_u64();
-    assert!(opcode <= u8::MAX as u64, "invalid opcode");
+    assert!(u8::try_from(opcode).is_ok(), "invalid opcode");
     opcode as u8
 }
 

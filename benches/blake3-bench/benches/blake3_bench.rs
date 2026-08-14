@@ -119,7 +119,7 @@ fn blake3_bench(c: &mut Criterion) {
                     || execute_for_proving(&fixture),
                     |execution_witness| {
                         let execution_witness = black_box(execution_witness);
-                        prove_trace(execution_witness);
+                        black_box(prove_trace(execution_witness))
                     },
                     BatchSize::SmallInput,
                 );
@@ -140,24 +140,13 @@ fn blake3_bench(c: &mut Criterion) {
 
         if has_axis(&axes, "execute_sync") {
             group.bench_function("execute_sync", |b| {
-                b.iter_batched(
-                    || fixture.clone(),
-                    |fixture| {
-                        execute_program(&fixture);
-                        black_box(())
-                    },
-                    BatchSize::SmallInput,
-                );
+                b.iter_with_large_drop(|| black_box(execute_program(&fixture)));
             });
         }
 
         if has_axis(&axes, "execute_for_proving_sync") {
             group.bench_function("execute_for_proving_sync", |b| {
-                b.iter_batched(
-                    || fixture.clone(),
-                    |fixture| black_box(execute_for_proving(&fixture)),
-                    BatchSize::SmallInput,
-                );
+                b.iter_with_large_drop(|| black_box(execute_for_proving(&fixture)));
             });
         }
 
@@ -167,7 +156,7 @@ fn blake3_bench(c: &mut Criterion) {
                     || execute_for_proving(&fixture),
                     |execution_witness| {
                         let execution_witness = black_box(execution_witness);
-                        build_trace(execution_witness);
+                        black_box(build_trace(execution_witness))
                     },
                     BatchSize::SmallInput,
                 );

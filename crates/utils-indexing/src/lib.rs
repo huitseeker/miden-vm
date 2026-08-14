@@ -1,17 +1,15 @@
 //! Type-safe u32-indexed vector utilities for Miden
 //!
 //! This module provides utilities for working with u32-indexed vectors in a type-safe manner,
-//! including the [`IndexVec`] type and the [`CsrMatrix`] compressed sparse row storage.
+//! including the [`IndexVec`] type and related functionality.
 #![no_std]
 
 extern crate alloc;
 
-mod csr;
 #[doc = include_str!("../README.md")]
 use alloc::{collections::BTreeMap, vec, vec::Vec};
 use core::{fmt::Debug, marker::PhantomData, mem::size_of, ops};
 
-pub use csr::{CsrMatrix, CsrValidationError};
 #[doc(hidden)]
 pub use miden_serde_utils;
 #[cfg(feature = "arbitrary")]
@@ -419,7 +417,7 @@ impl<I: Idx, T> TryFrom<Vec<T>> for IndexVec<I, T> {
 // ================================================================================================
 
 use miden_serde_utils::{
-    ByteReader, ByteWriter, Deserializable, DeserializationError, Serializable,
+    ByteReader, ByteWriter, Deserializable, DeserializationError, Serializable, read_bounded_len,
 };
 
 impl<I, T> Serializable for IndexVec<I, T>
@@ -497,44 +495,6 @@ where
 
         Ok(Self { raw: vec, _m: PhantomData })
     }
-}
-
-/// Reads and validates a serialized length before it is used for allocation.
-fn read_bounded_len<R: ByteReader>(
-    source: &mut R,
-    label: &str,
-    min_element_size: usize,
-) -> Result<usize, DeserializationError> {
-    let len = source.read_usize()?;
-    validate_bounded_len(source, label, len, min_element_size)?;
-    Ok(len)
-}
-
-/// Validates that a serialized length fits both the reader budget and remaining input.
-fn validate_bounded_len<R: ByteReader>(
-    source: &R,
-    label: &str,
-    len: usize,
-    min_element_size: usize,
-) -> Result<(), DeserializationError> {
-    let max_len = source.max_alloc(min_element_size);
-    if len > max_len {
-        return Err(DeserializationError::InvalidValue(alloc::format!(
-            "{label} count {len} exceeds budget {max_len}"
-        )));
-    }
-
-    let min_bytes = len.checked_mul(min_element_size).ok_or_else(|| {
-        DeserializationError::InvalidValue(alloc::format!(
-            "{label} count {len} overflows minimum serialized size {min_element_size}"
-        ))
-    })?;
-    source.check_eor(min_bytes).map_err(|err| match err {
-        DeserializationError::UnexpectedEOF => DeserializationError::InvalidValue(alloc::format!(
-            "{label} count {len} exceeds remaining input"
-        )),
-        err => err,
-    })
 }
 
 /// Bounds speculative collection capacity by both the declared length and the reader's remaining

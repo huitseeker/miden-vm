@@ -2130,7 +2130,6 @@ dependencies = [
  "miden-rowan",
  "miden-utils-diagnostics",
  "pretty_assertions",
- "thiserror",
 ]
 
 [[package]]
@@ -2182,6 +2181,7 @@ dependencies = [
  "miden-crypto",
  "miden-debug-types",
  "miden-formatting",
+ "miden-serde-utils",
  "miden-test-serde-macros",
  "miden-test-utils",
  "miden-utils-core-derive",
@@ -2213,6 +2213,7 @@ dependencies = [
  "miden-mast-package",
  "miden-package-registry",
  "miden-precompiles",
+ "miden-precompiles-prover",
  "miden-processor",
  "miden-test-utils",
  "miden-utils-sync",
@@ -2515,6 +2516,7 @@ version = "0.30.0"
 dependencies = [
  "miden-core",
  "miden-crypto",
+ "ruint",
 ]
 
 [[package]]

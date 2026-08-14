@@ -6,8 +6,8 @@ use std::{
 
 use miden_core_lib::CoreLibrary;
 use miden_vm::{
-    Assembler, DefaultHost, ExecutionOptions, ExecutionWitness, FastProcessor, HashFunction,
-    Program, Prover, StackInputs, Verifier,
+    Assembler, DefaultHost, ExecutionOptions, ExecutionOutput, ExecutionProof, ExecutionWitness,
+    FastProcessor, HashFunction, Program, Prover, StackInputs, StackOutputs, Verifier, VmTrace,
     advice::AdviceInputs,
     assembly::{
         DefaultSourceManager, Path as LibraryPath,
@@ -129,7 +129,7 @@ pub fn execute_for_proving(fixture: &Blake3Fixture) -> ExecutionWitness {
     }
 }
 
-pub fn execute_program(fixture: &Blake3Fixture) {
+pub fn execute_program(fixture: &Blake3Fixture) -> ExecutionOutput {
     let mut host = host_for_fixture(fixture);
     let processor = FastProcessor::new_with_options(
         fixture.stack_inputs,
@@ -139,7 +139,7 @@ pub fn execute_program(fixture: &Blake3Fixture) {
     .expect("processor advice inputs should fit advice map limits");
     processor
         .execute_sync(&fixture.program, &mut host)
-        .expect("failed to execute Blake3 benchmark");
+        .expect("failed to execute Blake3 benchmark")
 }
 
 pub fn prove_program(fixture: &Blake3Fixture) {
@@ -147,8 +147,8 @@ pub fn prove_program(fixture: &Blake3Fixture) {
     prove_trace(execute_for_proving(fixture));
 }
 
-pub fn prove_trace(witness: ExecutionWitness) {
-    let _ = prove_trace_outputs(witness);
+pub fn prove_trace(witness: ExecutionWitness) -> (StackOutputs, ExecutionProof) {
+    prove_trace_outputs(witness)
 }
 
 pub fn prove_and_verify_once(fixture: &Blake3Fixture) {
@@ -161,9 +161,7 @@ pub fn prove_and_verify_once(fixture: &Blake3Fixture) {
     assert!(outcome.is_complete(), "prove_full must settle all precompile work");
 }
 
-fn prove_trace_outputs(
-    witness: ExecutionWitness,
-) -> (miden_vm::StackOutputs, miden_vm::ExecutionProof) {
+fn prove_trace_outputs(witness: ExecutionWitness) -> (StackOutputs, ExecutionProof) {
     let stack_outputs = *witness.claim().stack_outputs();
     let proof = Prover::new()
         .with_hash_fn(HashFunction::Blake3_256)
@@ -172,9 +170,9 @@ fn prove_trace_outputs(
     (stack_outputs, proof)
 }
 
-pub fn build_trace(witness: ExecutionWitness) {
+pub fn build_trace(witness: ExecutionWitness) -> VmTrace {
     let (vm_witness, _) = witness.into_parts();
-    trace::build_trace(vm_witness).expect("failed to build Blake3 execution trace");
+    trace::build_trace(vm_witness).expect("failed to build Blake3 execution trace")
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

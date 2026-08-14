@@ -56,7 +56,7 @@ use miden_processor::{
 use miden_verifier::recursive::RecursiveVerifierInputs;
 use miden_vm::{
     Assembler, ExecutionProof, ExecutionWitness, HashFunction, Program, ProgramInfo, Prover,
-    StackInputs, StackOutputs, prove_sync, trace::build_trace,
+    StackInputs, StackOutputs, VmTrace, prove_sync, trace::build_trace,
 };
 
 const DEFAULT_PROOF_COUNTS: [usize; 7] = [2, 3, 4, 5, 6, 7, 8];
@@ -651,31 +651,24 @@ fn execute_for_proving(case: RecursionCase, mut host: DefaultHost) -> ExecutionW
         .expect("execute recursive verifier")
 }
 
-fn execute_recursive_case((case, host): (RecursionCase, DefaultHost)) {
-    let execution_witness = execute_for_proving(case, host);
-    black_box(execution_witness);
+fn execute_recursive_case((case, host): (RecursionCase, DefaultHost)) -> ExecutionWitness {
+    execute_for_proving(case, host)
 }
 
-fn build_trace_case(witness: ExecutionWitness) {
+fn build_trace_case(witness: ExecutionWitness) -> VmTrace {
     let (vm_witness, _) = witness.into_parts();
-    let trace = build_trace(vm_witness).expect("build recursive verifier trace");
-    black_box(trace);
+    build_trace(vm_witness).expect("build recursive verifier trace")
 }
 
-fn execute_and_build_case((case, host): (RecursionCase, DefaultHost)) {
+fn execute_and_build_case((case, host): (RecursionCase, DefaultHost)) -> VmTrace {
     let execution_witness = execute_for_proving(case, host);
-    build_trace_case(execution_witness);
+    build_trace_case(execution_witness)
 }
 
-fn prove_recursive_case((case, mut host, hash_fn): (RecursionCase, DefaultHost, HashFunction)) {
-    let proof = execute_and_prove(
-        &case.program,
-        StackInputs::default(),
-        case.advice_inputs,
-        &mut host,
-        hash_fn,
-    );
-    black_box(proof);
+fn prove_recursive_case(
+    (case, mut host, hash_fn): (RecursionCase, DefaultHost, HashFunction),
+) -> (StackOutputs, ExecutionProof) {
+    execute_and_prove(&case.program, StackInputs::default(), case.advice_inputs, &mut host, hash_fn)
 }
 
 fn prove_recursive_once(case: &RecursionCase, hash_fn: HashFunction) -> (f64, usize) {
@@ -907,7 +900,7 @@ fn bench_recursive_verify(c: &mut Criterion) {
             b.iter_batched(
                 || (case.clone(), recursive_host()),
                 execute_recursive_case,
-                BatchSize::SmallInput,
+                BatchSize::PerIteration,
             );
         });
 
@@ -915,7 +908,7 @@ fn bench_recursive_verify(c: &mut Criterion) {
             b.iter_batched(
                 || execute_for_proving(case.clone(), recursive_host()),
                 build_trace_case,
-                BatchSize::SmallInput,
+                BatchSize::PerIteration,
             );
         });
 
@@ -923,7 +916,7 @@ fn bench_recursive_verify(c: &mut Criterion) {
             b.iter_batched(
                 || (case.clone(), recursive_host()),
                 execute_and_build_case,
-                BatchSize::SmallInput,
+                BatchSize::PerIteration,
             );
         });
 
@@ -931,7 +924,7 @@ fn bench_recursive_verify(c: &mut Criterion) {
             b.iter_batched(
                 || (case.clone(), recursive_host(), config.hash_fn),
                 prove_recursive_case,
-                BatchSize::SmallInput,
+                BatchSize::PerIteration,
             );
         });
     }
