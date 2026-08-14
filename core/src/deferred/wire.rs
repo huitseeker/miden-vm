@@ -591,6 +591,10 @@ impl Deserializable for DeferredStateWire {
         let mut reader = BudgetedReader::new(SliceReader::new(bytes), bytes.len());
         Self::read_from(&mut reader)
     }
+
+    fn min_serialized_size() -> usize {
+        usize::min_serialized_size()
+    }
 }
 
 fn read_wire_entry<R: ByteReader>(
@@ -695,6 +699,19 @@ mod tests {
     fn assert_wire_round_trips(wire: DeferredStateWire) {
         let decoded = DeferredStateWire::read_from_bytes(&wire.to_bytes()).unwrap();
         assert_eq!(decoded, wire);
+    }
+
+    #[test]
+    fn empty_wire_vector_decodes_with_exact_canonical_budget() {
+        let wires = alloc::vec![DeferredStateWire::default(), DeferredStateWire::default()];
+        let bytes = wires.to_bytes();
+
+        assert_eq!(DeferredStateWire::min_serialized_size(), 1);
+        assert_eq!(bytes.len(), 3);
+        assert_eq!(
+            Vec::<DeferredStateWire>::read_from_bytes_with_budget(&bytes, bytes.len()).unwrap(),
+            wires
+        );
     }
 
     #[test]

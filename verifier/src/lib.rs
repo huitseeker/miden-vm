@@ -83,45 +83,115 @@ impl Verifier {
                         return Err(VerificationError::MissingPrecompileProof);
                     },
                     None => {},
-                    Some(precompile) => {
-                        let roots = &precompile.roots;
-                        if roots.is_empty() {
-                            return Err(VerificationError::EmptyPrecompileRoots);
-                        }
-                        if roots.len() > MAX_PRECOMPILE_ROOTS {
-                            return Err(VerificationError::TooManyPrecompileRoots {
-                                roots: roots.len(),
-                                max: MAX_PRECOMPILE_ROOTS,
-                            });
-                        }
-                        if let Some(index) = roots.iter().position(|root| *root == TRUE_DIGEST) {
-                            return Err(VerificationError::SettledPrecompileRoot { index });
-                        }
-                        if vm_root == TRUE_DIGEST {
-                            return Err(VerificationError::UnexpectedPrecompileProof);
-                        }
-                        if !roots.contains(&vm_root) {
-                            return Err(VerificationError::InsufficientPrecompileRootCoverage);
-                        }
-                    },
+                    Some(precompile) => self.validate_precompile(precompile, vm_root)?,
                 }
                 (vm, None, precompile.as_ref())
             },
         };
 
+        self.preflight_vm_stark(claim, vm)?;
+        if let Some(precompile) = precompile {
+            self.preflight_precompile_stark(precompile)?;
+        }
+
         let mut security_level = self.verify_vm(claim, vm)?;
         if let Some(precompile) = precompile {
-            let roots = &precompile.roots;
-            let aggregate_root = roots
-                .iter()
-                .copied()
-                .reduce(fold_deferred_root)
-                .expect("precompile roots were checked to be non-empty");
-            miden_precompiles_prover::verify_deferred(&precompile.proof, aggregate_root)?;
-            security_level = security_level.min(STARK_SECURITY_LEVEL);
+            security_level =
+                security_level.min(self.verify_precompile(precompile, vm.precompile_root)?);
         }
 
         Ok(VerificationOutcome::new(security_level, outstanding_root))
+    }
+
+    /// Verifies a precompile proof against an expected outstanding execution root.
+    ///
+    /// The expected root may occur anywhere in the proof's ordered constituent roots. All roots,
+    /// including compatible extras and duplicate occurrences, are folded from the first root to
+    /// derive the aggregate precompile STARK statement. On success, this returns the authenticated
+    /// security level of the precompile STARK.
+    ///
+    /// The expected root and every constituent root must differ from [`TRUE_DIGEST`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the artifact shape or expected-root coverage is invalid, or if the
+    /// precompile STARK rejects.
+    pub fn verify_precompile(
+        &self,
+        proof: &PrecompileProof,
+        expected_root: DeferredRoot,
+    ) -> Result<u32, VerificationError> {
+        self.validate_precompile(proof, expected_root)?;
+        self.preflight_precompile_stark(proof)?;
+
+        let aggregate_root = proof
+            .roots
+            .iter()
+            .copied()
+            .reduce(fold_deferred_root)
+            .expect("precompile roots were checked to be non-empty");
+        miden_precompiles_prover::verify_deferred(&proof.proof, aggregate_root)?;
+
+        Ok(STARK_SECURITY_LEVEL)
+    }
+
+    fn validate_precompile(
+        &self,
+        proof: &PrecompileProof,
+        expected_root: DeferredRoot,
+    ) -> Result<(), VerificationError> {
+        let roots = &proof.roots;
+        if roots.is_empty() {
+            return Err(VerificationError::EmptyPrecompileRoots);
+        }
+        if roots.len() > MAX_PRECOMPILE_ROOTS {
+            return Err(VerificationError::TooManyPrecompileRoots {
+                roots: roots.len(),
+                max: MAX_PRECOMPILE_ROOTS,
+            });
+        }
+        if let Some(index) = roots.iter().position(|root| *root == TRUE_DIGEST) {
+            return Err(VerificationError::SettledPrecompileRoot { index });
+        }
+        if expected_root == TRUE_DIGEST {
+            return Err(VerificationError::UnexpectedPrecompileProof);
+        }
+        if !roots.contains(&expected_root) {
+            return Err(VerificationError::InsufficientPrecompileRootCoverage);
+        }
+
+        Ok(())
+    }
+
+    fn preflight_vm_stark(
+        &self,
+        claim: &ExecutionClaim,
+        proof: &VmProof,
+    ) -> Result<(), VerificationError> {
+        let size = proof.proof.bytes().len();
+        if size > MAX_STARK_PROOF_BYTES {
+            return Err(VerificationError::StarkVerificationError(
+                claim.program_root(),
+                Box::new(StarkVerificationError::ProofTooLarge {
+                    size,
+                    max: MAX_STARK_PROOF_BYTES,
+                }),
+            ));
+        }
+        Ok(())
+    }
+
+    fn preflight_precompile_stark(&self, proof: &PrecompileProof) -> Result<(), VerificationError> {
+        let size = proof.proof.bytes().len();
+        if size > MAX_STARK_PROOF_BYTES {
+            return Err(VerificationError::PrecompileStarkVerification(
+                miden_precompiles_prover::VerifyError::ProofTooLarge {
+                    size,
+                    max: MAX_STARK_PROOF_BYTES,
+                },
+            ));
+        }
+        Ok(())
     }
 
     fn verify_vm(&self, claim: &ExecutionClaim, proof: &VmProof) -> Result<u32, VerificationError> {
@@ -383,6 +453,59 @@ mod tests {
             let error = Verifier::new().verify(&claim(), &proof).unwrap_err();
             assert!(check(error));
         }
+    }
+
+    #[test]
+    fn precompile_verifier_owns_artifact_shape_policy() {
+        type CheckError = fn(VerificationError) -> bool;
+
+        let required = root(1);
+        let cases: Vec<(PrecompileProof, Word, CheckError)> = vec![
+            (precompile_proof(vec![]), required, |error| {
+                matches!(error, VerificationError::EmptyPrecompileRoots)
+            }),
+            (precompile_proof(vec![required; MAX_PRECOMPILE_ROOTS + 1]), required, |error| {
+                matches!(
+                    error,
+                    VerificationError::TooManyPrecompileRoots { roots, max }
+                        if roots == MAX_PRECOMPILE_ROOTS + 1 && max == MAX_PRECOMPILE_ROOTS
+                )
+            }),
+            (precompile_proof(vec![required, TRUE_DIGEST]), required, |error| {
+                matches!(error, VerificationError::SettledPrecompileRoot { index: 1 })
+            }),
+            (precompile_proof(vec![required]), TRUE_DIGEST, |error| {
+                matches!(error, VerificationError::UnexpectedPrecompileProof)
+            }),
+            (precompile_proof(vec![required]), root(99), |error| {
+                matches!(error, VerificationError::InsufficientPrecompileRootCoverage)
+            }),
+        ];
+
+        for (proof, expected_root, check) in cases {
+            let error = Verifier::new().verify_precompile(&proof, expected_root).unwrap_err();
+            assert!(check(error));
+        }
+    }
+
+    #[test]
+    fn oversized_precompile_stark_is_rejected_before_vm_stark_verification() {
+        let required = root(1);
+        let proof = ExecutionProof::Complete {
+            vm: vm_proof(required),
+            precompile: Some(PrecompileProof {
+                proof: StarkProof::new(vec![0; MAX_STARK_PROOF_BYTES + 1], HashFunction::Poseidon2),
+                roots: vec![required],
+            }),
+        };
+
+        let error = Verifier::new().verify(&claim(), &proof).unwrap_err();
+        assert!(matches!(
+            error,
+            VerificationError::PrecompileStarkVerification(
+                miden_precompiles_prover::VerifyError::ProofTooLarge { size, max }
+            ) if size == MAX_STARK_PROOF_BYTES + 1 && max == MAX_STARK_PROOF_BYTES
+        ));
     }
 
     #[test]

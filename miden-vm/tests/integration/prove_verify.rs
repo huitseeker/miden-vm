@@ -294,6 +294,9 @@ mod prover_api_lifecycle {
         let program = assemble("begin push.1 drop end");
         let stack_inputs = StackInputs::default();
         let prover = Prover::new().with_hash_fn(HashFunction::Blake3_256);
+        let execution_options = ExecutionOptions::default()
+            .with_core_trace_fragment_size(1)
+            .expect("one-row trace fragments should be supported");
 
         let mut buffered_host = DefaultHost::default();
         let (buffered_outputs, buffered_proof) = prove_sync(
@@ -302,7 +305,7 @@ mod prover_api_lifecycle {
             stack_inputs,
             AdviceInputs::default(),
             &mut buffered_host,
-            ExecutionOptions::default().with_overlapped_trace_build(false),
+            execution_options.with_overlapped_trace_build(false),
         )
         .expect("buffered execute-and-prove should succeed");
 
@@ -313,7 +316,7 @@ mod prover_api_lifecycle {
             stack_inputs,
             AdviceInputs::default(),
             &mut overlapped_host,
-            ExecutionOptions::default().with_overlapped_trace_build(true),
+            execution_options.with_overlapped_trace_build(true),
         )
         .expect("overlapped execute-and-prove should succeed");
 
@@ -385,6 +388,62 @@ mod prover_api_lifecycle {
             .prove_precompile(&merged)
             .expect("merged precompile witness should prove once");
         assert_eq!(shared_precompile.roots, ordered_roots);
+
+        let verifier = Verifier::new();
+        assert_eq!(
+            verifier
+                .verify_precompile(&shared_precompile, one_root)
+                .expect("shared precompile proof should directly verify root one"),
+            96
+        );
+
+        assert_eq!(
+            verifier
+                .verify_precompile(&shared_precompile, two_root)
+                .expect("compatible extra roots should directly verify root two"),
+            96
+        );
+
+        let mut reordered_precompile = shared_precompile.clone();
+        reordered_precompile.roots.swap(1, 2);
+        assert!(matches!(
+            verifier.verify_precompile(&reordered_precompile, one_root),
+            Err(VerificationError::PrecompileStarkVerification(_))
+        ));
+
+        let mut missing_duplicate_precompile = shared_precompile.clone();
+        missing_duplicate_precompile.roots.remove(1);
+        assert!(matches!(
+            verifier.verify_precompile(&missing_duplicate_precompile, one_root),
+            Err(VerificationError::PrecompileStarkVerification(_))
+        ));
+
+        let mut mutated_vm_root = one_transported.clone();
+        let ExecutionProof::Deferred { vm, .. } = &mut mutated_vm_root else {
+            panic!("transported root-one proof should remain deferred");
+        };
+        vm.precompile_root = two_root;
+        let mutated_vm_root = mutated_vm_root
+            .complete(shared_precompile.clone())
+            .expect("completion should attach a compatible precompile proof");
+        assert!(matches!(
+            verifier.verify(&one_claim, &mutated_vm_root),
+            Err(VerificationError::StarkVerificationError(..))
+        ));
+
+        let mut trailing_vm_bytes = one_vm.proof.bytes().to_vec();
+        trailing_vm_bytes.push(0);
+        let trailing_vm_proof = ExecutionProof::Deferred {
+            vm: miden_vm::VmProof {
+                proof: StarkProof::new(trailing_vm_bytes, one_vm.proof.hash_fn()),
+                precompile_root: one_root,
+            },
+            precompile: DeferredStateWire::default(),
+        };
+        assert!(matches!(
+            verifier.verify(&one_claim, &trailing_vm_proof),
+            Err(VerificationError::StarkVerificationError(..))
+        ));
 
         let invalid_complete = one_transported
             .clone()

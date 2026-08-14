@@ -92,8 +92,10 @@ impl ExecutionWitness {
         self.vm.claim()
     }
 
-    /// Performs the low-level split used by prover and trace-building plumbing.
-    #[doc(hidden)]
+    /// Consumes this witness and returns its supported low-level proving components.
+    ///
+    /// The [`VmWitness`] can be passed to [`build_trace`]. The optional [`PrecompileWitness`] is
+    /// present only when execution authenticated deferred precompile work.
     pub fn into_parts(self) -> (VmWitness, Option<PrecompileWitness>) {
         (self.vm, self.precompile)
     }
@@ -101,9 +103,8 @@ impl ExecutionWitness {
 
 /// Witness required to materialize and prove a VM execution trace.
 ///
-/// This potentially large value contains private replay data. The processor does not currently
-/// define its transport format; delegated workers must use the external `VmWitness` transport work
-/// once it is integrated rather than inventing an incompatible encoding.
+/// This potentially large value contains private replay data and is consumed by trace-building and
+/// proving operations. The processor does not define a serialized representation for it.
 #[derive(Debug)]
 pub struct VmWitness {
     program_info: ProgramInfo,

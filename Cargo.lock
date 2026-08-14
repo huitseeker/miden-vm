@@ -2599,6 +2599,7 @@ dependencies = [
  "miden-debug-types",
  "miden-precompiles-prover",
  "miden-processor",
+ "miden-verifier",
  "serde",
  "serde-wincode",
  "thiserror",

@@ -108,6 +108,14 @@ including its passive deferred-state proof wire.
 cargo +nightly fuzz run execution_proof_deserialize --fuzz-dir tools/miden-core-fuzz
 ```
 
+**`execution_proof_serde_deserialize`** — Exercises derived-Serde parser robustness for
+`ExecutionProof`, `Vec<ExecutionProof>`, and `Option<ExecutionProof>`. It does not establish proof
+validity or claim allocation-bounded generic Serde.
+
+```bash
+cargo +nightly fuzz run execution_proof_serde_deserialize --fuzz-dir tools/miden-core-fuzz
+```
+
 **`deferred_state_wire_deserialize`** — Tests `DeferredStateWire::read_from_bytes`.
 
 ```bash

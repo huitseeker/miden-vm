@@ -18,11 +18,11 @@ pub struct PrecompileWitness {
 }
 
 impl PrecompileWitness {
-    /// Creates a singleton witness from a non-empty execution state.
+    /// Creates a singleton witness from a hydrated, non-empty deferred execution state.
     ///
-    /// This is public only for processor and facade plumbing. Applications should hydrate passive
-    /// deferred wire through the `miden-vm` facade instead.
-    #[doc(hidden)]
+    /// This is the supported low-level constructor for callers that already own a
+    /// [`DeferredState`]. It retains the state's current root as the witness's sole ordered root
+    /// and rejects [`TRUE_DIGEST`], which represents an execution with no deferred statements.
     pub fn new(state: DeferredState) -> Result<Self, PrecompileWitnessError> {
         let root = state.root();
         if root == TRUE_DIGEST {
@@ -34,16 +34,16 @@ impl PrecompileWitness {
 
     /// Returns the ordered non-TRUE execution roots used as precompile-proof metadata.
     ///
-    /// This is public only for processor and prover plumbing.
-    #[doc(hidden)]
+    /// Singleton witnesses contain one root. Merged witnesses preserve input order and duplicate
+    /// occurrences because both are significant to the aggregate precompile statement.
     pub fn roots(&self) -> &[Digest] {
         &self.roots
     }
 
     /// Returns the hydrated deferred state consumed by precompile proving.
     ///
-    /// This is public only for prover plumbing.
-    #[doc(hidden)]
+    /// The state may contain private execution data and can be large, so callers should prefer this
+    /// borrowed access over cloning the witness.
     pub fn state(&self) -> &DeferredState {
         &self.state
     }

@@ -8,7 +8,8 @@ use miden_processor::{
     advice::AdviceMutation,
     event::{EventError, EventName},
 };
-use miden_prover::{AdviceInputs, ExecutionProof, Prover, StackInputs};
+use miden_prover::{AdviceInputs, ExecutionClaim, ExecutionProof, Prover, StackInputs};
+use miden_verifier::Verifier;
 
 struct YieldingAsyncHost {
     event_calls: usize,
@@ -49,6 +50,13 @@ impl Host for YieldingAsyncHost {
     }
 }
 
+fn verify_generated_proof(claim: &ExecutionClaim, proof: &ExecutionProof) {
+    let outcome = Verifier::new()
+        .verify(claim, proof)
+        .expect("generated proof should verify against its execution claim");
+    assert!(outcome.is_complete());
+}
+
 fn simple_program() -> miden_processor::Program {
     Assembler::default()
         .assemble_program(
@@ -78,7 +86,8 @@ async fn async_and_sync_execution_witnesses_prove_equivalently() {
             .unwrap()
             .execute_for_proving_sync(&program, &mut sync_host)
             .unwrap();
-    let sync_outputs = *sync_witness.claim().stack_outputs();
+    let sync_claim = sync_witness.claim();
+    let sync_outputs = *sync_claim.stack_outputs();
     let sync_proof = Prover::new().prove_full(sync_witness).unwrap();
 
     let mut async_host = DefaultHost::default();
@@ -88,12 +97,13 @@ async fn async_and_sync_execution_witnesses_prove_equivalently() {
             .execute_for_proving(&program, &mut async_host)
             .await
             .unwrap();
-    let async_outputs = *async_witness.claim().stack_outputs();
+    let async_claim = async_witness.claim();
+    let async_outputs = *async_claim.stack_outputs();
     let async_proof = Prover::new().prove_full(async_witness).unwrap();
 
     assert_eq!(sync_outputs, async_outputs);
-    assert!(matches!(sync_proof, ExecutionProof::Complete { precompile: None, .. }));
-    assert!(matches!(async_proof, ExecutionProof::Complete { precompile: None, .. }));
+    verify_generated_proof(&sync_claim, &sync_proof);
+    verify_generated_proof(&async_claim, &async_proof);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -115,8 +125,9 @@ async fn proving_supports_witnesses_from_async_only_host_events() {
     .execute_for_proving(&program, &mut host)
     .await
     .expect("async execution should succeed");
+    let claim = witness.claim();
     let proof = Prover::new().prove_full(witness).expect("proving should succeed");
 
     assert_eq!(host.event_calls, 1);
-    assert!(matches!(proof, ExecutionProof::Complete { precompile: None, .. }));
+    verify_generated_proof(&claim, &proof);
 }

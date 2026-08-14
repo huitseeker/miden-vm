@@ -30,12 +30,14 @@
 - [BREAKING] Replaced the partial-proof and configurable-verifier APIs with VM-first `Prover`
   methods and deferred/complete `ExecutionProof` states. Deferred proofs carry passive
   `DeferredStateWire`; decode them without a registry, hydrate explicitly through
-  `precompile_witness_from_wire`, and use `Verifier::verify` as the structural and cryptographic
-  validity seam. `VmProof` and `PrecompileProof` are public-field records; `StarkProof` retains its
-  existing constructor and field-access interface.
-  The intermediate `prove_partial*`, `Verifier::verify_partial`,
-  `Verifier::with_max_deferred_elements`, and `ExecutionOptions::with_max_deferred_elements` APIs
-  were removed
+  `precompile_witness_from_wire`, and use `Verifier::verify` as the complete lifecycle's structural
+  and cryptographic validity seam. Standalone aggregate precompile artifacts can be checked against
+  an expected outstanding root with `Verifier::verify_precompile`. `DeferredState::from_wire`,
+  `PrecompileWitness::{new, roots, state}`, and `ExecutionWitness::into_parts` are supported
+  low-level operations. `VmProof` and `PrecompileProof` are public-field records; `StarkProof`
+  retains its existing constructor and field-access interface. The intermediate `prove_partial*`,
+  `Verifier::verify_partial`, `Verifier::with_max_deferred_elements`, and
+  `ExecutionOptions::with_max_deferred_elements` APIs were removed
   ([#3437](https://github.com/0xMiden/miden-vm/pull/3437)).
 - [BREAKING] Changed `HORNERBASE` and `HORNEREXT` to read the evaluation point from an aligned, zero-padded word: `[alpha0, alpha1, 0, 0]`. This reduces the memory-chiplet trace for `HORNERBASE` from two rows to one and gives both operations the same memory layout ([#3570](https://github.com/0xMiden/miden-vm/pull/3570)).
 

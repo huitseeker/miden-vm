@@ -152,8 +152,8 @@ implicit root to `TRUE`. The result is a singleton witness suitable for
 `PrecompileWitness::merge` accepts a non-empty vector of singleton witnesses. It preserves exact
 input order and duplicate root multiplicity: `[one, one, two]` remains `[one, one, two]`. A
 one-input merge remains singleton; a multi-root result cannot be merged recursively. DAG nodes may
-be
-deduplicated, but root occurrences are not. The root count and merged hydrated state are bounded by
+be deduplicated, but root occurrences are not. The root count and merged hydrated state are bounded
+by
 the fixed `MAX_PRECOMPILE_ROOTS` and `MAX_DEFERRED_ELEMENTS` hard ceilings.
 
 The resulting `PrecompileProof` carries the ordered roots. Their left reduction, beginning with the
@@ -167,10 +167,13 @@ statement.
 retains private fields and its existing constructor/accessor interface. `ExecutionProof::complete`
 only performs the `Deferred` to `Complete` transition and rejects an already-complete artifact.
 Public variants, canonical decoding, encoding, Serde, and completion may represent inconsistent
-artifacts; none establishes validity. `Verifier::verify` owns proof-shape,
-root-policy, membership, ordered aggregate-fold, and cryptographic checks. A successful deferred
-verification returns only the authenticated outstanding VM root; a successful complete verification
-has no outstanding obligation.
+artifacts; none establishes validity. `Verifier::verify_precompile` validates precompile-proof shape,
+expected-root membership, ordered aggregate folding, and the precompile STARK. It can validate a
+precompile artifact independently against an expected outstanding root and returns the artifact's
+security level. `Verifier::verify` owns execution-lifecycle validity, verifies the VM STARK, and
+reuses `verify_precompile` for complete proofs. A successful deferred verification returns only the
+authenticated outstanding VM root; a successful complete verification has no outstanding
+obligation.
 
 
 ## Transport and limits

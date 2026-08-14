@@ -224,7 +224,7 @@ const COMPLETE_PROOF_DISCRIMINANT: u8 = 1;
 /// A Miden VM execution proof, either awaiting precompile proving or complete.
 ///
 /// This type preserves proof artifacts without establishing their validity.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum ExecutionProof {
     /// The VM STARK and deferred precompile wire are available.
@@ -257,20 +257,7 @@ impl ExecutionProof {
     ///
     /// Encoding preserves the public enum representation and does not establish proof validity.
     pub fn to_bytes(&self) -> Vec<u8> {
-        let mut bytes = Vec::new();
-        match self {
-            Self::Deferred { vm, precompile } => {
-                bytes.write_u8(DEFERRED_PROOF_DISCRIMINANT);
-                vm.write_into(&mut bytes);
-                precompile.write_into(&mut bytes);
-            },
-            Self::Complete { vm, precompile } => {
-                bytes.write_u8(COMPLETE_PROOF_DISCRIMINANT);
-                vm.write_into(&mut bytes);
-                precompile.write_into(&mut bytes);
-            },
-        }
-        bytes
+        Serializable::to_bytes(self)
     }
 
     /// Decodes an execution proof without hydrating passive deferred wire.
@@ -278,25 +265,7 @@ impl ExecutionProof {
     /// Decoding establishes bounded canonical transport syntax, not proof validity.
     pub fn read_from_bytes(bytes: &[u8]) -> Result<Self, DeserializationError> {
         let mut reader = BudgetedReader::new(SliceReader::new(bytes), bytes.len());
-        let discriminant = reader.read_u8()?;
-        if !matches!(discriminant, DEFERRED_PROOF_DISCRIMINANT | COMPLETE_PROOF_DISCRIMINANT) {
-            return Err(DeserializationError::InvalidValue(format!(
-                "invalid execution proof discriminant {discriminant}"
-            )));
-        }
-
-        let vm = VmProof::read_from(&mut reader)?;
-        let proof = match discriminant {
-            DEFERRED_PROOF_DISCRIMINANT => {
-                let precompile = DeferredStateWire::read_from(&mut reader)?;
-                Self::Deferred { vm, precompile }
-            },
-            COMPLETE_PROOF_DISCRIMINANT => {
-                let precompile = Option::<PrecompileProof>::read_from(&mut reader)?;
-                Self::Complete { vm, precompile }
-            },
-            _ => unreachable!("execution proof discriminant was checked before decoding"),
-        };
+        let proof = <Self as Deserializable>::read_from(&mut reader)?;
 
         if reader.has_more_bytes() {
             return Err(DeserializationError::InvalidValue(
@@ -310,6 +279,53 @@ impl ExecutionProof {
         }
 
         Ok(proof)
+    }
+}
+
+impl Serializable for ExecutionProof {
+    fn write_into<W: ByteWriter>(&self, target: &mut W) {
+        match self {
+            Self::Deferred { vm, precompile } => {
+                target.write_u8(DEFERRED_PROOF_DISCRIMINANT);
+                vm.write_into(target);
+                precompile.write_into(target);
+            },
+            Self::Complete { vm, precompile } => {
+                target.write_u8(COMPLETE_PROOF_DISCRIMINANT);
+                vm.write_into(target);
+                precompile.write_into(target);
+            },
+        }
+    }
+}
+
+impl Deserializable for ExecutionProof {
+    fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
+        let discriminant = source.read_u8()?;
+        if !matches!(discriminant, DEFERRED_PROOF_DISCRIMINANT | COMPLETE_PROOF_DISCRIMINANT) {
+            return Err(DeserializationError::InvalidValue(format!(
+                "invalid execution proof discriminant {discriminant}"
+            )));
+        }
+
+        let vm = VmProof::read_from(source)?;
+        match discriminant {
+            DEFERRED_PROOF_DISCRIMINANT => {
+                let precompile = DeferredStateWire::read_from(source)?;
+                Ok(Self::Deferred { vm, precompile })
+            },
+            COMPLETE_PROOF_DISCRIMINANT => {
+                let precompile = Option::<PrecompileProof>::read_from(source)?;
+                Ok(Self::Complete { vm, precompile })
+            },
+            _ => unreachable!("execution proof discriminant was checked before decoding"),
+        }
+    }
+
+    fn min_serialized_size() -> usize {
+        u8::min_serialized_size()
+            + VmProof::min_serialized_size()
+            + Option::<PrecompileProof>::min_serialized_size()
     }
 }
 
@@ -423,14 +439,83 @@ mod tests {
         (witness.state().to_wire().unwrap(), witness.roots()[0])
     }
 
-    fn assert_same_execution_proof(actual: &ExecutionProof, expected: &ExecutionProof) {
-        assert_eq!(actual.to_bytes(), expected.to_bytes());
-    }
-
     fn round_trip_execution_proof(proof: &ExecutionProof) {
         let bytes = proof.to_bytes();
         let decoded = ExecutionProof::read_from_bytes(&bytes).unwrap();
-        assert_same_execution_proof(&decoded, proof);
+        assert_eq!(&decoded, proof);
+    }
+
+    #[test]
+    fn execution_proof_repository_traits_decode_one_stream_item() {
+        let (precompile_wire, wire_root) = wire();
+        let deferred = ExecutionProof::Deferred {
+            vm: vm_proof(wire_root),
+            precompile: precompile_wire,
+        };
+        let complete = ExecutionProof::Complete {
+            vm: vm_proof(TRUE_DIGEST),
+            precompile: Some(precompile_proof(&[root(1)])),
+        };
+        let mut stream = deferred.to_bytes();
+        complete.write_into(&mut stream);
+        let mut reader = SliceReader::new(&stream);
+
+        assert_eq!(ExecutionProof::read_from(&mut reader).unwrap(), deferred);
+        assert_eq!(ExecutionProof::read_from(&mut reader).unwrap(), complete);
+        assert!(!reader.has_more_bytes());
+    }
+
+    #[test]
+    fn execution_proof_containers_round_trip_representable_shapes_with_exact_budget() {
+        let complete_without_precompile = ExecutionProof::Complete {
+            vm: vm_proof(TRUE_DIGEST),
+            precompile: None,
+        };
+        let smallest =
+            alloc::vec![complete_without_precompile.clone(), complete_without_precompile.clone(),];
+        let smallest_bytes = smallest.to_bytes();
+        assert_eq!(smallest_bytes.len(), 75);
+        assert_eq!(ExecutionProof::min_serialized_size(), 36);
+        assert_eq!(
+            Vec::<ExecutionProof>::read_from_bytes_with_budget(
+                &smallest_bytes,
+                smallest_bytes.len()
+            )
+            .unwrap(),
+            smallest
+        );
+
+        let (precompile_wire, wire_root) = wire();
+        let malformed_shapes = alloc::vec![
+            ExecutionProof::Deferred {
+                vm: vm_proof(wire_root),
+                precompile: precompile_wire,
+            },
+            complete_without_precompile,
+            ExecutionProof::Complete {
+                vm: vm_proof(root(9)),
+                precompile: Some(precompile_proof(&[])),
+            },
+            ExecutionProof::Complete {
+                vm: vm_proof(root(9)),
+                precompile: Some(precompile_proof(&[root(9), root(9)])),
+            },
+            ExecutionProof::Complete {
+                vm: vm_proof(root(9)),
+                precompile: Some(precompile_proof(&[TRUE_DIGEST])),
+            },
+        ];
+        let bytes = malformed_shapes.to_bytes();
+        let decoded =
+            Vec::<ExecutionProof>::read_from_bytes_with_budget(&bytes, bytes.len()).unwrap();
+        assert_eq!(decoded, malformed_shapes);
+
+        for wrapper in [None, Some(malformed_shapes[0].clone())] {
+            let bytes = wrapper.to_bytes();
+            let decoded =
+                Option::<ExecutionProof>::read_from_bytes_with_budget(&bytes, bytes.len()).unwrap();
+            assert_eq!(decoded, wrapper);
+        }
     }
 
     #[test]
@@ -567,14 +652,14 @@ mod tests {
             precompile: precompile_wire,
         };
         let decoded_deferred = round_trip(&deferred);
-        assert_same_execution_proof(&decoded_deferred, &deferred);
+        assert_eq!(decoded_deferred, deferred);
 
         let complete = ExecutionProof::Complete {
             vm: vm_proof(TRUE_DIGEST),
             precompile: Some(precompile),
         };
         let decoded_complete = round_trip(&complete);
-        assert_same_execution_proof(&decoded_complete, &complete);
+        assert_eq!(decoded_complete, complete);
     }
 
     #[test]
@@ -640,7 +725,10 @@ mod tests {
 
         let mut oversized_proof = Vec::new();
         oversized_proof.write_u8(COMPLETE_PROOF_DISCRIMINANT);
-        oversized_proof.write_usize(usize::MAX);
-        assert!(ExecutionProof::read_from_bytes(&oversized_proof).is_err());
+        oversized_proof.write_usize(MAX_STARK_PROOF_BYTES + 1);
+        let error = ExecutionProof::read_from_bytes(&oversized_proof).unwrap_err();
+        assert!(
+            matches!(error, DeserializationError::InvalidValue(message) if message.contains("STARK proof contains too many bytes"))
+        );
     }
 }
