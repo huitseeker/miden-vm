@@ -27,6 +27,16 @@ use tracing_subscriber::{
 
 pub const BENCH_GROUP: &str = "blake3_1to1";
 pub const PRIMARY_METRIC: &str = "e2e_prove";
+pub const EXECUTE_FOR_PROVING_METRIC: &str = "execute_for_proving_sync";
+
+/// Returns the canonical name for a user-facing or historical benchmark axis.
+pub fn normalize_axis_name(axis: &str) -> &str {
+    match axis {
+        "execute_trace_inputs_sync" => EXECUTE_FOR_PROVING_METRIC,
+        "prove" | "prove_program_sync" => PRIMARY_METRIC,
+        _ => axis,
+    }
+}
 
 const PROGRAM_RELATIVE_PATH: &str = "miden-vm/masm-examples/hashing/blake3_1to1/blake3_1to1.masm";
 

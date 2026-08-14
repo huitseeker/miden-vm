@@ -3,19 +3,20 @@ use std::{hint::black_box, time::Duration};
 use codspeed_criterion_compat as criterion;
 use criterion::{BatchSize, Criterion, SamplingMode, criterion_group, criterion_main};
 use miden_vm_blake3_bench::{
-    BENCH_GROUP, Blake3Fixture, build_trace, execute_for_proving, execute_program,
-    prove_and_verify_once, prove_span_duration, prove_trace, repo_root_from_manifest,
+    BENCH_GROUP, Blake3Fixture, EXECUTE_FOR_PROVING_METRIC, build_trace, execute_for_proving,
+    execute_program, normalize_axis_name, prove_and_verify_once, prove_span_duration, prove_trace,
+    repo_root_from_manifest,
 };
 
 const ALL_AXES: [&str; 5] = [
     "execute_sync",
-    "execute_for_proving_sync",
+    EXECUTE_FOR_PROVING_METRIC,
     "build_trace",
     "prove_trace_sync",
     "e2e_prove",
 ];
 const PROOF_AXES: [&str; 2] = ["e2e_prove", "prove_trace_sync"];
-const LIGHT_AXES: [&str; 3] = ["execute_sync", "execute_for_proving_sync", "build_trace"];
+const LIGHT_AXES: [&str; 3] = ["execute_sync", EXECUTE_FOR_PROVING_METRIC, "build_trace"];
 
 fn env_usize(name: &str, default: usize) -> usize {
     match std::env::var(name) {
@@ -51,11 +52,11 @@ fn resolve_axes() -> Vec<&'static str> {
 
     let mut requested = Vec::new();
     for axis in raw.split(',').map(str::trim).filter(|axis| !axis.is_empty()) {
-        match axis {
+        match normalize_axis_name(axis) {
             "all" => requested.extend(ALL_AXES),
-            "e2e_prove" | "prove" | "prove_program_sync" => requested.push("e2e_prove"),
+            "e2e_prove" => requested.push("e2e_prove"),
             "execute_sync" => requested.push("execute_sync"),
-            "execute_for_proving_sync" => requested.push("execute_for_proving_sync"),
+            EXECUTE_FOR_PROVING_METRIC => requested.push(EXECUTE_FOR_PROVING_METRIC),
             "prove_trace_sync" => requested.push("prove_trace_sync"),
             "build_trace" => requested.push("build_trace"),
             _ => panic!(
@@ -144,8 +145,8 @@ fn blake3_bench(c: &mut Criterion) {
             });
         }
 
-        if has_axis(&axes, "execute_for_proving_sync") {
-            group.bench_function("execute_for_proving_sync", |b| {
+        if has_axis(&axes, EXECUTE_FOR_PROVING_METRIC) {
+            group.bench_function(EXECUTE_FOR_PROVING_METRIC, |b| {
                 b.iter_with_large_drop(|| black_box(execute_for_proving(&fixture)));
             });
         }
