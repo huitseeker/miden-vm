@@ -101,6 +101,27 @@ fn assert_recursive_verify(
 }
 
 #[test]
+fn test_all_hash_functions_prove_verify() {
+    let source = "
+        begin
+            repeat.149
+                swap dup.1 add
+            end
+        end
+    ";
+
+    for (hash_fn, hash_name) in [
+        (HashFunction::Blake3_256, "Blake3_256"),
+        (HashFunction::Keccak, "Keccak"),
+        (HashFunction::Rpo256, "RPO"),
+        (HashFunction::Poseidon2, "Poseidon2"),
+        (HashFunction::Rpx256, "RPX"),
+    ] {
+        assert_prove_verify(source, hash_fn, hash_name, false, false);
+    }
+}
+
+#[test]
 fn test_keccak_precompile_wrapper_prove_verify_final() {
     let core_lib = CoreLibrary::default();
     let input: Vec<u8> = (0u8..32).collect();

@@ -73,7 +73,12 @@ impl PrecompileWitness {
 
         let roots = witnesses.iter().map(|witness| witness.roots[0]).collect::<Vec<_>>();
         let mut witnesses = witnesses.into_iter();
-        let mut state = witnesses.next().expect("non-empty witness input was checked above").state;
+        let mut state = witnesses
+            .next()
+            .expect("non-empty witness input was checked above")
+            .state
+            .compact()
+            .map_err(PrecompileWitnessError::Merge)?;
 
         for witness in witnesses {
             state = state.merge(witness.state).map_err(PrecompileWitnessError::Merge)?;
@@ -202,8 +207,10 @@ mod tests {
     }
 
     #[test]
-    fn merge_preserves_order_when_reversed() {
-        let first = singleton(1);
+    fn merge_preserves_order_and_compacts_the_first_state() {
+        let mut first_state = framework_state(1);
+        let orphan = first_state.register(Node::chunks(alloc::vec![[ZERO; 8]]).unwrap()).unwrap();
+        let first = PrecompileWitness::new(first_state).unwrap();
         let second = singleton(2);
         let first_root = first.roots()[0];
         let second_root = second.roots()[0];
@@ -213,6 +220,10 @@ mod tests {
 
         assert_eq!(ordered.roots(), &[first_root, second_root]);
         assert_eq!(reversed.roots(), &[second_root, first_root]);
+        assert!(ordered.state().get_node(&orphan).is_none());
+        assert!(reversed.state().get_node(&orphan).is_none());
+        assert_eq!(ordered.state().num_elements(), reversed.state().num_elements());
+        assert_eq!(ordered.state().remaining_elements(), reversed.state().remaining_elements());
     }
 
     #[test]

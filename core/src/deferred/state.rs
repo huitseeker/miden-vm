@@ -138,6 +138,18 @@ impl DeferredState {
         &self.nodes
     }
 
+    /// Rebuilds this state from its root-reachable DAG.
+    ///
+    /// Registered and memoized orphans are dropped, and the fixed element budget is recomputed from
+    /// the retained nodes. Precompile initialization and evaluation use the installed registry.
+    pub(crate) fn compact(self) -> Result<Self, PrecompileError> {
+        let root = self.root;
+        let mut compacted = Self::new(Arc::clone(&self.registry))?;
+        compacted.import_reachable_from(&self, root)?;
+        compacted.root = root;
+        Ok(compacted)
+    }
+
     /// Merges `other` into this state and reduces their roots in order.
     ///
     /// Root-reachable nodes from `other` are re-registered under this state's registry, so shared
