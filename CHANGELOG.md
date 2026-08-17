@@ -21,6 +21,7 @@
 - [BREAKING] Reduced the precompile STARK relation from 12 AIRs to 10 by merging the chunk/node/sponge and EC point/group stores ([#3464](https://github.com/0xMiden/miden-vm/pull/3464)).
 - Raised the minimum supported Plonky3 version to 0.6.3 to match the `num-bigint` 0.5 types used by `miden-field` ([#3569](https://github.com/0xMiden/miden-vm/pull/3569)).
 - [BREAKING] Moved the secp256k1 GLV endomorphism scalar decomposition from the ECDSA verifier's MASM/advice ABI into the precompiles prover's addition-chain strategy: `ecdsa_k256_keccak::verify` logs a plain `u1*G + u2*Q` claim, and the deferred prover satisfies it with a GLV-decomposed chain, certified in-circuit ([#3426](https://github.com/0xMiden/miden-vm/pull/3426)).
+- Made `Mmr::clone()` cheap by storing MMR nodes in chunked, `Arc`-shared storage. Clones share all chunk storage with the original; appending after a clone copies at most one 32 KiB chunk. Public API and serialization formats are unchanged. ([#3562](https://github.com/0xMiden/miden-vm/pull/3562)).
 
 #### Features
 
@@ -66,7 +67,6 @@
 - Added `ecdsa_k256_keccak::verify_bytes` for verifying signatures over variable-length Keccak256 message bytes stored in VM memory ([#3563](https://github.com/0xMiden/miden-vm/pull/3563)).
 - Fixed persistent `LargeSmtForest::entries()` iteration, including snapshot-backed readers, by bounding RocksDB scans to the requested lineage prefix instead of scanning subsequent lineages ([#3576](https://github.com/0xMiden/miden-vm/pull/3576)).
 - Keccak-256 wrapper preimages may now cover memory that was never written to, matching the in-VM rule that unwritten memory reads as zero ([#3537](https://github.com/0xMiden/miden-vm/issues/3537)).
-- Made `Mmr::clone()` cheap by storing MMR nodes in chunked, `Arc`-shared storage. Clones share all chunk storage with the original; appending after a clone copies at most one 32 KiB chunk. Public API and serialization formats are unchanged.
 
 ## v0.29.0 (2026-08-04)
 
