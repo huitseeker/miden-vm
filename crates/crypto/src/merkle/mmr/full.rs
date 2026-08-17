@@ -182,7 +182,7 @@ impl Mmr {
     }
 
     /// Constructs an MMR from its forest and complete node array, in insertion (postorder) order,
-    /// e.g. as previously obtained from [Mmr::nodes_from].
+    /// e.g. as previously obtained from `mmr.nodes_from(0).copied()` (see [Mmr::nodes_from]).
     ///
     /// The only validation performed is structural: the node count must match `forest`. The
     /// nodes are otherwise taken verbatim — no hashes are recomputed or verified.
