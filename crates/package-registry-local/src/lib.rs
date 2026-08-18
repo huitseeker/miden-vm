@@ -189,9 +189,10 @@ impl LocalPackageRegistry {
                     fs::File::open(&index_path).map_err(LocalRegistryError::IndexRead)?;
                 file.read_to_string(&mut contents).map_err(LocalRegistryError::IndexRead)?;
             }
+            // Checksum uses ASCII trim via `hash_index_contents`. Parsing still uses Unicode
+            // `trim()` so a leading NBSP does not turn a valid index into a TOML error.
+            index_checksum = hash_index_contents(contents.as_bytes());
             let contents = contents.trim();
-            index_checksum =
-                *miden_core::crypto::hash::Sha256::hash(contents.as_bytes()).as_bytes();
             if contents.is_empty() {
                 InMemoryPackageRegistry::default()
             } else {
@@ -199,7 +200,7 @@ impl LocalPackageRegistry {
                 InMemoryPackageRegistry::from_packages(persisted.packages)
             }
         } else {
-            index_checksum = *miden_core::crypto::hash::Sha256::hash(&[]).as_bytes();
+            index_checksum = hash_index_contents(&[]);
             InMemoryPackageRegistry::default()
         };
 
@@ -385,8 +386,7 @@ impl LocalPackageRegistry {
             Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
             Err(error) => return Err(LocalRegistryError::IndexRead(error)),
         };
-        let checksum = miden_core::crypto::hash::Sha256::hash(prev_contents.trim_ascii());
-        if &self.index_checksum != checksum.as_bytes() {
+        if self.index_checksum != hash_index_contents(&prev_contents) {
             return Err(LocalRegistryError::WriteToStaleIndex);
         }
 
@@ -394,13 +394,13 @@ impl LocalPackageRegistry {
 
         // Compute the new checksum of the updated index contents before we write, but do not
         // update the in-memory state until we've successfully persisted the index
-        let new_checksum = miden_core::crypto::hash::Sha256::hash(contents.as_bytes().trim_ascii());
+        let new_checksum = hash_index_contents(contents.as_bytes());
 
         write_file_atomically(&self.index_path, contents.as_bytes())
             .map_err(LocalRegistryError::IndexWrite)?;
 
         // Update the index checksum for the next write
-        self.index_checksum = *new_checksum.as_bytes();
+        self.index_checksum = new_checksum;
 
         Ok(())
     }
@@ -662,6 +662,10 @@ impl LocalPackageRegistry {
             artifact_path,
         })
     }
+}
+
+fn hash_index_contents(contents: &[u8]) -> [u8; 32] {
+    *miden_core::crypto::hash::Sha256::hash(contents.trim_ascii()).as_bytes()
 }
 
 fn lock_path_for_index(index_path: &Path) -> PathBuf {
@@ -1276,6 +1280,37 @@ mod tests {
             .expect_err("stale publish should fail before writing artifact bytes");
         assert!(matches!(error, LocalRegistryError::WriteToStaleIndex));
         assert_eq!(fs::read(&published.artifact_path).unwrap(), original_bytes);
+    }
+
+    #[test]
+    fn publish_succeeds_when_index_has_leading_trim_mismatch_whitespace() {
+        // `str::trim` removes these; `trim_ascii` does not. Before the checksums used the same
+        // trim, a reload followed by publish failed with WriteToStaleIndex.
+        for prefix in ["\u{00A0}".as_bytes(), b"\x0B"] {
+            let tempdir = TempDir::new().unwrap();
+            let mut registry = load_registry(&tempdir);
+
+            let package_path = tempdir.path().join("pkg.masp");
+            build_package("pkg", "1.0.0", []).write_to_file(&package_path).unwrap();
+            registry.publish(&package_path).unwrap();
+
+            let index_path = tempdir.path().join("midenup").join("registry").join("index.toml");
+            let original = fs::read(&index_path).unwrap();
+            let mut padded = prefix.to_vec();
+            padded.extend_from_slice(&original);
+            fs::write(&index_path, padded).unwrap();
+
+            let mut registry = load_registry(&tempdir);
+            let other_path = tempdir.path().join("other.masp");
+            build_package("other", "1.0.0", []).write_to_file(&other_path).unwrap();
+            let published = registry
+                .publish(&other_path)
+                .expect("index whitespace must not look like a stale write");
+
+            let loaded =
+                registry.load_package(&PackageId::from("other"), &published.version).unwrap();
+            assert_eq!(loaded.name, PackageId::from("other"));
+        }
     }
 
     #[test]
