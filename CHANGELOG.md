@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.29.2 (Unreleased)
+
+#### Features
+
+- Added `ast::types::TypedProcInfo`, a typed view over a procedure signature, with argument encoding and range-checked result decoding ([#3276](https://github.com/0xMiden/miden-vm/pull/3276)).
+
 ## v0.29.1 (2026-08-11)
 
 #### Fixes
