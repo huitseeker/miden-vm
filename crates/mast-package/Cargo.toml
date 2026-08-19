@@ -17,6 +17,10 @@ edition.workspace = true
 bench = false
 doctest = false
 
+[[bench]]
+name = "package_deserialization"
+harness = false
+
 [features]
 default = ["std"]
 arbitrary = ["std", "dep:proptest", "dep:proptest-derive", "miden-assembly-syntax/arbitrary", "miden-core/arbitrary"]
@@ -32,7 +36,6 @@ miden-utils-indexing.workspace = true
 
 # External dependencies
 hashbrown.workspace = true
-log.workspace = true
 proptest = { workspace = true, optional = true }
 proptest-derive = { workspace = true, optional = true }
 rustc-hash = { version = "2.1", default-features = false }
@@ -41,6 +44,7 @@ thiserror.workspace = true
 zerocopy.workspace = true
 
 [dev-dependencies]
+codspeed-criterion-compat.workspace = true
 miden-assembly-syntax = { workspace = true, features = ["arbitrary"] }
 miden-core = { workspace = true, features = ["arbitrary"] }
 miden-test-serde-macros.workspace = true
