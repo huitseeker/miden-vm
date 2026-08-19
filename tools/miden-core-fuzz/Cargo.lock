@@ -828,7 +828,6 @@ dependencies = [
  "miden-utils-core-derive",
  "miden-utils-indexing",
  "miden-utils-sync",
- "serde",
  "thiserror",
 ]
 
@@ -844,7 +843,6 @@ dependencies = [
  "miden-package-registry",
  "miden-processor",
  "miden-project",
- "serde_json",
  "toml",
 ]
 
@@ -1071,6 +1069,7 @@ version = "0.30.0"
 dependencies = [
  "miden-assembly-syntax",
  "miden-core",
+ "miden-debug-types",
  "miden-mast-package",
  "miden-package-registry",
  "proptest",
@@ -1141,7 +1140,6 @@ version = "0.30.0"
 dependencies = [
  "miden-serde-utils",
  "proptest",
- "serde",
  "thiserror",
 ]
 
