@@ -6,7 +6,11 @@ use miden_assembly::{
     diagnostics::{IntoDiagnostic, Report},
 };
 use miden_core_lib::CoreLibrary;
-use miden_mast_package::Package;
+use miden_mast_package::{Package, Version};
+
+fn parse_version(value: &str) -> Result<Version, String> {
+    value.parse().map_err(|err| format!("invalid package version: {err}"))
+}
 
 #[derive(Debug, Clone, Parser)]
 #[command(
@@ -25,8 +29,8 @@ pub struct BundleCmd {
     #[arg(short, long)]
     namespace: Option<String>,
     /// Version of the library, defaults to `0.1.0`.
-    #[arg(short, long, default_value = "0.1.0")]
-    version: String,
+    #[arg(short, long, default_value = "0.1.0", value_parser = parse_version)]
+    version: Version,
     /// Indicates that the artifact produced is a kernel package.
     ///
     /// This requires that `root` be a path to the root module of the kernel.
@@ -66,6 +70,7 @@ impl BundleCmd {
                 None => ast::Path::KERNEL_PATH,
             };
             let mut library = assembler.assemble_kernel_from_root(namespace, &self.root)?;
+            library.version = self.version.clone();
             if self.release {
                 library.strip_debug_info().into_diagnostic()?;
             }
@@ -79,6 +84,7 @@ impl BundleCmd {
             assembler.link_package(CoreLibrary::default().package(), Linkage::Dynamic)?;
             let mut library =
                 assembler.assemble_library_from_root(&self.root, library_namespace.as_deref())?;
+            library.version = self.version.clone();
             if self.release {
                 library.strip_debug_info().into_diagnostic()?;
             }

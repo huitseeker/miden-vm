@@ -5,6 +5,7 @@
 #### Fixes
 
 - Fixed `miden-vm bundle --release` to remove package debug information from library and kernel artifacts while preserving their MAST digests ([#3719](https://github.com/0xMiden/miden-vm/issues/3719)).
+- Fixed `miden-vm bundle --version` to store the requested version in library and kernel packages and reject invalid semantic versions ([#3659](https://github.com/0xMiden/miden-vm/issues/3659)).
 
 ## v0.29.2 (2026-08-20)
 

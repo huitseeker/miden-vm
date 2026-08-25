@@ -178,6 +178,68 @@ fn cli_bundle_release_strips_debug_info() {
 }
 
 #[test]
+fn cli_bundle_version() {
+    let working_dir = TempDir::new().unwrap();
+    let cases = [
+        (
+            "library",
+            fixture("tests/integration/cli/data/lib/mod.masm"),
+            vec!["--namespace", "lib"],
+        ),
+        (
+            "kernel",
+            fixture("tests/integration/cli/data/kernel_main.masm"),
+            vec!["--kernel"],
+        ),
+    ];
+
+    for (name, source, extra_args) in cases {
+        let requested_output = working_dir.path().join(format!("{name}-versioned.masp"));
+        let default_output = working_dir.path().join(format!("{name}-default-version.masp"));
+
+        let mut cmd = bin_under_test(working_dir.path());
+        cmd.arg("bundle")
+            .arg(&source)
+            .args(&extra_args)
+            .arg("--version")
+            .arg("1.2.3")
+            .arg("--output")
+            .arg(&requested_output);
+        cmd.assert().success();
+
+        let package = Package::deserialize_from_file_trusted(&requested_output).unwrap();
+        assert_eq!(package.version, "1.2.3".parse().unwrap());
+
+        let mut cmd = bin_under_test(working_dir.path());
+        cmd.arg("bundle")
+            .arg(&source)
+            .args(&extra_args)
+            .arg("--output")
+            .arg(&default_output);
+        cmd.assert().success();
+
+        let package = Package::deserialize_from_file_trusted(&default_output).unwrap();
+        assert_eq!(package.version, "0.1.0".parse().unwrap());
+    }
+
+    let invalid_output = working_dir.path().join("invalid-version.masp");
+    let mut cmd = bin_under_test(working_dir.path());
+    cmd.arg("bundle")
+        .arg(fixture("tests/integration/cli/data/lib/mod.masm"))
+        .arg("--namespace")
+        .arg("lib")
+        .arg("--version")
+        .arg("not-a-version")
+        .arg("--output")
+        .arg(&invalid_output);
+    cmd.assert()
+        .failure()
+        .stderr(predicate::str::contains("invalid value 'not-a-version'"))
+        .stderr(predicate::str::contains("--version <VERSION>"));
+    assert!(!invalid_output.exists());
+}
+
+#[test]
 fn cli_bundle_no_exports() {
     let working_dir = TempDir::new().unwrap();
     let mut cmd = bin_under_test(working_dir.path());
