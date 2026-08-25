@@ -65,7 +65,10 @@ impl BundleCmd {
                 Some(ns) => ns,
                 None => ast::Path::KERNEL_PATH,
             };
-            let library = assembler.assemble_kernel_from_root(namespace, &self.root)?;
+            let mut library = assembler.assemble_kernel_from_root(namespace, &self.root)?;
+            if self.release {
+                library.strip_debug_info().into_diagnostic()?;
+            }
             library.write_to_file(output_file).into_diagnostic()?;
             println!("Built kernel library {} from {}", library.name, self.root.display());
         } else {
@@ -74,8 +77,11 @@ impl BundleCmd {
                 None => None,
             };
             assembler.link_package(CoreLibrary::default().package(), Linkage::Dynamic)?;
-            let library =
+            let mut library =
                 assembler.assemble_library_from_root(&self.root, library_namespace.as_deref())?;
+            if self.release {
+                library.strip_debug_info().into_diagnostic()?;
+            }
             library.write_to_file(output_file).into_diagnostic()?;
             println!("Built package '{}'", library.name);
         }
