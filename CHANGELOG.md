@@ -109,6 +109,17 @@
 - Fixed `miden-vm prove` so unsupported program extensions are rejected before inferred input files are loaded ([#3587](https://github.com/0xMiden/miden-vm/issues/3587)).
 - Rejected MAST basic block payloads whose batch metadata does not cover every serialized operation, instead of silently dropping the trailing operations during deserialization ([#3594](https://github.com/0xMiden/miden-vm/issues/3594)).
 - Hashed the local registry `index.toml` with ASCII trim on load, matching the write-path staleness check, so a leading NBSP or vertical tab no longer makes every write fail with `WriteToStaleIndex` ([#3651](https://github.com/0xMiden/miden-vm/issues/3651)).
+
+## v0.29.4 (Unreleased)
+
+#### Fixes
+
+- Fixed `FastProcessor::execute_and_build_trace_sync` aborting on targets that build a full `std`
+  but cannot spawn threads, such as `wasm32-unknown-unknown`. The failed spawn panicked under
+  `panic=abort`, trapping the module, which left an in-browser prove hung with no error instead of
+  failed. The builder thread is now spawned fallibly and the trace is built sequentially whenever
+  that spawn is refused ([#3722](https://github.com/0xMiden/miden-vm/pull/3722)).
+
 ## v0.29.3 (2026-08-25)
 
 #### Fixes
