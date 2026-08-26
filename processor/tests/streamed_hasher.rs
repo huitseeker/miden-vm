@@ -1,9 +1,8 @@
 //! The overlapped execute-and-build path must produce exactly the trace the
 //! buffered path produces: same values, byte for byte, in every segment.
 //!
-//! Run under `make test-wasm-threadless`, on a target that genuinely refuses to
-//! spawn, the same equality also pins that the overlapped entry point returns at
-//! all and that what it falls back to is the buffered path.
+//! `make test-wasm-threadless` runs the equality tests through the compact
+//! buffered fallback and proves the entry point returns without trapping.
 
 use miden_assembly::Assembler;
 use miden_processor::{
@@ -32,6 +31,21 @@ begin
     padw padw padw hperm dropw dropw dropw
     repeat.4
         push.11 u32wrapping_add
+    end
+    drop
+end
+";
+
+/// Replays the same large basic block often enough that streaming it without a consumer would
+/// retain many owned request payloads.
+const QUEUE_HEAVY_PROGRAM: &str = "
+begin
+    push.0
+    repeat.1024
+        push.1 add push.1 add push.1 add push.1 add
+        push.1 add push.1 add push.1 add push.1 add
+        push.1 add push.1 add push.1 add push.1 add
+        push.1 add push.1 add push.1 add push.1 add
     end
     drop
 end
@@ -89,6 +103,17 @@ fn overlapped_build_matches_buffered() {
     assert_overlapped_matches_buffered(PROGRAM, &[1], &AdviceInputs::default());
 }
 
+#[test]
+fn single_worker_handles_queue_heavy_program() {
+    #[cfg(not(target_family = "wasm"))]
+    rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap().install(|| {
+        assert_overlapped_matches_buffered(QUEUE_HEAVY_PROGRAM, &[], &AdviceInputs::default());
+    });
+
+    #[cfg(target_family = "wasm")]
+    assert_overlapped_matches_buffered(QUEUE_HEAVY_PROGRAM, &[], &AdviceInputs::default());
+}
+
 /// Covers the two Merkle op kinds in the streamed replay (`BuildMerkleRoot`
 /// from `mtree_get`, `UpdateMerkleRoot` from `mtree_set`), which the main
 /// program cannot exercise without a Merkle store in the advice inputs.
@@ -128,15 +153,8 @@ fn overlapped_build_matches_buffered_merkle() {
     assert_overlapped_matches_buffered("begin mtree_set end", &set_stack, &advice);
 }
 
-/// The overlap path spawns the hasher builder on its own thread; span context is
-/// thread-local, so the builder re-enters the `execute_and_build_trace_sync` span
-/// to stay attributed under it. This records which threads enter that span rather
-/// than how many times it is entered, so it cannot be satisfied by one thread
-/// entering twice — the point is that the builder ran somewhere else.
-///
-/// Requires a host that can actually spawn. When the target reports that threads are unsupported,
-/// the serial fallback runs and only the caller enters. That is why `make test-wasm-threadless`
-/// skips this one test and runs everything else in the file.
+/// The overlap path makes the hasher builder available to Rayon workers. The caller is an ordinary
+/// test thread, so a second thread entering the span proves a global-pool worker ran the builder.
 #[test]
 fn overlap_builder_thread_enters_the_instrument_span() {
     use std::{
@@ -189,15 +207,10 @@ fn overlap_builder_thread_enters_the_instrument_span() {
     });
 
     let threads = threads.lock().unwrap();
-    assert!(
-        threads.contains(&caller),
-        "the caller's own `#[instrument]` span was never entered"
-    );
+    assert!(threads.contains(&caller), "the caller did not enter the instrument span");
     assert_eq!(
         threads.len(),
         2,
-        "the builder thread did not re-enter the span: expected the caller and the builder, but \
-         it was entered by {threads:?} (caller is {caller:?}). Either the builder stopped \
-         re-entering it, or the target reported threads as unsupported and the serial fallback ran"
+        "expected execution and the hasher builder to use separate threads, got {threads:?}"
     );
 }
