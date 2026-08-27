@@ -4,7 +4,7 @@ use core::ops::ControlFlow;
 use miden_core::{
     Word,
     mast::{MastForest, MastNodeId},
-    program::{KernelDescriptor, MIN_STACK_DEPTH, Program, StackOutputs},
+    program::{KernelDescriptor, MIN_STACK_DEPTH, Program, StackInputs, StackOutputs},
 };
 use miden_mast_package::debug_info::{
     DebugSourceGraphLookupError, DebugSourceNodeId, PackageDebugInfo,
@@ -16,9 +16,11 @@ use super::{
     external::maybe_use_caller_error_context,
     step::{BreakReason, NeverStopper, ResumeContext, StepStopper},
 };
+#[cfg(feature = "std")]
+use crate::PrecompileWitness;
 use crate::{
-    ExecutionError, ExecutionOutput, Host, LoadedMastForest, Stopper, SyncHost, TraceBuildInputs,
-    continuation_stack::ContinuationStack,
+    ExecutionError, ExecutionOutput, ExecutionWitness, Host, LoadedMastForest, Stopper, SyncHost,
+    continuation_stack::{Continuation, ContinuationStack, SourceInlineCallContext},
     errors::{
         MapExecErr, MapExecErrNoCtx, PackageSourceDebugContext, malformed_mast_forest_with_context,
     },
@@ -136,131 +138,111 @@ impl FastProcessor {
         .await
     }
 
-    /// Executes the program and builds its execution trace, overlapping the two where the target
-    /// can spawn a thread: the hasher chiplet — the dominant serial part of trace building — is
-    /// built on a second thread from a live stream of requests while execution is still running,
-    /// hiding its cost behind the (inherently sequential) execution itself.
+    /// Executes the program and builds its execution trace, overlapping the two when a Rayon worker
+    /// is available. The hasher chiplet — the dominant serial part of trace building — consumes a
+    /// live stream of requests while execution is still running, hiding its cost behind the
+    /// (inherently sequential) execution itself. When the caller is Rayon's only worker, this uses
+    /// compact buffered replay and builds the trace after execution.
     ///
-    /// Where that thread cannot be spawned the trace is built serially instead, `std` being no
-    /// guarantee of threads — `wasm32-unknown-unknown` has the one without the other.
+    /// `max_prover_memory_bytes` bounds the trace the same way
+    /// [`crate::trace::build_trace_with_budget`] does; the streamed hasher builds ahead of that
+    /// call, so it needs its own copy of the derived row cap.
     ///
-    /// Produces the same trace either way, and the same as `execute_trace_inputs_sync` followed by
-    /// [`crate::trace::build_trace`] — which is exactly what the serial path runs.
+    /// Produces the same trace as [`Self::execute_for_proving_sync`] followed by
+    /// [`ExecutionWitness::into_parts`] and [`crate::trace::build_trace_with_budget`]. The optional
+    /// precompile witness is returned separately because [`crate::trace::VmTrace`] retains only
+    /// its authenticated root.
     #[cfg(feature = "std")]
     #[instrument(name = "execute_and_build_trace_sync", skip_all)]
     pub fn execute_and_build_trace_sync(
         self,
         program: &Program,
         host: &mut impl SyncHost,
-    ) -> Result<crate::trace::ExecutionTrace, ExecutionError> {
-        use crate::trace::{MAX_TRACE_LEN, build_hasher_chiplet, build_trace_with_prebuilt_hasher};
+        max_prover_memory_bytes: u64,
+    ) -> Result<(crate::trace::VmTrace, Option<PrecompileWitness>), ExecutionError> {
+        use miden_air::{config, memory};
 
+        use crate::trace::{
+            MAX_TRACE_LEN, build_hasher_chiplet, build_trace_with_budget,
+            build_trace_with_prebuilt_hasher,
+        };
+
+        if Self::rayon_has_no_parallel_worker() {
+            let (vm_witness, precompiles_witness) =
+                self.execute_for_proving_sync(program, host)?.into_parts();
+            let trace = build_trace_with_budget(vm_witness, max_prover_memory_bytes)?;
+            return Ok((trace, precompiles_witness));
+        }
+
+        let stack_inputs = self.initial_stack_inputs();
+        let max_trace_len = MAX_TRACE_LEN.min(memory::max_any_height_for_budget(
+            max_prover_memory_bytes,
+            &config::pcs_params(),
+        ));
         let (sender, receiver) = std::sync::mpsc::channel();
+        let mut tracer = ExecutionTracer::new_with_streamed_hasher(
+            self.options.core_trace_fragment_size(),
+            self.options.max_stack_depth(),
+            sender,
+        );
 
-        std::thread::scope(|scope| {
-            // Only the receiver crosses threads; execution (and the host) stay on this one.
-            // Spans are thread-local, so the builder thread re-enters this function's span
-            // to keep its work attributed under it in profiling traces.
+        let mut hasher = None;
+        let hasher_slot = &mut hasher;
+        // Keep `tracer` owned by the scope body. If execution unwinds, dropping the body closes the
+        // stream before Rayon waits for the builder, so the builder cannot remain blocked on input.
+        let execution_output = rayon::in_place_scope(move |scope| {
+            // Execution and the host remain on the calling thread. An idle Rayon worker can steal
+            // only the builder task.
             let span = tracing::Span::current();
+            scope.spawn(move |_| {
+                let _span = span.entered();
+                let result = build_hasher_chiplet(receiver.into_iter().map(Ok), max_trace_len);
+                *hasher_slot = Some(result);
+            });
 
-            // `Scope::spawn` panics when the target refuses, and `wasm32-unknown-unknown` — full
-            // `std`, no threads — always refuses. Under `panic=abort` that panic traps the module,
-            // and a trapped wasm-bindgen future never settles its JS promise. A `cfg` cannot stand
-            // in for attempting the spawn: `wasm32-wasip1` and `wasm32-wasip1-threads` print
-            // identical `cfg`s yet differ here.
-            let hasher = std::thread::Builder::new()
-                .name("hasher-chiplet-builder".into())
-                .spawn_scoped(scope, move || {
-                    let _span = span.entered();
-                    build_hasher_chiplet(receiver.into_iter().map(Ok), MAX_TRACE_LEN)
-                });
-
-            // The tracer below is what binds execution to the builder and does not exist yet, so
-            // a refused spawn can still take the serial route. Only the spawn decision is covered
-            // here: `build_trace` goes on to initialize rayon's pool, whose own threadless
-            // fallback is limited to `Unsupported`.
-            let hasher = match hasher {
-                Ok(hasher) => hasher,
-                Err(err) => {
-                    Self::log_refused_builder_spawn(&err, cfg!(target_family = "wasm"));
-
-                    return crate::trace::build_trace(
-                        self.execute_trace_inputs_sync(program, host)?,
-                    );
-                },
-            };
-
-            let mut tracer = ExecutionTracer::new_with_streamed_hasher(
-                self.options.core_trace_fragment_size(),
-                self.options.max_stack_depth(),
-                sender,
-            );
-
-            // Liveness invariant: `tracer` is a local of this closure and both match arms below
-            // consume it by value, so any unwind (including a panic in execution) drops the
-            // stream's sender, unblocking the builder before the scope's join.
             let execution_output = self.execute_with_tracer_sync(program, host, &mut tracer);
 
-            let mut inputs = match execution_output {
-                Ok(output) => Self::trace_build_inputs_from_parts(program, output, tracer),
-                Err(err) => {
-                    // Dropping the tracer drops the stream's sender; the builder then sees
-                    // end-of-input and finishes, letting the scope join it cleanly. The
-                    // execution error is the root cause, so the builder's outcome is only
-                    // logged, not propagated.
-                    drop(tracer);
-                    match hasher.join() {
-                        Ok(Err(builder_err)) => {
-                            tracing::debug!(%builder_err, "hasher builder also failed");
-                        },
-                        Ok(Ok(_)) => (),
-                        Err(panic) => std::panic::resume_unwind(panic),
-                    }
-                    return Err(err);
+            match execution_output {
+                Ok(output) => {
+                    let (mut vm_witness, precompiles_witness) =
+                        Self::execution_witness_from_parts(program, stack_inputs, output, tracer)
+                            .into_parts();
+                    // End the stream before this scope waits for the builder.
+                    drop(vm_witness.take_hasher_replay());
+                    Ok((vm_witness, precompiles_witness))
                 },
-            };
-            // End the stream before joining the builder.
-            drop(inputs.take_hasher_replay());
-            let hasher = match hasher.join() {
-                Ok(result) => result?,
-                Err(panic) => std::panic::resume_unwind(panic),
-            };
+                Err(err) => {
+                    // Dropping the tracer closes the stream and lets the builder finish. The
+                    // execution error remains the root cause even if the partial replay also
+                    // failed.
+                    drop(tracer);
+                    Err(err)
+                },
+            }
+        });
 
-            build_trace_with_prebuilt_hasher(inputs, hasher)
-        })
+        let hasher = hasher.expect("hasher builder did not run");
+        let (vm_witness, precompiles_witness) = match execution_output {
+            Ok(output) => output,
+            Err(err) => {
+                if let Err(builder_err) = hasher {
+                    tracing::debug!(%builder_err, "hasher builder also failed");
+                }
+                return Err(err);
+            },
+        };
+
+        let trace = build_trace_with_prebuilt_hasher(vm_witness, hasher?, max_prover_memory_bytes)?;
+        Ok((trace, precompiles_witness))
     }
 
-    /// Records a refused builder-thread spawn at a level matching how expected it is.
-    ///
-    /// Only wasm refusing as unsupported is the case the fallback is designed around; it stays at
-    /// debug. Everything else is a host that was expected to spawn and did not — thread or memory
-    /// pressure, or a sandbox answering `clone` with `ENOSYS`, which `std` also reports as
-    /// [`std::io::ErrorKind::Unsupported`] — which silently costs the overlap, leaving a profile
-    /// missing a second thread as the only other sign.
-    ///
-    /// `target_is_wasm` is a parameter rather than a `cfg!` so that both levels are reachable from
-    /// a test: the lib tests do not build for wasm. It cannot narrow further than the family,
-    /// since `wasm32-wasip1` and `wasm32-wasip1-threads` are indistinguishable to `cfg`.
     #[cfg(feature = "std")]
-    fn log_refused_builder_spawn(err: &std::io::Error, target_is_wasm: bool) {
-        if target_is_wasm && err.kind() == std::io::ErrorKind::Unsupported {
-            tracing::debug!(
-                %err,
-                kind = ?err.kind(),
-                "target cannot spawn threads; building the trace serially"
-            );
-        } else {
-            tracing::warn!(
-                %err,
-                kind = ?err.kind(),
-                "could not spawn the hasher-chiplet trace builder; building the trace serially, \
-                 which is slower — check the host's thread and memory limits"
-            );
-        }
+    fn rayon_has_no_parallel_worker() -> bool {
+        // `current_num_threads` initializes Rayon's global fallback before the thread-index check.
+        rayon::current_num_threads() == 1 && rayon::current_thread_index().is_some()
     }
 
-    /// Executes the given program synchronously and returns the bundled trace inputs required by
-    /// [`crate::trace::build_trace`].
+    /// Executes the given program synchronously and returns its complete post-execution witness.
     ///
     /// # Example
     /// ```
@@ -273,36 +255,44 @@ impl FastProcessor {
     ///     .unwrap_program();
     /// let mut host = DefaultHost::default();
     ///
-    /// let trace_inputs = FastProcessor::new(StackInputs::default())
-    ///     .execute_trace_inputs_sync(&program, &mut host)
+    /// let execution_witness = FastProcessor::new(StackInputs::default())
+    ///     .execute_for_proving_sync(&program, &mut host)
     ///     .unwrap();
-    /// let trace = miden_processor::trace::build_trace(trace_inputs).unwrap();
+    /// let (vm_witness, _) = execution_witness.into_parts();
+    /// let trace = miden_processor::trace::build_trace(vm_witness).unwrap();
     ///
     /// assert_eq!(*trace.program_hash(), program.hash());
     /// ```
-    #[instrument(name = "execute_trace_inputs_sync", skip_all)]
-    pub fn execute_trace_inputs_sync(
+    #[instrument(name = "execute_for_proving_sync", skip_all)]
+    pub fn execute_for_proving_sync(
         self,
         program: &Program,
         host: &mut impl SyncHost,
-    ) -> Result<TraceBuildInputs, ExecutionError> {
+    ) -> Result<ExecutionWitness, ExecutionError> {
+        let stack_inputs = self.initial_stack_inputs();
         let mut tracer = ExecutionTracer::new(
             self.options.core_trace_fragment_size(),
             self.options.max_stack_depth(),
         );
         let execution_output = self.execute_with_tracer_sync(program, host, &mut tracer)?;
-        Ok(Self::trace_build_inputs_from_parts(program, execution_output, tracer))
+        Ok(Self::execution_witness_from_parts(
+            program,
+            stack_inputs,
+            execution_output,
+            tracer,
+        ))
     }
 
     /// Executes the given program synchronously with package-owned source/debug context and returns
-    /// the bundled trace inputs required by [`crate::trace::build_trace`].
-    #[instrument(name = "execute_trace_inputs_with_package_debug_info_sync", skip_all)]
-    pub fn execute_trace_inputs_with_package_debug_info_sync(
+    /// its complete post-execution witness.
+    #[instrument(name = "execute_for_proving_with_package_debug_info_sync", skip_all)]
+    pub fn execute_for_proving_with_package_debug_info_sync(
         self,
         program: &Program,
         package_debug_info: &PackageDebugInfo,
         host: &mut impl SyncHost,
-    ) -> Result<TraceBuildInputs, ExecutionError> {
+    ) -> Result<ExecutionWitness, ExecutionError> {
+        let stack_inputs = self.initial_stack_inputs();
         let mut tracer = ExecutionTracer::new(
             self.options.core_trace_fragment_size(),
             self.options.max_stack_depth(),
@@ -314,23 +304,28 @@ impl FastProcessor {
             host,
             &mut tracer,
         )?;
-        Ok(Self::trace_build_inputs_from_parts(program, execution_output, tracer))
+        Ok(Self::execution_witness_from_parts(
+            program,
+            stack_inputs,
+            execution_output,
+            tracer,
+        ))
     }
 
     /// Executes the given program synchronously with package-owned source/debug context rooted at
-    /// `entrypoint_source_node_id` and returns the bundled trace inputs required by
-    /// [`crate::trace::build_trace`].
+    /// `entrypoint_source_node_id` and returns its complete post-execution witness.
     #[instrument(
-        name = "execute_trace_inputs_with_package_debug_info_at_source_node_sync",
+        name = "execute_for_proving_with_package_debug_info_at_source_node_sync",
         skip_all
     )]
-    pub fn execute_trace_inputs_with_package_debug_info_at_source_node_sync(
+    pub fn execute_for_proving_with_package_debug_info_at_source_node_sync(
         self,
         program: &Program,
         package_debug_info: &PackageDebugInfo,
         entrypoint_source_node_id: DebugSourceNodeId,
         host: &mut impl SyncHost,
-    ) -> Result<TraceBuildInputs, ExecutionError> {
+    ) -> Result<ExecutionWitness, ExecutionError> {
+        let stack_inputs = self.initial_stack_inputs();
         let mut tracer = ExecutionTracer::new(
             self.options.core_trace_fragment_size(),
             self.options.max_stack_depth(),
@@ -342,35 +337,47 @@ impl FastProcessor {
             host,
             &mut tracer,
         )?;
-        Ok(Self::trace_build_inputs_from_parts(program, execution_output, tracer))
+        Ok(Self::execution_witness_from_parts(
+            program,
+            stack_inputs,
+            execution_output,
+            tracer,
+        ))
     }
 
-    /// Async variant of [`Self::execute_trace_inputs_sync`] for async hosts.
+    /// Async variant of [`Self::execute_for_proving_sync`] for async hosts.
     #[inline(always)]
-    #[instrument(name = "execute_trace_inputs", skip_all)]
-    pub async fn execute_trace_inputs(
+    #[instrument(name = "execute_for_proving", skip_all)]
+    pub async fn execute_for_proving(
         self,
         program: &Program,
         host: &mut impl Host,
-    ) -> Result<TraceBuildInputs, ExecutionError> {
+    ) -> Result<ExecutionWitness, ExecutionError> {
+        let stack_inputs = self.initial_stack_inputs();
         let mut tracer = ExecutionTracer::new(
             self.options.core_trace_fragment_size(),
             self.options.max_stack_depth(),
         );
         let execution_output = self.execute_with_tracer(program, host, &mut tracer).await?;
-        Ok(Self::trace_build_inputs_from_parts(program, execution_output, tracer))
+        Ok(Self::execution_witness_from_parts(
+            program,
+            stack_inputs,
+            execution_output,
+            tracer,
+        ))
     }
 
-    /// Async variant of [`Self::execute_trace_inputs_with_package_debug_info_sync`].
+    /// Async variant of [`Self::execute_for_proving_with_package_debug_info_sync`].
     #[cfg(any(test, feature = "testing"))]
     #[inline(always)]
-    #[instrument(name = "execute_trace_inputs_with_package_debug_info", skip_all)]
-    pub async fn execute_trace_inputs_with_package_debug_info(
+    #[instrument(name = "execute_for_proving_with_package_debug_info", skip_all)]
+    pub async fn execute_for_proving_with_package_debug_info(
         self,
         program: &Program,
         package_debug_info: &PackageDebugInfo,
         host: &mut impl Host,
-    ) -> Result<TraceBuildInputs, ExecutionError> {
+    ) -> Result<ExecutionWitness, ExecutionError> {
+        let stack_inputs = self.initial_stack_inputs();
         let mut tracer = ExecutionTracer::new(
             self.options.core_trace_fragment_size(),
             self.options.max_stack_depth(),
@@ -384,21 +391,27 @@ impl FastProcessor {
                 &mut tracer,
             )
             .await?;
-        Ok(Self::trace_build_inputs_from_parts(program, execution_output, tracer))
+        Ok(Self::execution_witness_from_parts(
+            program,
+            stack_inputs,
+            execution_output,
+            tracer,
+        ))
     }
 
     /// Async variant of
-    /// [`Self::execute_trace_inputs_with_package_debug_info_at_source_node_sync`].
+    /// [`Self::execute_for_proving_with_package_debug_info_at_source_node_sync`].
     #[cfg(any(test, feature = "testing"))]
     #[inline(always)]
-    #[instrument(name = "execute_trace_inputs_with_package_debug_info_at_source_node", skip_all)]
-    pub async fn execute_trace_inputs_with_package_debug_info_at_source_node(
+    #[instrument(name = "execute_for_proving_with_package_debug_info_at_source_node", skip_all)]
+    pub async fn execute_for_proving_with_package_debug_info_at_source_node(
         self,
         program: &Program,
         package_debug_info: &PackageDebugInfo,
         entrypoint_source_node_id: DebugSourceNodeId,
         host: &mut impl Host,
-    ) -> Result<TraceBuildInputs, ExecutionError> {
+    ) -> Result<ExecutionWitness, ExecutionError> {
+        let stack_inputs = self.initial_stack_inputs();
         let mut tracer = ExecutionTracer::new(
             self.options.core_trace_fragment_size(),
             self.options.max_stack_depth(),
@@ -412,7 +425,12 @@ impl FastProcessor {
                 &mut tracer,
             )
             .await?;
-        Ok(Self::trace_build_inputs_from_parts(program, execution_output, tracer))
+        Ok(Self::execution_witness_from_parts(
+            program,
+            stack_inputs,
+            execution_output,
+            tracer,
+        ))
     }
 
     /// Executes the given program with the provided tracer using an async host.
@@ -428,6 +446,7 @@ impl FastProcessor {
         let mut continuation_stack = ContinuationStack::new(program);
         let mut current_forest = program.mast_forest().clone();
         let mut package_debug_info = None;
+        let mut inline_call_contexts = Vec::new();
 
         self.advice.extend_map(current_forest.advice_map()).map_exec_err_no_ctx()?;
         let flow = self
@@ -439,6 +458,7 @@ impl FastProcessor {
                 tracer,
                 &NeverStopper,
                 &mut package_debug_info,
+                &mut inline_call_contexts,
             )
             .await;
         Self::execution_result_from_flow(flow, self)
@@ -464,6 +484,7 @@ impl FastProcessor {
         )?;
         let mut current_forest = program.mast_forest().clone();
         let mut package_debug_info = Some(Arc::new(package_debug_info.clone()));
+        let mut inline_call_contexts = Vec::new();
 
         self.advice.extend_map(current_forest.advice_map()).map_exec_err_no_ctx()?;
         let flow = self
@@ -475,6 +496,7 @@ impl FastProcessor {
                 tracer,
                 &NeverStopper,
                 &mut package_debug_info,
+                &mut inline_call_contexts,
             )
             .await;
         Self::execution_result_from_flow(flow, self)
@@ -493,6 +515,7 @@ impl FastProcessor {
         let mut continuation_stack = ContinuationStack::new(program);
         let mut current_forest = program.mast_forest().clone();
         let mut package_debug_info = None;
+        let mut inline_call_contexts = Vec::new();
 
         self.advice.extend_map(current_forest.advice_map()).map_exec_err_no_ctx()?;
         let flow = self.execute_impl(
@@ -503,6 +526,7 @@ impl FastProcessor {
             tracer,
             &NeverStopper,
             &mut package_debug_info,
+            &mut inline_call_contexts,
         );
         Self::execution_result_from_flow(flow, self)
     }
@@ -527,6 +551,7 @@ impl FastProcessor {
         )?;
         let mut current_forest = program.mast_forest().clone();
         let mut package_debug_info = Some(Arc::new(package_debug_info.clone()));
+        let mut inline_call_contexts = Vec::new();
 
         self.advice.extend_map(current_forest.advice_map()).map_exec_err_no_ctx()?;
         let flow = self.execute_impl(
@@ -537,6 +562,7 @@ impl FastProcessor {
             tracer,
             &NeverStopper,
             &mut package_debug_info,
+            &mut inline_call_contexts,
         );
         Self::execution_result_from_flow(flow, self)
     }
@@ -552,6 +578,7 @@ impl FastProcessor {
             mut continuation_stack,
             kernel,
             mut package_debug_info,
+            mut inline_call_contexts,
         } = resume_ctx;
 
         let flow = self.execute_impl(
@@ -562,6 +589,7 @@ impl FastProcessor {
             &mut NoopTracer,
             &StepStopper,
             &mut package_debug_info,
+            &mut inline_call_contexts,
         );
         Self::resume_context_from_flow(
             flow,
@@ -569,6 +597,7 @@ impl FastProcessor {
             current_forest,
             kernel,
             package_debug_info,
+            inline_call_contexts,
         )
     }
 
@@ -584,6 +613,7 @@ impl FastProcessor {
             mut continuation_stack,
             kernel,
             package_debug_info: mut active_package_debug_info,
+            mut inline_call_contexts,
         } = resume_ctx;
         Self::ensure_source_aware_step_context(
             &mut continuation_stack,
@@ -599,6 +629,7 @@ impl FastProcessor {
             &mut NoopTracer,
             &StepStopper,
             &mut active_package_debug_info,
+            &mut inline_call_contexts,
         );
         Self::resume_context_from_flow(
             flow,
@@ -606,6 +637,7 @@ impl FastProcessor {
             current_forest,
             kernel,
             active_package_debug_info,
+            inline_call_contexts,
         )
     }
 
@@ -621,6 +653,7 @@ impl FastProcessor {
             mut continuation_stack,
             kernel,
             mut package_debug_info,
+            mut inline_call_contexts,
         } = resume_ctx;
 
         let flow = self
@@ -632,6 +665,7 @@ impl FastProcessor {
                 &mut NoopTracer,
                 &StepStopper,
                 &mut package_debug_info,
+                &mut inline_call_contexts,
             )
             .await;
         Self::resume_context_from_flow(
@@ -640,6 +674,7 @@ impl FastProcessor {
             current_forest,
             kernel,
             package_debug_info,
+            inline_call_contexts,
         )
     }
 
@@ -656,6 +691,7 @@ impl FastProcessor {
             mut continuation_stack,
             kernel,
             package_debug_info: mut active_package_debug_info,
+            mut inline_call_contexts,
         } = resume_ctx;
         Self::ensure_source_aware_step_context(
             &mut continuation_stack,
@@ -672,6 +708,7 @@ impl FastProcessor {
                 &mut NoopTracer,
                 &StepStopper,
                 &mut active_package_debug_info,
+                &mut inline_call_contexts,
             )
             .await;
         Self::resume_context_from_flow(
@@ -680,21 +717,30 @@ impl FastProcessor {
             current_forest,
             kernel,
             active_package_debug_info,
+            inline_call_contexts,
         )
     }
 
-    /// Pairs execution output with the trace inputs captured by the tracer.
+    /// Pairs execution output with the initial inputs and replay witness captured during execution.
     #[inline(always)]
-    fn trace_build_inputs_from_parts(
+    fn execution_witness_from_parts(
         program: &Program,
+        stack_inputs: StackInputs,
         execution_output: ExecutionOutput,
         tracer: ExecutionTracer,
-    ) -> TraceBuildInputs {
-        TraceBuildInputs::from_execution(
-            program,
+    ) -> ExecutionWitness {
+        ExecutionWitness::from_execution(
+            program.to_info(),
+            stack_inputs,
             execution_output,
-            tracer.into_trace_generation_context(),
+            tracer.into_trace_replay(),
         )
+    }
+
+    /// Returns the current top 16 stack elements in public input order.
+    #[inline(always)]
+    fn initial_stack_inputs(&self) -> StackInputs {
+        core::array::from_fn(|idx| self.stack_get(idx)).into()
     }
 
     pub(super) fn source_aware_continuation_stack(
@@ -751,6 +797,7 @@ impl FastProcessor {
             )?,
             kernel: program.kernel().clone(),
             package_debug_info: Some(Arc::new(package_debug_info.clone())),
+            inline_call_contexts: Vec::new(),
         })
     }
 
@@ -799,9 +846,10 @@ impl FastProcessor {
     fn resume_context_from_flow(
         flow: ControlFlow<BreakReason<Arc<MastForest>>, StackOutputs>,
         mut continuation_stack: ContinuationStack<Arc<MastForest>>,
-        current_forest: Arc<MastForest>,
+        mut current_forest: Arc<MastForest>,
         kernel: KernelDescriptor,
-        package_debug_info: Option<Arc<PackageDebugInfo>>,
+        mut package_debug_info: Option<Arc<PackageDebugInfo>>,
+        mut inline_call_contexts: Vec<Option<SourceInlineCallContext>>,
     ) -> Result<Option<ResumeContext>, ExecutionError> {
         match flow {
             ControlFlow::Continue(_) => Ok(None),
@@ -812,11 +860,32 @@ impl FastProcessor {
                         continuation_stack.push_with_source_node_id(continuation, source_node_id);
                     }
 
+                    while matches!(
+                        continuation_stack.peek_continuation(),
+                        Some(Continuation::EnterForest { .. })
+                    ) {
+                        let Some((
+                            Continuation::EnterForest {
+                                forest,
+                                package_debug_info: restored_debug_info,
+                                inline_context_depth,
+                            },
+                            _,
+                        )) = continuation_stack.pop_continuation_with_source_node_id()
+                        else {
+                            unreachable!("peeked continuation must still be EnterForest")
+                        };
+                        current_forest = forest;
+                        package_debug_info = restored_debug_info;
+                        inline_call_contexts.truncate(inline_context_depth);
+                    }
+
                     Ok(Some(ResumeContext {
                         current_forest,
                         continuation_stack,
                         kernel,
                         package_debug_info,
+                        inline_call_contexts,
                     }))
                 },
             },
@@ -850,6 +919,7 @@ impl FastProcessor {
         tracer: &mut T,
         stopper: &S,
         package_debug_info: &mut Option<Arc<PackageDebugInfo>>,
+        inline_call_contexts: &mut Vec<Option<SourceInlineCallContext>>,
     ) -> ControlFlow<BreakReason<Arc<MastForest>>, StackOutputs>
     where
         S: Stopper<Processor = Self, Forest = Arc<MastForest>>,
@@ -864,6 +934,7 @@ impl FastProcessor {
             tracer,
             stopper,
             package_debug_info,
+            inline_call_contexts,
         ) {
             let current_package_debug_info = package_debug_info.as_deref();
             let source_aware_execution =
@@ -904,6 +975,7 @@ impl FastProcessor {
                         self,
                         current_forest,
                         package_debug_info,
+                        inline_call_contexts.as_slice(),
                         continuation_stack,
                         tracer,
                         stopper,
@@ -914,6 +986,9 @@ impl FastProcessor {
                     procedure_hash,
                     source_node_id,
                 } => {
+                    let inline_call_context = package_debug_info.clone().and_then(|debug_info| {
+                        SourceInlineCallContext::for_source_boundary(debug_info, source_node_id)
+                    });
                     let (root_id, new_forest, new_package_debug_info, new_source_node_id) =
                         match self.load_mast_forest_sync(
                             procedure_hash,
@@ -939,9 +1014,11 @@ impl FastProcessor {
                         new_forest,
                         new_package_debug_info,
                         new_source_node_id,
+                        inline_call_context,
                         external_node_id,
                         current_forest,
                         package_debug_info,
+                        inline_call_contexts,
                         continuation_stack,
                         tracer,
                     )?;
@@ -972,6 +1049,7 @@ impl FastProcessor {
         tracer: &mut T,
         stopper: &S,
         package_debug_info: &mut Option<Arc<PackageDebugInfo>>,
+        inline_call_contexts: &mut Vec<Option<SourceInlineCallContext>>,
     ) -> ControlFlow<BreakReason<Arc<MastForest>>, StackOutputs>
     where
         S: Stopper<Processor = Self, Forest = Arc<MastForest>>,
@@ -986,6 +1064,7 @@ impl FastProcessor {
             tracer,
             stopper,
             package_debug_info,
+            inline_call_contexts,
         ) {
             let current_package_debug_info = package_debug_info.as_deref();
             let source_aware_execution =
@@ -1029,6 +1108,7 @@ impl FastProcessor {
                         self,
                         current_forest,
                         package_debug_info,
+                        inline_call_contexts.as_slice(),
                         continuation_stack,
                         tracer,
                         stopper,
@@ -1039,6 +1119,9 @@ impl FastProcessor {
                     procedure_hash,
                     source_node_id,
                 } => {
+                    let inline_call_context = package_debug_info.clone().and_then(|debug_info| {
+                        SourceInlineCallContext::for_source_boundary(debug_info, source_node_id)
+                    });
                     let (root_id, new_forest, new_package_debug_info, new_source_node_id) =
                         match self
                             .load_mast_forest(
@@ -1067,9 +1150,11 @@ impl FastProcessor {
                         new_forest,
                         new_package_debug_info,
                         new_source_node_id,
+                        inline_call_context,
                         external_node_id,
                         current_forest,
                         package_debug_info,
+                        inline_call_contexts,
                         continuation_stack,
                         tracer,
                     )?;
@@ -1391,6 +1476,7 @@ impl FastProcessor {
         let mut continuation_stack = ContinuationStack::new(program);
         let mut current_forest = program.mast_forest().clone();
         let mut package_debug_info = None;
+        let mut inline_call_contexts = Vec::new();
 
         self.advice.extend_map(current_forest.advice_map()).map_exec_err_no_ctx()?;
 
@@ -1402,6 +1488,7 @@ impl FastProcessor {
             &mut NoopTracer,
             &NeverStopper,
             &mut package_debug_info,
+            &mut inline_call_contexts,
         );
         Self::stack_result_from_flow(flow)
     }
@@ -1417,6 +1504,7 @@ impl FastProcessor {
         let mut continuation_stack = ContinuationStack::new(program);
         let mut current_forest = program.mast_forest().clone();
         let mut package_debug_info = None;
+        let mut inline_call_contexts = Vec::new();
 
         self.advice.extend_map(current_forest.advice_map()).map_exec_err_no_ctx()?;
 
@@ -1429,6 +1517,7 @@ impl FastProcessor {
                 &mut NoopTracer,
                 &NeverStopper,
                 &mut package_debug_info,
+                &mut inline_call_contexts,
             )
             .await;
         Self::stack_result_from_flow(flow)
@@ -1437,60 +1526,14 @@ impl FastProcessor {
 
 #[cfg(all(test, feature = "std"))]
 mod tests {
-    use std::{
-        io::{Error, ErrorKind},
-        sync::{Arc, Mutex},
-        vec::Vec,
-    };
-
-    use tracing::Level;
-    use tracing_subscriber::{Registry, layer::SubscriberExt};
-
     use super::FastProcessor;
 
-    /// Captures the level of every event emitted while it is the active subscriber.
-    struct LevelCapture(Arc<Mutex<Vec<Level>>>);
-
-    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for LevelCapture {
-        fn on_event(
-            &self,
-            event: &tracing::Event<'_>,
-            _ctx: tracing_subscriber::layer::Context<'_, S>,
-        ) {
-            self.0.lock().unwrap().push(*event.metadata().level());
-        }
-    }
-
-    fn level_for(kind: ErrorKind, target_is_wasm: bool) -> Level {
-        let levels = Arc::new(Mutex::new(Vec::new()));
-        let subscriber = Registry::default().with(LevelCapture(Arc::clone(&levels)));
-        tracing::subscriber::with_default(subscriber, || {
-            FastProcessor::log_refused_builder_spawn(&Error::from(kind), target_is_wasm)
-        });
-        let levels = levels.lock().unwrap();
-        assert_eq!(levels.len(), 1, "expected exactly one event, got {levels:?}");
-        levels[0]
-    }
-
-    /// Wasm having no threads is why the fallback exists, so it alone is quiet.
     #[test]
-    fn a_refused_spawn_stays_at_debug_only_on_wasm() {
-        assert_eq!(level_for(ErrorKind::Unsupported, true), Level::DEBUG);
-    }
-
-    /// A host that was expected to spawn and did not is worth a warning: it silently costs the
-    /// overlap, and nothing else reports it. `Unsupported` is not wasm-exclusive — a sandbox
-    /// refusing `clone` with `ENOSYS` reports it too — so that kind alone must not buy silence.
-    #[test]
-    fn a_refused_spawn_warns_on_a_target_that_should_have_threads() {
-        assert_eq!(level_for(ErrorKind::Unsupported, false), Level::WARN);
-        for kind in [ErrorKind::WouldBlock, ErrorKind::OutOfMemory, ErrorKind::PermissionDenied] {
-            assert_eq!(level_for(kind, false), Level::WARN);
-            assert_eq!(
-                level_for(kind, true),
-                Level::WARN,
-                "{kind:?} is a host problem on wasm too"
-            );
-        }
+    fn sole_rayon_worker_requires_buffered_trace_building() {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .unwrap()
+            .install(|| assert!(FastProcessor::rayon_has_no_parallel_worker()));
     }
 }

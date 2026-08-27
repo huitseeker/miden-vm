@@ -2,8 +2,8 @@
 # Source template: {{TEMPLATE_PATH}}
 # Regenerate with: {{REGENERATE_COMMAND}}
 
-use miden::precompiles
-use miden::precompiles::fields::{{BASE_FIELD_MODULE}}
+use miden::core::precompiles
+use miden::core::precompiles::fields::{{BASE_FIELD_MODULE}}
 
 # {{TITLE}} CURVE PRECOMPILE SUPPORT WRAPPERS
 # ================================================================================================
@@ -130,7 +130,6 @@ end
 pub proc push_generator
     push.GENERATOR_DIGEST
 end
-
 
 #! Registers `lhs + rhs` and returns the result expression digest.
 #! Input:  [LHS_DIGEST, RHS_DIGEST, ...]

@@ -29,11 +29,42 @@ mod vm_uint;
 
 use std::{vec, vec::Vec};
 
-use miden_core::{Felt, field::QuadFelt, utils::RowMajorMatrix};
+use miden_core::{
+    Felt,
+    deferred::DeferredRoot,
+    field::QuadFelt,
+    proof::{HashFunction, StarkProof},
+    utils::RowMajorMatrix,
+};
 use miden_lifted_air::{BaseAir, LiftedAir, MultiAir, ProverStatement, ReductionError, Statement};
 use miden_lifted_stark::check_constraints;
 
-use crate::stark_config::test_challenger;
+use crate::{
+    session::{SessionTraces, VerifyError, verify_stark},
+    stark_config::test_challenger,
+    transcript::poseidon2::P2Digest,
+};
+
+pub(crate) type SessionProof = (StarkProof, DeferredRoot);
+
+pub(crate) trait SessionTracesTestExt {
+    fn prove(self) -> SessionProof;
+}
+
+impl SessionTracesTestExt for SessionTraces {
+    fn prove(self) -> SessionProof {
+        let public_root = self.public_root().as_array().into();
+        let proof = self
+            .prove_stark(HashFunction::Blake3_256)
+            .expect("prove precompile session with default hash function");
+        (proof, public_root)
+    }
+}
+
+pub(crate) fn verify_deferred(proof: &SessionProof) -> Result<DeferredRoot, VerifyError> {
+    verify_stark(&proof.0, P2Digest::from(proof.1))?;
+    Ok(proof.1)
+}
 
 /// A local-only [`MultiAir`] wrapper for per-chiplet
 /// [`check_constraints`]: its `eval_external` emits no cross-AIR
@@ -90,17 +121,12 @@ where
     check_local_inputs(air, main, vec![Felt::ZERO; n]);
 }
 
-/// The per-AIR `log_quotient_degree` — replicated from the public
-/// `constraint_degree()` because 0.26 keeps the framework's own
-/// `domain::log_quotient_degree` `pub(crate)`. This is the value the lqd
-/// design-target smoke tests assert (= `⌈log₂ max(d−1, 1)⌉`, `d` the max
-/// base/ext constraint-degree multiple).
+/// The per-AIR quotient degree used by the design-target smoke tests.
 pub(crate) fn log_quotient_degree<A>(air: &A) -> u8
 where
     A: LiftedAir<Felt, QuadFelt>,
 {
-    let d = air.constraint_degree().max();
-    miden_lifted_air::log2_ceil_u8(d.saturating_sub(1).max(1))
+    miden_lifted_stark::log_quotient_degree::<Felt, QuadFelt, A>(air)
 }
 
 /// The `[preprocessed ++ main]` matrix the lookup eval reads for a chiplet

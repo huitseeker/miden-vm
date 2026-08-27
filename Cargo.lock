@@ -711,9 +711,9 @@ dependencies = [
 
 [[package]]
 name = "clap"
-version = "4.6.5"
+version = "4.6.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "301b56658598e48f3648647ac6fc887be7e7108eddfa4e9b63fcf3ec58c0cadf"
+checksum = "473c7e07f409a8d772161724aa8db6a765a2532a70f9667eeb7b49d3d02fbdca"
 dependencies = [
  "clap_builder",
  "clap_derive",
@@ -721,9 +721,9 @@ dependencies = [
 
 [[package]]
 name = "clap_builder"
-version = "4.6.5"
+version = "4.6.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "94a65403d1a1bd28f7dc68eb8506e8874808ee5eecb59298de588e2e1407a078"
+checksum = "7b48fea5a88e9ae728a2dcbedbfc0e730f7d60da42e1cb049a83c9fb8b789889"
 dependencies = [
  "anstream",
  "anstyle",
@@ -2053,24 +2053,26 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "miden-ace-codegen"
-version = "0.29.4"
+version = "0.30.0"
 dependencies = [
  "miden-constraint-compiler",
  "miden-core",
  "miden-crypto",
+ "miden-field",
+ "proptest",
  "thiserror",
 ]
 
 [[package]]
 name = "miden-air"
-version = "0.29.4"
+version = "0.30.0"
 dependencies = [
  "insta",
  "miden-ace-codegen",
  "miden-constraint-compiler",
  "miden-core",
  "miden-crypto",
- "miden-test-serde-macros",
+ "miden-test-serialization-macros",
  "miden-utils-indexing",
  "p3-field",
  "proptest",
@@ -2080,7 +2082,7 @@ dependencies = [
 
 [[package]]
 name = "miden-assembly"
-version = "0.29.4"
+version = "0.30.0"
 dependencies = [
  "env_logger",
  "insta",
@@ -2091,7 +2093,7 @@ dependencies = [
  "miden-mast-package",
  "miden-package-registry",
  "miden-project",
- "miden-test-serde-macros",
+ "miden-test-serialization-macros",
  "proptest",
  "smallvec",
  "tempfile",
@@ -2100,14 +2102,14 @@ dependencies = [
 
 [[package]]
 name = "miden-assembly-syntax"
-version = "0.29.4"
+version = "0.30.0"
 dependencies = [
  "env_logger",
  "log",
  "miden-assembly-syntax-cst",
  "miden-core",
  "miden-debug-types",
- "miden-test-serde-macros",
+ "miden-test-serialization-macros",
  "miden-utils-diagnostics",
  "midenc-hir-type",
  "pretty_assertions",
@@ -2124,18 +2126,17 @@ dependencies = [
 
 [[package]]
 name = "miden-assembly-syntax-cst"
-version = "0.29.4"
+version = "0.30.0"
 dependencies = [
  "miden-debug-types",
  "miden-rowan",
  "miden-utils-diagnostics",
  "pretty_assertions",
- "thiserror",
 ]
 
 [[package]]
 name = "miden-bench"
-version = "0.29.4"
+version = "0.30.0"
 dependencies = [
  "clap",
  "miden-lifted-stark",
@@ -2165,7 +2166,7 @@ dependencies = [
 
 [[package]]
 name = "miden-constraint-compiler"
-version = "0.29.4"
+version = "0.30.0"
 dependencies = [
  "miden-core",
  "miden-crypto",
@@ -2173,7 +2174,7 @@ dependencies = [
 
 [[package]]
 name = "miden-core"
-version = "0.29.4"
+version = "0.30.0"
 dependencies = [
  "criterion",
  "derive_more",
@@ -2182,22 +2183,21 @@ dependencies = [
  "miden-crypto",
  "miden-debug-types",
  "miden-formatting",
- "miden-test-serde-macros",
+ "miden-serde-utils",
+ "miden-test-serialization-macros",
  "miden-test-utils",
  "miden-utils-core-derive",
  "miden-utils-indexing",
  "miden-utils-sync",
  "proptest",
  "rstest",
- "serde",
- "serde_json",
  "thiserror",
  "trybuild",
 ]
 
 [[package]]
 name = "miden-core-lib"
-version = "0.29.4"
+version = "0.30.0"
 dependencies = [
  "criterion",
  "env_logger",
@@ -2210,30 +2210,37 @@ dependencies = [
  "miden-core",
  "miden-core-lib-codegen",
  "miden-crypto",
+ "miden-debug-types",
+ "miden-lifted-stark",
  "miden-mast-package",
  "miden-package-registry",
  "miden-precompiles",
+ "miden-precompiles-prover",
  "miden-processor",
+ "miden-prover",
  "miden-test-utils",
  "miden-utils-sync",
+ "miden-verifier",
  "num",
  "rand 0.10.2",
  "rand_chacha 0.10.0",
  "rstest",
  "thiserror",
+ "tokio",
 ]
 
 [[package]]
 name = "miden-core-lib-codegen"
-version = "0.29.4"
+version = "0.30.0"
 dependencies = [
  "miden-core",
  "miden-precompiles",
+ "tempfile",
 ]
 
 [[package]]
 name = "miden-crypto"
-version = "0.29.4"
+version = "0.30.0"
 dependencies = [
  "assert_matches",
  "blake3",
@@ -2272,6 +2279,7 @@ dependencies = [
  "rocksdb",
  "seq-macro",
  "serde",
+ "serde_json",
  "sha2",
  "sha3",
  "shake",
@@ -2283,7 +2291,7 @@ dependencies = [
 
 [[package]]
 name = "miden-crypto-derive"
-version = "0.29.4"
+version = "0.30.0"
 dependencies = [
  "miden-field",
  "quote",
@@ -2292,7 +2300,7 @@ dependencies = [
 
 [[package]]
 name = "miden-crypto-smt-codspeed-bench"
-version = "0.29.4"
+version = "0.30.0"
 dependencies = [
  "codspeed-criterion-compat",
  "miden-crypto",
@@ -2301,7 +2309,7 @@ dependencies = [
 
 [[package]]
 name = "miden-crypto-wycheproof-tests"
-version = "0.29.4"
+version = "0.30.0"
 dependencies = [
  "ed25519-dalek",
  "hex",
@@ -2315,13 +2323,13 @@ dependencies = [
 
 [[package]]
 name = "miden-debug-types"
-version = "0.29.4"
+version = "0.30.0"
 dependencies = [
  "memchr",
  "miden-crypto",
  "miden-formatting",
  "miden-miette",
- "miden-test-serde-macros",
+ "miden-test-serialization-macros",
  "miden-utils-indexing",
  "miden-utils-sync",
  "paste",
@@ -2335,7 +2343,7 @@ dependencies = [
 
 [[package]]
 name = "miden-field"
-version = "0.29.4"
+version = "0.30.0"
 dependencies = [
  "miden-serde-utils",
  "num-bigint 0.5.1",
@@ -2354,7 +2362,7 @@ dependencies = [
 
 [[package]]
 name = "miden-format"
-version = "0.29.4"
+version = "0.30.0"
 dependencies = [
  "clap",
  "miden-assembly-syntax-cst",
@@ -2378,7 +2386,7 @@ dependencies = [
 
 [[package]]
 name = "miden-lifted-air"
-version = "0.29.4"
+version = "0.30.0"
 dependencies = [
  "miden-field",
  "p3-air",
@@ -2391,7 +2399,7 @@ dependencies = [
 
 [[package]]
 name = "miden-lifted-stark"
-version = "0.29.4"
+version = "0.30.0"
 dependencies = [
  "criterion",
  "miden-lifted-air",
@@ -2413,6 +2421,7 @@ dependencies = [
  "p3-poseidon2-air",
  "p3-symmetric",
  "p3-util",
+ "proptest",
  "rand 0.10.2",
  "serde",
  "thiserror",
@@ -2422,20 +2431,19 @@ dependencies = [
 
 [[package]]
 name = "miden-mast-package"
-version = "0.29.4"
+version = "0.30.0"
 dependencies = [
+ "codspeed-criterion-compat",
  "hashbrown 0.17.1",
- "log",
  "miden-assembly-syntax",
  "miden-core",
  "miden-debug-types",
- "miden-test-serde-macros",
+ "miden-test-serialization-macros",
  "miden-utils-indexing",
  "proptest",
  "proptest-derive",
  "rustc-hash",
  "serde",
- "serde_json",
  "thiserror",
  "zerocopy",
 ]
@@ -2478,23 +2486,21 @@ dependencies = [
 
 [[package]]
 name = "miden-package-registry"
-version = "0.29.4"
+version = "0.30.0"
 dependencies = [
  "miden-assembly-syntax",
  "miden-core",
  "miden-mast-package",
- "miden-test-serde-macros",
  "proptest",
  "pubgrub",
  "serde",
- "serde_json",
  "smallvec",
  "thiserror",
 ]
 
 [[package]]
 name = "miden-package-registry-local"
-version = "0.29.4"
+version = "0.30.0"
 dependencies = [
  "clap",
  "miden-assembly-syntax",
@@ -2511,15 +2517,16 @@ dependencies = [
 
 [[package]]
 name = "miden-precompiles"
-version = "0.29.4"
+version = "0.30.0"
 dependencies = [
  "miden-core",
  "miden-crypto",
+ "ruint",
 ]
 
 [[package]]
 name = "miden-precompiles-prover"
-version = "0.29.4"
+version = "0.30.0"
 dependencies = [
  "insta",
  "k256",
@@ -2532,6 +2539,7 @@ dependencies = [
  "miden-precompiles",
  "miden-serde-utils",
  "rand 0.10.2",
+ "rayon",
  "ruint",
  "serde",
  "serde-wincode",
@@ -2542,7 +2550,7 @@ dependencies = [
 
 [[package]]
 name = "miden-processor"
-version = "0.29.4"
+version = "0.30.0"
 dependencies = [
  "hashbrown 0.17.1",
  "insta",
@@ -2569,13 +2577,14 @@ dependencies = [
 
 [[package]]
 name = "miden-project"
-version = "0.29.4"
+version = "0.30.0"
 dependencies = [
  "miden-assembly-syntax",
  "miden-core",
+ "miden-debug-types",
  "miden-mast-package",
  "miden-package-registry",
- "miden-test-serde-macros",
+ "miden-test-serialization-macros",
  "proptest",
  "proptest-derive",
  "serde",
@@ -2588,7 +2597,7 @@ dependencies = [
 
 [[package]]
 name = "miden-prover"
-version = "0.29.4"
+version = "0.30.0"
 dependencies = [
  "miden-air",
  "miden-assembly",
@@ -2597,8 +2606,10 @@ dependencies = [
  "miden-debug-types",
  "miden-precompiles-prover",
  "miden-processor",
+ "miden-verifier",
  "serde",
  "serde-wincode",
+ "thiserror",
  "tokio",
  "tracing",
 ]
@@ -2615,7 +2626,7 @@ dependencies = [
 
 [[package]]
 name = "miden-serde-utils"
-version = "0.29.4"
+version = "0.30.0"
 dependencies = [
  "p3-field",
  "p3-goldilocks",
@@ -2625,7 +2636,7 @@ dependencies = [
 
 [[package]]
 name = "miden-stark-transcript"
-version = "0.29.4"
+version = "0.30.0"
 dependencies = [
  "p3-challenger",
  "p3-field",
@@ -2635,7 +2646,7 @@ dependencies = [
 
 [[package]]
 name = "miden-stateful-hasher"
-version = "0.29.4"
+version = "0.30.0"
 dependencies = [
  "p3-bn254",
  "p3-field",
@@ -2645,20 +2656,19 @@ dependencies = [
 ]
 
 [[package]]
-name = "miden-test-serde-macros"
-version = "0.29.4"
+name = "miden-test-serialization-macros"
+version = "0.30.0"
 dependencies = [
  "proc-macro2",
  "proptest",
  "proptest-derive",
  "quote",
- "serde",
  "syn 1.0.109",
 ]
 
 [[package]]
 name = "miden-test-utils"
-version = "0.29.4"
+version = "0.30.0"
 dependencies = [
  "env_logger",
  "miden-air",
@@ -2677,7 +2687,7 @@ dependencies = [
 
 [[package]]
 name = "miden-utils-core-derive"
-version = "0.29.4"
+version = "0.30.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2686,7 +2696,7 @@ dependencies = [
 
 [[package]]
 name = "miden-utils-diagnostics"
-version = "0.29.4"
+version = "0.30.0"
 dependencies = [
  "miden-debug-types",
  "miden-miette",
@@ -2695,19 +2705,17 @@ dependencies = [
 
 [[package]]
 name = "miden-utils-indexing"
-version = "0.29.4"
+version = "0.30.0"
 dependencies = [
  "miden-serde-utils",
- "miden-test-serde-macros",
+ "miden-test-serialization-macros",
  "proptest",
- "serde",
- "serde_json",
  "thiserror",
 ]
 
 [[package]]
 name = "miden-utils-sync"
-version = "0.29.4"
+version = "0.30.0"
 dependencies = [
  "lock_api",
  "loom",
@@ -2717,12 +2725,11 @@ dependencies = [
 
 [[package]]
 name = "miden-verifier"
-version = "0.29.4"
+version = "0.30.0"
 dependencies = [
  "miden-air",
  "miden-core",
  "miden-crypto",
- "miden-precompiles",
  "miden-precompiles-prover",
  "miden-serde-utils",
  "serde",
@@ -2732,7 +2739,7 @@ dependencies = [
 
 [[package]]
 name = "miden-vm"
-version = "0.29.4"
+version = "0.30.0"
 dependencies = [
  "assert_cmd",
  "clap",
@@ -2742,13 +2749,12 @@ dependencies = [
  "miden-core",
  "miden-core-lib",
  "miden-mast-package",
+ "miden-precompiles",
  "miden-processor",
  "miden-prover",
- "miden-test-serde-macros",
  "miden-test-utils",
  "miden-verifier",
  "predicates",
- "proptest",
  "serde",
  "serde_json",
  "tempfile",
@@ -2761,7 +2767,7 @@ dependencies = [
 
 [[package]]
 name = "miden-vm-blake3-bench"
-version = "0.29.4"
+version = "0.30.0"
 dependencies = [
  "clap",
  "codspeed-criterion-compat",
@@ -2776,7 +2782,7 @@ dependencies = [
 
 [[package]]
 name = "miden-vm-precompiles-bench"
-version = "0.29.4"
+version = "0.30.0"
 dependencies = [
  "codspeed-criterion-compat",
  "miden-core",
@@ -2788,14 +2794,14 @@ dependencies = [
 
 [[package]]
 name = "miden-vm-synthetic-bench"
-version = "0.29.4"
+version = "0.30.0"
 dependencies = [
  "codspeed-criterion-compat",
  "miden-assembly",
  "miden-core",
  "miden-core-lib",
+ "miden-precompiles-prover",
  "miden-processor",
- "miden-prover",
  "miden-verifier",
  "miden-vm",
  "serde",
@@ -2805,12 +2811,10 @@ dependencies = [
 
 [[package]]
 name = "midenc-hir-type"
-version = "0.10.2"
+version = "0.12.0"
 dependencies = [
  "miden-formatting",
  "miden-serde-utils",
- "serde",
- "serde_repr",
  "smallvec",
  "thiserror",
 ]
@@ -3706,9 +3710,9 @@ dependencies = [
 
 [[package]]
 name = "proptest-derive"
-version = "0.7.0"
+version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fb6dc647500e84a25a85b100e76c85b8ace114c209432dc174f20aac11d4ed6c"
+checksum = "c57924a81864dddafba92e1bf92f9bf82f97096c44489548a60e888e1547549b"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4259,17 +4263,6 @@ dependencies = [
  "serde",
  "serde_core",
  "zmij",
-]
-
-[[package]]
-name = "serde_repr"
-version = "0.1.21"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8d3b1629de253c70a0508c3899572da79ca359fdab27c7920ff00406df418906"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 3.0.3",
 ]
 
 [[package]]
@@ -5084,9 +5077,9 @@ checksum = "712e227841d057c1ee1cd2fb22fa7e5a5461ae8e48fa2ca79ec42cfc1931183f"
 
 [[package]]
 name = "wincode"
-version = "0.6.0"
+version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b5d39d1a984eb7ae37afa348f058216d62a6d5f71640f4113a8114386c2a812a"
+checksum = "bfc6339f1ba427bf7ad7c42403b28e524832ba2ddb5eef1bb2cc3b85db6b7b75"
 dependencies = [
  "pastey",
  "proc-macro2",

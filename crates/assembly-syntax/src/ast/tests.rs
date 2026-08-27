@@ -1460,9 +1460,6 @@ fn assert_parsing_line_unexpected_token() {
 /// - Line comments (i.e. not docstrings) are not preserved, and so do not end up in the output
 /// - The original choice to place a sequence of instructions on the same line or multiple lines is
 ///   not preserved in the AST, so the formatter always places them on individual lines.
-/// - References to constant values by name are replaced with their value during semantic analysis,
-///   so no named constants appear in the formatted output.
-/// - Constant declarations are not preserved by the parser, and so are not shown in the output
 #[test]
 fn test_roundtrip_formatting() {
     let source = "\
@@ -1476,6 +1473,7 @@ namespace test::formatting
 #!
 #! with spaces
 const DEFAULT_CONST = 100
+const NEXT_CONST = DEFAULT_CONST + 1
 
 #! Perform `a + b`, `n` times
 #!
@@ -1505,7 +1503,7 @@ proc add_n_times # [n, b, a]
 end
 
 begin
-    push.1.1.DEFAULT_CONST
+    push.1.1.NEXT_CONST
     exec.add_n_times
     push.20
     assert_eq
@@ -1529,6 +1527,8 @@ namespace test::formatting
 #!
 #! with spaces
 const DEFAULT_CONST = 100
+
+const NEXT_CONST = DEFAULT_CONST+1
 
 #! Perform `a + b`, `n` times
 #!
@@ -1565,7 +1565,7 @@ end
 begin
     push.1
     push.1
-    push.100
+    push.NEXT_CONST
     exec.add_n_times
     push.20
     assert_eq
@@ -1573,6 +1573,32 @@ end
 ";
 
     assert_eq!(&formatted, expected);
+}
+
+#[test]
+fn test_constant_expr_parentheses_roundtrip_formatting() {
+    let source = "\
+namespace test::formatting
+
+use {N} from dep
+
+const LOWER_PRECEDENCE_LHS = (N + 1) * 3
+const LOWER_PRECEDENCE_RHS = 3 * (N + 1)
+const SAME_PRECEDENCE_RHS = N - (N - 1)
+";
+
+    let context = SyntaxTestContext::default();
+    let source = source_file!(&context, source);
+    let module = context.parse_module_source_file(source).unwrap_or_else(|err| panic!("{err}"));
+
+    let formatted = module.to_string();
+    assert!(formatted.contains("const LOWER_PRECEDENCE_LHS = (N+1)*3"));
+    assert!(formatted.contains("const LOWER_PRECEDENCE_RHS = 3*(N+1)"));
+    assert!(formatted.contains("const SAME_PRECEDENCE_RHS = N-(N-1)"));
+
+    let source = source_file!(&context, &formatted);
+    let reparsed = context.parse_module_source_file(source).unwrap_or_else(|err| panic!("{err}"));
+    assert_eq!(module, reparsed);
 }
 
 #[test]
@@ -1606,20 +1632,78 @@ const B = [2,3,4,5]
 
 begin
     push.[2,3,4,5]
-    push.[2,3,4,5]
+    push.A
     push.6
-    push.[2,3,4,5]
+    push.B
     push.6
     push.2
     push.3
     push.4
     push.5
-    push.[2,3,4,5]
-    push.[2,3,4,5]
+    push.A
+    push.B
 end
 ";
 
     assert_eq!(&formatted, expected);
+}
+
+#[test]
+fn test_event_immediate_roundtrip_formatting() {
+    let trace_name = "test::trace::roundtrip";
+    let event_name = r#"test::emit::a\"b"#;
+    let constant_name = "test::constant::roundtrip";
+
+    let source = format!(
+        "\
+const EVENT = event(\"{constant_name}\")
+
+begin
+    push.1
+    trace
+    drop
+    trace.event(\"{trace_name}\")
+    emit.event(\"{event_name}\")
+    trace.EVENT
+    emit.EVENT
+end
+"
+    );
+
+    let context = SyntaxTestContext::default();
+    let source = source_file!(&context, source);
+    let module = context.parse_program_source_file(source).unwrap_or_else(|err| panic!("{err}"));
+    let formatted = module.to_string();
+    let expected = format!(
+        "\
+namespace $exec
+
+const EVENT = event(\"{constant_name}\")
+
+begin
+    push.1
+    trace
+    drop
+    trace.event(\"{trace_name}\")
+    emit.event(\"{event_name}\")
+    trace.EVENT
+    emit.EVENT
+end
+"
+    );
+    assert_eq!(&formatted, &expected);
+
+    let source = source_file!(&context, &expected);
+    let reparsed = context.parse_program_source_file(source).unwrap_or_else(|err| panic!("{err}"));
+    assert_eq!(module, reparsed);
+}
+
+#[test]
+fn test_resolved_event_immediate_formatting() {
+    let event = EventImmediate::Immediate(Immediate::Value(Span::unknown(Felt::ONE)));
+
+    assert_eq!(Instruction::EmitImm(event.clone()).to_string(), "push.1 emit drop");
+    assert_eq!(Instruction::TraceImm(event).to_string(), "push.1 trace drop");
 }
 
 #[test]

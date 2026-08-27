@@ -1,14 +1,14 @@
 //! The overlapped execute-and-build path must produce exactly the trace the
 //! buffered path produces: same values, byte for byte, in every segment.
 //!
-//! Run under `make test-wasm-threadless`, on a target that genuinely refuses to
-//! spawn, the same equality also pins that the overlapped entry point returns at
-//! all and that what it falls back to is the buffered path.
+//! `make test-wasm-threadless` runs the equality tests through the compact
+//! buffered fallback and proves the entry point returns without trapping.
 
 use miden_assembly::Assembler;
 use miden_processor::{
-    DefaultHost, ExecutionOptions, FastProcessor, Felt, StackInputs, advice::AdviceInputs,
-    trace::build_trace,
+    DefaultHost, ExecutionOptions, FastProcessor, Felt, StackInputs,
+    advice::AdviceInputs,
+    trace::{DEFAULT_MAX_PROVER_MEMORY_BYTES, build_trace},
 };
 use miden_utils_testing::crypto::{MerkleTree, init_merkle_leaf, init_merkle_store};
 
@@ -36,6 +36,21 @@ begin
 end
 ";
 
+/// Replays the same large basic block often enough that streaming it without a consumer would
+/// retain many owned request payloads.
+const QUEUE_HEAVY_PROGRAM: &str = "
+begin
+    push.0
+    repeat.1024
+        push.1 add push.1 add push.1 add push.1 add
+        push.1 add push.1 add push.1 add push.1 add
+        push.1 add push.1 add push.1 add push.1 add
+        push.1 add push.1 add push.1 add push.1 add
+    end
+    drop
+end
+";
+
 fn processor(stack: &[u64], advice: AdviceInputs) -> FastProcessor {
     let stack: Vec<Felt> = stack.iter().map(|&v| Felt::new(v).unwrap()).collect();
     FastProcessor::new_with_options(
@@ -58,17 +73,21 @@ fn assert_overlapped_matches_buffered(program_src: &str, stack: &[u64], advice: 
 
     let buffered = {
         let mut host = DefaultHost::default();
-        let inputs = processor(stack, advice.clone())
-            .execute_trace_inputs_sync(&program, &mut host)
+        let execution_witness = processor(stack, advice.clone())
+            .execute_for_proving_sync(&program, &mut host)
             .unwrap();
-        build_trace(inputs).unwrap()
+        let (vm_witness, precompiles_witness) = execution_witness.into_parts();
+        assert!(precompiles_witness.is_none());
+        build_trace(vm_witness).unwrap()
     };
 
     let streamed = {
         let mut host = DefaultHost::default();
-        processor(stack, advice.clone())
-            .execute_and_build_trace_sync(&program, &mut host)
-            .unwrap()
+        let (trace, precompiles_witness) = processor(stack, advice.clone())
+            .execute_and_build_trace_sync(&program, &mut host, DEFAULT_MAX_PROVER_MEMORY_BYTES)
+            .unwrap();
+        assert!(precompiles_witness.is_none());
+        trace
     };
 
     assert_eq!(buffered.program_hash(), streamed.program_hash());
@@ -82,6 +101,17 @@ fn assert_overlapped_matches_buffered(program_src: &str, stack: &[u64], advice: 
 #[test]
 fn overlapped_build_matches_buffered() {
     assert_overlapped_matches_buffered(PROGRAM, &[1], &AdviceInputs::default());
+}
+
+#[test]
+fn single_worker_handles_queue_heavy_program() {
+    #[cfg(not(target_family = "wasm"))]
+    rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap().install(|| {
+        assert_overlapped_matches_buffered(QUEUE_HEAVY_PROGRAM, &[], &AdviceInputs::default());
+    });
+
+    #[cfg(target_family = "wasm")]
+    assert_overlapped_matches_buffered(QUEUE_HEAVY_PROGRAM, &[], &AdviceInputs::default());
 }
 
 /// Covers the two Merkle op kinds in the streamed replay (`BuildMerkleRoot`
@@ -123,15 +153,8 @@ fn overlapped_build_matches_buffered_merkle() {
     assert_overlapped_matches_buffered("begin mtree_set end", &set_stack, &advice);
 }
 
-/// The overlap path spawns the hasher builder on its own thread; span context is
-/// thread-local, so the builder re-enters the `execute_and_build_trace_sync` span
-/// to stay attributed under it. This records which threads enter that span rather
-/// than how many times it is entered, so it cannot be satisfied by one thread
-/// entering twice — the point is that the builder ran somewhere else.
-///
-/// Requires a host that can actually spawn: where the spawn is refused the serial
-/// fallback runs and only the caller enters. That is why `make test-wasm-threadless`
-/// skips this one test and runs everything else in the file.
+/// The overlap path makes the hasher builder available to Rayon workers. The caller is an ordinary
+/// test thread, so a second thread entering the span proves a global-pool worker ran the builder.
 #[test]
 fn overlap_builder_thread_enters_the_instrument_span() {
     use std::{
@@ -179,20 +202,15 @@ fn overlap_builder_thread_enters_the_instrument_span() {
     tracing::subscriber::with_default(subscriber, || {
         let mut host = DefaultHost::default();
         processor(&[1], AdviceInputs::default())
-            .execute_and_build_trace_sync(&program, &mut host)
+            .execute_and_build_trace_sync(&program, &mut host, DEFAULT_MAX_PROVER_MEMORY_BYTES)
             .unwrap();
     });
 
     let threads = threads.lock().unwrap();
-    assert!(
-        threads.contains(&caller),
-        "the caller's own `#[instrument]` span was never entered"
-    );
+    assert!(threads.contains(&caller), "the caller did not enter the instrument span");
     assert_eq!(
         threads.len(),
         2,
-        "the builder thread did not re-enter the span: expected the caller and the builder, but \
-         it was entered by {threads:?} (caller is {caller:?}). Either the builder stopped \
-         re-entering it, or -- on a host that cannot spawn -- the serial fallback ran"
+        "expected execution and the hasher builder to use separate threads, got {threads:?}"
     );
 }

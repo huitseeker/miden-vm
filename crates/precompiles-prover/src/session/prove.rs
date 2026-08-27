@@ -1,20 +1,18 @@
 //! Multi-AIR proving for the chiplet stack.
 //!
-//! [`ChipletAir`] wraps the twelve heterogeneous AIRs into one enum (the
+//! [`ChipletAir`] wraps the ten heterogeneous AIRs into one enum (the
 //! `MultiAir::Air` type); [`ChipletMultiAir`] owns them and closes the
 //! cross-chiplet LogUp identity — `Σ σ = 0` — in
 //! [`MultiAir::eval_external`].
 //! [`SessionTraces::prove_stark`] produces a core-compatible serialized
-//! [`StarkProof`](miden_core::proof::StarkProof), while [`SessionTraces::prove`]
-//! returns the core deferred-proof envelope used by VM proof composition.
+//! [`StarkProof`](miden_core::proof::StarkProof).
 
 use alloc::{vec, vec::Vec};
 
 use miden_core::{
     Felt,
-    deferred::DeferredRoot,
     field::{Field, PrimeCharacteristicRing, QuadFelt},
-    proof::{DeferredProof, HashFunction, StarkProof},
+    proof::{HashFunction, StarkProof},
     utils::RowMajorMatrix,
 };
 use miden_lifted_air::{
@@ -31,18 +29,12 @@ use serde::{Serialize, de::DeserializeOwned};
 use serde_wincode::SerdeCompat;
 
 use super::preprocessed_cache;
-
-const MAX_STARK_PROOF_BYTES: usize = 64 * 1024 * 1024;
-
 use crate::{
-    ProveError,
-    ec::{EcPointStoreAir, add::EcGroupAddAir, groups::EcGroupsAir, msm::EcMsmAir},
-    hash::{
-        chunk_node::ChunkNodeAir,
-        keccak::{round::KeccakRoundAir, sponge::KeccakSpongeAir},
-    },
+    MAX_STARK_PROOF_BYTES, ProveError,
+    ec::{add::EcGroupAddAir, msm::EcMsmAir, point_store_groups::EcPointStoreGroupsAir},
+    hash::{chunk_node_sponge::ChunkNodeSpongeAir, keccak::round::KeccakRoundAir},
     logup::{Challenges, LookupMessage, lookup_challenges_from_slice, sigma_sum},
-    primitives::byte_pair_lut::BytePairLutAir,
+    primitives::byte_pair_lut::{self, BytePairLutAir},
     session::{NUM_CHIPLETS, SessionTraces, fixed_ecgroup_msgs, fixed_uintval_msgs},
     stark_config::{
         DEFAULT_HASH_FUNCTION, PRECOMPILE_RELATION_DIGEST, blake3_256_config, keccak_config,
@@ -56,21 +48,19 @@ use crate::{
     uint::{add::UintAddAir, store_mul::UintStoreMulAir},
 };
 
-/// The twelve chiplet AIRs wrapped into one enum — the heterogeneous
+/// The ten chiplet AIRs wrapped into one enum — the heterogeneous
 /// `MultiAir::Air` type. Variant order is the canonical
 /// [`SessionTraces::mains`] order.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ChipletAir {
-    ChunkNode,
+    ChunkNodeSponge,
     Poseidon2,
     KeccakRound,
     BytePairLut,
-    KeccakSponge,
     TranscriptEval,
     UintStoreMul,
     UintAdd,
-    EcGroups,
-    EcPointStore,
+    EcPointStoreGroups,
     EcGroupAdd,
     EcMsm,
 }
@@ -78,16 +68,14 @@ pub enum ChipletAir {
 macro_rules! delegate {
     ($self:ident, $method:ident $(, $arg:expr)*) => {
         match $self {
-            ChipletAir::ChunkNode => ChunkNodeAir.$method($($arg),*),
+            ChipletAir::ChunkNodeSponge => ChunkNodeSpongeAir.$method($($arg),*),
             ChipletAir::Poseidon2 => Poseidon2Air.$method($($arg),*),
             ChipletAir::KeccakRound => KeccakRoundAir.$method($($arg),*),
             ChipletAir::BytePairLut => BytePairLutAir.$method($($arg),*),
-            ChipletAir::KeccakSponge => KeccakSpongeAir.$method($($arg),*),
             ChipletAir::TranscriptEval => TranscriptEvalAir.$method($($arg),*),
             ChipletAir::UintStoreMul => UintStoreMulAir.$method($($arg),*),
             ChipletAir::UintAdd => UintAddAir.$method($($arg),*),
-            ChipletAir::EcGroups => EcGroupsAir.$method($($arg),*),
-            ChipletAir::EcPointStore => EcPointStoreAir.$method($($arg),*),
+            ChipletAir::EcPointStoreGroups => EcPointStoreGroupsAir.$method($($arg),*),
             ChipletAir::EcGroupAdd => EcGroupAddAir.$method($($arg),*),
             ChipletAir::EcMsm => EcMsmAir.$method($($arg),*),
         }
@@ -103,22 +91,32 @@ where
 }
 
 impl ChipletAir {
-    /// The twelve AIRs in canonical [`SessionTraces::mains`] order.
+    /// The ten AIRs in canonical [`SessionTraces::mains`] order.
     pub fn all() -> [ChipletAir; NUM_CHIPLETS] {
         [
-            ChipletAir::ChunkNode,
+            ChipletAir::ChunkNodeSponge,
             ChipletAir::Poseidon2,
             ChipletAir::KeccakRound,
             ChipletAir::BytePairLut,
-            ChipletAir::KeccakSponge,
             ChipletAir::TranscriptEval,
             ChipletAir::UintStoreMul,
             ChipletAir::UintAdd,
-            ChipletAir::EcGroups,
-            ChipletAir::EcPointStore,
+            ChipletAir::EcPointStoreGroups,
             ChipletAir::EcGroupAdd,
             ChipletAir::EcMsm,
         ]
+    }
+
+    /// The fixed log2 trace height of this instance, if the relation pins one.
+    ///
+    /// `BytePairLut` commits its main and preprocessed traces at
+    /// [`byte_pair_lut::TRACE_HEIGHT`], so its proof shapes must carry exactly that height;
+    /// every other instance ranges above its derived minimum.
+    pub fn fixed_log_height(&self) -> Option<u32> {
+        match self {
+            ChipletAir::BytePairLut => Some(byte_pair_lut::TRACE_HEIGHT.ilog2()),
+            _ => None,
+        }
     }
 }
 
@@ -161,23 +159,21 @@ impl LiftedAir<Felt, QuadFelt> for ChipletAir {
     }
     fn eval<AB: LiftedAirBuilder<F = Felt>>(&self, builder: &mut AB) {
         match self {
-            ChipletAir::ChunkNode => eval_lifted(&ChunkNodeAir, builder),
+            ChipletAir::ChunkNodeSponge => eval_lifted(&ChunkNodeSpongeAir, builder),
             ChipletAir::Poseidon2 => eval_lifted(&Poseidon2Air, builder),
             ChipletAir::KeccakRound => eval_lifted(&KeccakRoundAir, builder),
             ChipletAir::BytePairLut => eval_lifted(&BytePairLutAir, builder),
-            ChipletAir::KeccakSponge => eval_lifted(&KeccakSpongeAir, builder),
             ChipletAir::TranscriptEval => eval_lifted(&TranscriptEvalAir, builder),
             ChipletAir::UintStoreMul => eval_lifted(&UintStoreMulAir, builder),
             ChipletAir::UintAdd => eval_lifted(&UintAddAir, builder),
-            ChipletAir::EcGroups => eval_lifted(&EcGroupsAir, builder),
-            ChipletAir::EcPointStore => eval_lifted(&EcPointStoreAir, builder),
+            ChipletAir::EcPointStoreGroups => eval_lifted(&EcPointStoreGroupsAir, builder),
             ChipletAir::EcGroupAdd => eval_lifted(&EcGroupAddAir, builder),
             ChipletAir::EcMsm => eval_lifted(&EcMsmAir, builder),
         }
     }
 }
 
-/// The chiplet stack as a [`MultiAir`]: owns the thirteen AIRs (in canonical
+/// The chiplet stack as a [`MultiAir`]: owns the ten AIRs (in canonical
 /// order) and closes the cross-chiplet LogUp identity — `Σ σ = 0` over
 /// every AIR's committed residue — in [`eval_external`](Self::eval_external).
 #[derive(Debug, Clone)]
@@ -252,7 +248,7 @@ impl MultiAir<Felt, QuadFelt> for ChipletMultiAir {
 
 impl SessionTraces {
     /// Build the [`ProverStatement`]: the [`ChipletMultiAir`] + the shared
-    /// `air_inputs` (the transcript root) + the thirteen main traces in
+    /// `air_inputs` (the transcript root) + the ten main traces in
     /// canonical [`mains`](Self::mains) order.
     fn prover_statement(&self) -> ProverStatement<Felt, QuadFelt, ChipletMultiAir> {
         let statement = Statement::new(ChipletMultiAir::new(), self.air_inputs(), Vec::new())
@@ -261,21 +257,10 @@ impl SessionTraces {
         ProverStatement::new(statement, mains).expect("chiplet trace shapes are valid")
     }
 
-    /// Per-AIR `check_constraints` under the legacy fast test config — a cheap
-    /// local-constraint sanity pass (catches AIR regressions before the more
-    /// opaque `prove` failure; no cross-chiplet bus balance, which only the
-    /// full prove/verify closes via `eval_external`).
+    /// `check_constraints` under the legacy fast test config — a cheap constraint sanity pass
+    /// covering each AIR and the cross-chiplet assertion returned by `eval_external`.
     pub fn check(&self) {
         check_constraints(&self.prover_statement(), test_challenger());
-    }
-
-    /// Prove the precompile session with the default production-style hash function,
-    /// returning a STARK-backed deferred proof for the session's exact deferred root.
-    /// Consumes the bundle so the main traces move into the prover statement rather
-    /// than being cloned.
-    pub fn prove(self) -> DeferredProof {
-        self.prove_deferred(DEFAULT_HASH_FUNCTION)
-            .expect("prove precompile session with default hash function")
     }
 
     /// Prove the whole stack and return a core-compatible serialized STARK
@@ -287,7 +272,7 @@ impl SessionTraces {
     /// the bundle so the main traces move into the prover statement rather
     /// than being cloned.
     #[tracing::instrument("prove_stark", skip_all)]
-    pub fn prove_stark(self, hash_fn: HashFunction) -> Result<StarkProof, ProveError> {
+    pub(crate) fn prove_stark(self, hash_fn: HashFunction) -> Result<StarkProof, ProveError> {
         let params = precompile_pcs_params();
         match hash_fn {
             HashFunction::Blake3_256 => {
@@ -316,16 +301,6 @@ impl SessionTraces {
                 self.prove_stark_with_config(&config, &preprocessed, hash_fn)
             },
         }
-    }
-
-    /// Prove the precompile session and wrap the serialized STARK proof in the core
-    /// deferred-proof envelope together with the exact deferred root it proves. Consumes
-    /// the bundle so the main traces move into the prover statement rather than being
-    /// cloned.
-    pub fn prove_deferred(self, hash_fn: HashFunction) -> Result<DeferredProof, ProveError> {
-        let public_root: DeferredRoot = self.public_root().as_array().into();
-        let proof = self.prove_stark(hash_fn)?;
-        Ok(DeferredProof::stark(proof, public_root))
     }
 
     fn prove_stark_with_config<SC>(
@@ -358,26 +333,18 @@ impl SessionTraces {
     }
 }
 
-/// Verify a STARK-backed deferred proof produced by this crate and return the verified deferred
-/// root.
-///
-/// The proof must be a [`DeferredProof::Stark`] variant. Its `public_root` is used as the
-/// precompile STARK public input; only after that proof verifies is the root returned to callers.
-pub fn verify_deferred(proof: &DeferredProof) -> Result<DeferredRoot, VerifyError> {
-    match proof {
-        DeferredProof::Stark { proof, public_root } => {
-            verify_stark(proof, P2Digest::from(*public_root))?;
-            Ok(*public_root)
-        },
-        DeferredProof::Empty | DeferredProof::Wire(_) => Err(VerifyError::InvalidDeferredProof),
-    }
-}
-
 /// Verify a core serialized STARK proof envelope against a public root.
 ///
 /// `Ok(())` iff the verifier accepts, including the `Σ σ = 0`
 /// cross-chiplet identity via `eval_external`.
-pub fn verify_stark(proof: &StarkProof, public_root: P2Digest) -> Result<(), VerifyError> {
+pub(crate) fn verify_stark(proof: &StarkProof, public_root: P2Digest) -> Result<(), VerifyError> {
+    if proof.bytes().len() > MAX_STARK_PROOF_BYTES {
+        return Err(VerifyError::ProofTooLarge {
+            size: proof.bytes().len(),
+            max: MAX_STARK_PROOF_BYTES,
+        });
+    }
+
     let params = precompile_pcs_params();
     match proof.hash_fn() {
         HashFunction::Blake3_256 => {
@@ -418,13 +385,6 @@ where
     SC: StarkConfig<Felt, QuadFelt>,
     <SC::Lmcs as LmcsTrait>::Commitment: DeserializeOwned,
 {
-    if proof_bytes.len() > MAX_STARK_PROOF_BYTES {
-        return Err(VerifyError::ProofTooLarge {
-            size: proof_bytes.len(),
-            max: MAX_STARK_PROOF_BYTES,
-        });
-    }
-
     let proof_encoding_config = wincode::config::Configuration::default()
         .with_preallocation_size_limit::<MAX_STARK_PROOF_BYTES>();
     let proof = deserialize_schema_exact::<SerdeCompat<StarkProofData<Felt, QuadFelt, SC>>, _>(
@@ -465,7 +425,58 @@ pub enum VerifyError {
     /// identity didn't close).
     #[error(transparent)]
     Verifier(#[from] VerifierError),
-    /// The deferred proof variant is not STARK-backed.
-    #[error("deferred proof is not STARK-backed")]
-    InvalidDeferredProof,
+}
+
+#[cfg(test)]
+mod tests {
+    use miden_core::field::PrimeCharacteristicRing;
+
+    use super::*;
+
+    /// The external assertion is part of the production relation but excluded from the ACE
+    /// circuit digest. This test guards its cardinality; raw bus-balance tests cover the
+    /// underlying lookup semantics independently.
+    #[test]
+    fn chiplet_multi_air_exposes_the_sigma_closure() {
+        let challenges = [
+            QuadFelt::new([Felt::from(3u32), Felt::from(5u32)]),
+            QuadFelt::new([Felt::from(7u32), Felt::from(11u32)]),
+        ];
+        let aux_values: [[QuadFelt; 1]; NUM_CHIPLETS] = core::array::from_fn(|i| {
+            [QuadFelt::new([Felt::from((i + 1) as u32), Felt::from((2 * i + 1) as u32)])]
+        });
+        let aux_refs: Vec<&[QuadFelt]> = aux_values.iter().map(<[QuadFelt; 1]>::as_slice).collect();
+
+        let assertions = ChipletMultiAir::new()
+            .eval_external(&challenges, &[], &[], &aux_refs, &[])
+            .expect("fixed boundary denominators are non-zero for the fixture");
+
+        assert_eq!(assertions.len(), 1, "the relation exposes exactly one external assertion");
+        assert_ne!(assertions[0], QuadFelt::ZERO, "the closure fixture must be non-vacuous");
+    }
+
+    /// The chiplet instance order fixes proof-order tie-breaks, registry tags, and the
+    /// relation digest. Intentional changes require regenerated protocol constants and a
+    /// breaking changelog entry.
+    #[test]
+    fn chiplet_instance_order_is_protocol_pinned() {
+        let pinned = [
+            ChipletAir::ChunkNodeSponge,
+            ChipletAir::Poseidon2,
+            ChipletAir::KeccakRound,
+            ChipletAir::BytePairLut,
+            ChipletAir::TranscriptEval,
+            ChipletAir::UintStoreMul,
+            ChipletAir::UintAdd,
+            ChipletAir::EcPointStoreGroups,
+            ChipletAir::EcGroupAdd,
+            ChipletAir::EcMsm,
+        ];
+        assert_eq!(
+            ChipletAir::all(),
+            pinned,
+            "chiplet instance order moved; regenerate the PVM ACE registry for an intentional \
+             protocol break"
+        );
+    }
 }

@@ -22,11 +22,12 @@ use miden_core::{Felt, field::QuadFelt, utils::RowMajorMatrix};
 use miden_precompiles::CurveId;
 
 use super::{
-    COL_A_PTR, COL_ACT, COL_B_PTR, COL_BOUND_PTR, COL_ECPOINT_MULT, COL_GROUP_PTR, COL_IS_CERT,
-    COL_IS_PAI, COL_PTR, COL_SBOUND_PTR, COL_U_PTR, COL_W_PTR, COL_X_PTR, COL_Y_PTR,
-    EcPointStoreAir, NUM_MAIN_COLS,
+    COL_A_PTR, COL_ACT, COL_B_PTR, COL_BETA_PTR, COL_BOUND_PTR, COL_ECPOINT_MULT, COL_GROUP_PTR,
+    COL_IS_CERT, COL_IS_PAI, COL_LAMBDA_PTR, COL_PTR, COL_SBOUND_PTR, COL_U_PTR, COL_W_PTR,
+    COL_X_PTR, COL_Y_PTR, EcPointStoreAir, NUM_MAIN_COLS,
     groups::{
-        COL_A_PTR as G_COL_A_PTR, COL_B_PTR as G_COL_B_PTR, COL_BOUND_PTR as G_COL_BOUND_PTR,
+        COL_A_PTR as G_COL_A_PTR, COL_B_PTR as G_COL_B_PTR, COL_BETA_PTR as G_COL_BETA_PTR,
+        COL_BOUND_PTR as G_COL_BOUND_PTR, COL_LAMBDA_PTR as G_COL_LAMBDA_PTR,
         COL_MULT as G_COL_MULT, COL_PTR as G_COL_PTR, COL_SBOUND_PTR as G_COL_SBOUND_PTR,
         EcGroupsAir, NUM_MAIN_COLS as G_NUM_MAIN_COLS,
     },
@@ -72,13 +73,17 @@ impl EcPointPtr {
 
 /// A group-table entry: the curve params + base-field bound, and the
 /// scalar bound once something constrains it (`None` = vacuous,
-/// resolving to `bound` at trace-gen).
+/// resolving to `bound` at trace-gen). `beta`/`lambda` are the group's
+/// GLV endomorphism params (the none-sentinel `UintPtr::from_addr(0)`
+/// for groups with no endomorphism).
 #[derive(Debug, Clone, Copy)]
 struct Group {
     a: UintPtr,
     b: UintPtr,
     bound: UintPtr,
     scalar_bound: Option<UintPtr>,
+    beta: UintPtr,
+    lambda: UintPtr,
 }
 
 /// A finite point's uint bindings: coordinates plus its membership
@@ -147,11 +152,19 @@ impl Default for EcStoreRequires {
         for curve in CurveId::ALL {
             let ptr = EcGroupPtr(curve.group_ptr());
             debug_assert_eq!(ptr.0 as usize, store.groups.len() + 1);
+            let (beta, lambda) = match curve.endomorphism() {
+                Some(endo) => {
+                    (UintPtr::from_addr(endo.beta_ptr), UintPtr::from_addr(endo.lambda_ptr))
+                },
+                None => (UintPtr::from_addr(0), UintPtr::from_addr(0)),
+            };
             let group = Group {
                 a: UintPtr::from_addr(curve.a_ptr()),
                 b: UintPtr::from_addr(curve.b_ptr()),
                 bound: UintPtr::from_addr(curve.base_domain().bound_ptr()),
                 scalar_bound: Some(UintPtr::from_addr(curve.scalar_domain().bound_ptr())),
+                beta,
+                lambda,
             };
             store.by_curve.insert((group.a, group.b, group.bound), ptr);
             store.groups.push(group);
@@ -177,7 +190,14 @@ impl EcStoreRequires {
             return existing;
         }
         let ptr = EcGroupPtr(self.groups.len() as u32 + 1);
-        self.groups.push(Group { a, b, bound, scalar_bound: None });
+        self.groups.push(Group {
+            a,
+            b,
+            bound,
+            scalar_bound: None,
+            beta: UintPtr::from_addr(0),
+            lambda: UintPtr::from_addr(0),
+        });
         self.by_curve.insert((a, b, bound), ptr);
         ptr
     }
@@ -310,6 +330,14 @@ impl EcStoreRequires {
         (g.a, g.b, g.bound)
     }
 
+    /// The group's GLV endomorphism params `(beta, lambda)` — the
+    /// none-sentinel `(UintPtr::from_addr(0), UintPtr::from_addr(0))` for
+    /// a group with no endomorphism.
+    pub fn group_glv_params(&self, group: EcGroupPtr) -> (UintPtr, UintPtr) {
+        let g = &self.groups[group.0 as usize - 1];
+        (g.beta, g.lambda)
+    }
+
     /// The group's **resolved** scalar-bound handle: the constrained
     /// `F_s` modulus if set, else (vacuously) the group's own `bound` —
     /// the value every `EcGroup` tuple site lays in its trace cell.
@@ -335,15 +363,9 @@ impl EcStoreRequires {
     }
 }
 
-/// Build **both** EC store main traces from the accumulator (consumed —
-/// trace-gen is terminal, so the double-lay hazard is a compile error),
-/// returning `(groups_main, points_main)` in
-/// [`SessionTraces`](crate::session::SessionTraces) order. Pure reads of
-/// the demand ledgers: every cross-chiplet consumer has already fed them
-/// — the points' own `EcGroup` consume at intern (the store's
-/// bound-ref analogue), the add relation's `EcGroup` / `EcPoint`
-/// consumes in [`super::add::trace::generate_trace`], run first by the
-/// Session sweep.
+/// Build the standalone group and point-store traces for component tests.
+/// Callers must record all cross-chiplet requirements before consuming the
+/// accumulator here.
 pub fn generate_traces(requires: EcStoreRequires) -> (RowMajorMatrix<Felt>, RowMajorMatrix<Felt>) {
     (groups_trace(&requires), points_trace(&requires))
 }
@@ -353,7 +375,20 @@ pub fn generate_traces(requires: EcStoreRequires) -> (RowMajorMatrix<Felt>, RowM
 /// `ptr = row + 1` on every row, so pads carry their ptr too — they are
 /// simply rows whose `mult` (and params) stay zero, touching no bus.
 fn groups_trace(requires: &EcStoreRequires) -> RowMajorMatrix<Felt> {
-    let height = requires.groups.len().next_power_of_two().max(2);
+    groups_trace_padded_to(requires, 0)
+}
+
+/// [`groups_trace`] with a height floor — for sharing the group table's
+/// row range with another AIR (see [`super::point_store_groups`]): pads
+/// past the natural height are the table's own padding mechanism
+/// (`ptr = row + 1` continued, `mult` and params zero). `min_height`
+/// must be 0 or a power of two so the padded height remains a power of two.
+pub(crate) fn groups_trace_padded_to(
+    requires: &EcStoreRequires,
+    min_height: usize,
+) -> RowMajorMatrix<Felt> {
+    debug_assert!(min_height == 0 || min_height.is_power_of_two());
+    let height = requires.groups.len().next_power_of_two().max(2).max(min_height);
     let mut vals = Vec::with_capacity(height * G_NUM_MAIN_COLS);
 
     for i in 0..height {
@@ -365,6 +400,8 @@ fn groups_trace(requires: &EcStoreRequires) -> RowMajorMatrix<Felt> {
             row[G_COL_B_PTR] = Felt::from(group.b.addr());
             row[G_COL_BOUND_PTR] = Felt::from(group.bound.addr());
             row[G_COL_SBOUND_PTR] = Felt::from(group.scalar_bound.unwrap_or(group.bound).addr());
+            row[G_COL_BETA_PTR] = Felt::from(group.beta.addr());
+            row[G_COL_LAMBDA_PTR] = Felt::from(group.lambda.addr());
             row[G_COL_MULT] =
                 Felt::from(requires.group_demand.get(&EcGroupPtr(ptr)).copied().unwrap_or(0));
         }
@@ -377,7 +414,7 @@ fn groups_trace(requires: &EcStoreRequires) -> RowMajorMatrix<Felt> {
 /// The point store — one row per point in allocation order
 /// (ptr = row + 1), padded to a power-of-two height (min 2) with
 /// all-zero (`act = 0`) rows that touch no bus.
-fn points_trace(requires: &EcStoreRequires) -> RowMajorMatrix<Felt> {
+pub(crate) fn points_trace(requires: &EcStoreRequires) -> RowMajorMatrix<Felt> {
     let height = requires.points.len().next_power_of_two().max(2);
     let mut vals = Vec::with_capacity(height * NUM_MAIN_COLS);
 
@@ -391,6 +428,9 @@ fn points_trace(requires: &EcStoreRequires) -> RowMajorMatrix<Felt> {
         row[COL_B_PTR] = Felt::from(b.addr());
         row[COL_BOUND_PTR] = Felt::from(bound.addr());
         row[COL_SBOUND_PTR] = Felt::from(requires.group_sbound(point.group).addr());
+        let (beta, lambda) = requires.group_glv_params(point.group);
+        row[COL_BETA_PTR] = Felt::from(beta.addr());
+        row[COL_LAMBDA_PTR] = Felt::from(lambda.addr());
         row[COL_X_PTR] = Felt::from(point.binding.map_or(0, |b| b.x.addr()));
         row[COL_Y_PTR] = Felt::from(point.binding.map_or(0, |b| b.y.addr()));
         let membership = point.binding.and_then(|b| b.membership);

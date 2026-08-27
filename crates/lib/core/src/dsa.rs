@@ -20,6 +20,12 @@
 /// coordinates are bound by that commitment, but `r` and `s` are not committed to a particular
 /// signature encoding. Unlike the `miden-crypto` Rust verifier, the MASM verifier intentionally
 /// accepts high-s values.
+///
+/// These helpers encode only the advice witness consumed by the verification procedures. The
+/// recovery procedures instead read a word-aligned native EVM recovery witness from memory as
+/// `R_LE_U32[8] || S_LE_U32[8] || V`, where `V` is 27 or 28. Callers must convert external EVM
+/// wire signatures, whose scalar components are fixed-width big-endian byte strings, into that
+/// native memory layout.
 pub mod ecdsa_k256_keccak {
     extern crate alloc;
 
@@ -48,10 +54,10 @@ pub mod ecdsa_k256_keccak {
     /// by `ecdsa_k256_keccak::verify` and `ecdsa_k256_keccak::verify_bytes`.
     ///
     /// The encoding is the structural order consumed from the advice stack:
-    /// `[QX[8] || QY[8] || SIG_R[8] || SIG_S[8]]`, where each value is a little-endian `u32` limb
-    /// represented as a field element. This preserves `r` and `s` exactly, omits the recovery ID,
-    /// and does not normalize or enforce low-s. The result is advice witness data, not a commitment
-    /// to the supplied signature encoding.
+    /// `[QX[8] || QY[8] || SIG_R[8] || SIG_S[8]]`, where each scalar value is a little-endian
+    /// `u32` limb represented as a field element. The signature portion preserves `r` and `s`
+    /// exactly, omits the recovery ID, and does not normalize or enforce low-s. The result is
+    /// advice witness data, not a commitment to the supplied signature encoding.
     ///
     /// The public-key elements come from [`SequentialCommit::to_elements()`], matching the
     /// commitment returned by [`public_key_commitment()`].
@@ -63,7 +69,7 @@ pub mod ecdsa_k256_keccak {
             "ECDSA public key elements must be QX[8] || QY[8] native limbs",
         );
 
-        let mut out = Vec::with_capacity(32);
+        let mut out = Vec::with_capacity(16 + 16);
         out.extend(pk_elements);
         out.extend_from_slice(&signature_felts(sig));
         out

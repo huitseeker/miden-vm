@@ -10,7 +10,7 @@ name                   = "miden-crypto"
 readme.workspace       = true
 repository.workspace   = true
 rust-version.workspace = true
-version.workspace = true
+version = "0.30.0"
 
 [[bin]]
 bench             = false
@@ -86,7 +86,7 @@ default           = ["concurrent", "std"]
 executable        = ["concurrent", "dep:clap"]
 fuzzing           = []
 internal          = ["concurrent"]
-persistent-forest = ["rocksdb", "serde"]
+persistent-forest = ["rocksdb"]
 rocksdb           = ["concurrent", "dep:rocksdb"]
 serde             = ["dep:serde", "serde?/alloc"]
 std               = ["blake3/std", "miden-serde-utils/std", "once_cell/std", "rand/std", "rand/thread_rng", "serde?/std"]
@@ -142,6 +142,7 @@ itertools      = { features = ["use_std"], workspace = true }
 miden-field    = { features = ["testing"], workspace = true }
 proptest       = { features = ["alloc"], workspace = true }
 seq-macro      = { workspace = true }
+serde_json     = { workspace = true }
 shake          = { workspace = true }
 tempfile       = { workspace = true }
 

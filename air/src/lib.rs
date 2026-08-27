@@ -29,6 +29,7 @@ pub mod ace;
 pub mod config;
 mod constraints;
 pub mod lookup;
+pub mod memory;
 mod proof_order;
 pub mod trace;
 
@@ -88,6 +89,7 @@ mod export {
             MultiAir, PermutationAirBuilder, ProverStatement, Statement,
         },
         debug,
+        pcs::PcsParams,
     };
 }
 
@@ -112,7 +114,7 @@ impl<T: LiftedAirBuilder<F = Felt>> MidenAirBuilder for T {}
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(
     all(feature = "arbitrary", test),
-    miden_test_serde_macros::serde_test(binary_serde(true), serde_test(false))
+    miden_test_serialization_macros::serialization_test
 )]
 pub struct PublicInputs {
     program_info: ProgramInfo,

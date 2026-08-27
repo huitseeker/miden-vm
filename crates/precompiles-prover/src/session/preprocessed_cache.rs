@@ -1,7 +1,7 @@
 //! Process-lifetime caching of the chiplet stack's preprocessed bundle.
 //!
 //! `Preprocessed::build` LDEs and commits the fixed `BytePairLut` table — a
-//! pure function of the (fixed, 12-AIR) chiplet list and the STARK config's
+//! pure function of the fixed ten-chiplet list and the STARK config's
 //! blowup/LMCS/DFT — yet both `prove_stark` and `verify_stark` rebuild it on
 //! every call. Under `std`, each hash function's bundle is built once per
 //! process and reused via `OnceLock`; without `std` (e.g. a `no_std`
@@ -23,7 +23,7 @@ use crate::{
 
 /// Either a process-cached (`std`) or freshly built (`no_std`) bundle;
 /// callers dereference to the underlying [`Preprocessed`] either way.
-pub(super) enum PreprocessedHandle<'a, L>
+pub(crate) enum PreprocessedHandle<'a, L>
 where
     L: Lmcs<F = Felt>,
 {
@@ -49,7 +49,7 @@ where
     }
 }
 
-/// The AIR list never varies across calls (the fixed 12-chiplet stack), and
+/// The AIR list never varies across calls (the fixed ten-chiplet stack), and
 /// `Preprocessed::build` reads only `statement.airs()` — never the public
 /// inputs — so a scratch statement with dummy public inputs builds the exact
 /// same bundle as the real per-proof statement would.
@@ -69,7 +69,7 @@ where
 
 macro_rules! cached_preprocessed {
     ($fn_name:ident, $config:ty) => {
-        pub(super) fn $fn_name(
+        pub(crate) fn $fn_name(
             config: &$config,
         ) -> PreprocessedHandle<'static, <$config as StarkConfig<Felt, QuadFelt>>::Lmcs> {
             #[cfg(feature = "std")]

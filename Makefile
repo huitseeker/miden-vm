@@ -21,7 +21,9 @@ help:
 	@printf "  make test-core-lib               # Test core-lib crate\n"
 	@printf "  make test-verifier               # Test verifier crate\n"
 	@printf "  make check-constraints           # Check core-lib constraint artifacts\n"
+	@printf "  make check-pvm-registry          # Check PVM registry and MASM artifacts\n"
 	@printf "  make regenerate-constraints      # Regenerate core-lib constraint artifacts\n"
+	@printf "  make regenerate-pvm-registry     # Regenerate PVM registry and MASM artifacts\n"
 	@printf "\nExamples:\n"
 	@printf "  make test-air test=\"some_test\" # Test specific function\n"
 	@printf "  make test-fast                   # Fast tests (no proptests/CLI)\n"
@@ -38,7 +40,7 @@ DOCS_NIGHTLY_TOOLCHAIN   ?= nightly
 ALL_FEATURES             := --all-features
 
 # Workspace-wide test features
-WORKSPACE_TEST_FEATURES  := concurrent,testing,executable
+WORKSPACE_TEST_FEATURES  := concurrent,testing,executable,registry-tools
 FAST_TEST_FEATURES       := concurrent,testing
 MIDEN_CRYPTO_FUZZ_TARGETS := smt word merkle merkle_store smt_serde partial_smt mmr crypto aead signatures
 MIDEN_SERDE_UTILS_FUZZ_TARGETS := primitives collections string vint64 goldilocks budgeted
@@ -51,6 +53,7 @@ FEATURES_LOG_TREE        := --features concurrent,executable,tracing-forest
 
 # Target triple used when producing release artifacts. Defaults to the host's triple.
 BUILD_TARGET             ?= $(shell rustc -vV | grep host | awk '{print $$2}')
+NO_STD_TARGET            ?= wasm32-unknown-unknown
 
 # Per-crate default features
 FEATURES_air             := testing
@@ -72,6 +75,13 @@ FEATURES_verifier        :=
 # which runs `make clippy` with RUSTFLAGS=-D warnings (see .github/workflows/lint.yml).
 DENY_WARNINGS := RUSTFLAGS="$(RUSTFLAGS) -D warnings"
 
+# The clippy lint set is defined once, in the `xclippy` cargo alias in
+# .cargo/config.toml, and extracted here so the check and fix paths cannot
+# drift apart. cargo-fixit (a faster drop-in for `cargo clippy --fix`) cannot
+# take lint flags as trailing arguments, so the fix path passes them via
+# RUSTFLAGS instead.
+CLIPPY_LINT_FLAGS := $(shell sed -n '/^xclippy = \[/,/^]/p' .cargo/config.toml | grep -oE '"-[WD][^"]+"' | tr -d '"' | tr '\n' ' ')
+
 .PHONY: clippy
 clippy: ## Runs Clippy with configs (alias for xclippy)
 	$(DENY_WARNINGS) cargo +stable xclippy
@@ -86,8 +96,16 @@ xclippy: ## Runs Clippy with custom lint config from .cargo/config.toml
 fix: xclippy-fix format ## Applies automatic lint and format fixes
 
 .PHONY: xclippy-fix
-xclippy-fix: ## Runs Clippy with --fix using the same lints as xclippy
-	cargo +stable xclippy-fix
+xclippy-fix: ## Applies clippy lint fixes via cargo-fixit (a faster `cargo clippy --fix`)
+	@if ! command -v cargo-fixit >/dev/null 2>&1; then \
+		echo "cargo-fixit is not installed; skipping clippy lint fixes." >&2; \
+		echo "It is a faster drop-in replacement for 'cargo clippy --fix'." >&2; \
+		echo "Install it with:  cargo install cargo-fixit --locked" >&2; \
+	else \
+		RUSTFLAGS="$(CLIPPY_LINT_FLAGS)" cargo +stable fixit --clippy \
+			--allow-dirty --allow-staged \
+			--workspace --all-targets --all-features; \
+	fi
 
 
 .PHONY: format
@@ -231,7 +249,7 @@ build: ## Builds with default parameters
 
 .PHONY: build-no-std
 build-no-std: ## Builds without the standard library
-	$(BUILDDOCS) cargo build --no-default-features --target wasm32-unknown-unknown --workspace \
+	$(BUILDDOCS) cargo build --no-default-features --target $(NO_STD_TARGET) --workspace \
 		--exclude miden-vm-blake3-bench \
 		--exclude miden-vm-synthetic-bench \
 		--exclude miden-crypto-smt-codspeed-bench \
@@ -248,9 +266,9 @@ test-wasm-simd: ## Runs the packed Goldilocks/Poseidon2 vs scalar tests under WA
 	RUSTFLAGS="-C target-feature=+simd128" \
 	cargo test -p miden-field -p miden-crypto --no-default-features --lib --target wasm32-wasip1 -- packed
 
-# wasm32-wasip1 refuses to spawn at runtime, so this is the fallback path running for real. Only
-# the span test is skipped -- it asserts the builder thread ran, which cannot hold where the spawn
-# is refused -- so equality tests added later are covered here without touching this target. A
+# wasm32-wasip1 refuses to spawn at runtime, so this runs the compact fallback for real. Only the
+# span test is skipped -- it asserts a Rayon worker ran, which cannot hold where threads are
+# unavailable -- so equality tests added later are covered here without touching this target. A
 # passing run is not enough to trust: libtest exits 0 when a filter selects nothing, so a zero-test
 # run would otherwise leave this green while guarding nothing.
 .PHONY: test-wasm-threadless
@@ -310,6 +328,14 @@ exec-sve: ## Builds an executable with SVE acceleration enabled
 regenerate-constraints: ## Regenerate the checked-in constraint artifacts (MASM circuit + evaluator)
 	cargo run --package miden-core-lib --features constraints-tools --bin regenerate-constraints -- --write
 	cargo run --package miden-core-lib --features constraints-tools --bin regenerate-evaluator -- --write
+
+.PHONY: regenerate-pvm-registry
+regenerate-pvm-registry: ## Regenerate PVM registry and MASM artifacts (~2 min; protocol break)
+	cargo run --release --package miden-precompiles-prover --features registry-tools --bin pvm-registry-regen -- --write
+
+.PHONY: check-pvm-registry
+check-pvm-registry: ## Check PVM registry and MASM artifacts for drift (full recompute)
+	cargo run --release --package miden-precompiles-prover --features registry-tools --bin pvm-registry-regen -- --check
 
 .PHONY: check-constraints
 check-constraints: ## Check the checked-in constraint artifacts for drift
@@ -415,6 +441,7 @@ fuzz-all: fuzz-seeds ## Run all fuzz targets (in sequence)
 	cargo +nightly fuzz run operation_serde_deserialize --release --fuzz-dir tools/miden-core-fuzz -- -max_total_time=300 || FAILED=1; \
 	cargo +nightly fuzz run execution_proof_deserialize --release --fuzz-dir tools/miden-core-fuzz -- -max_total_time=300 || FAILED=1; \
 	cargo +nightly fuzz run execution_proof_serde_deserialize --release --fuzz-dir tools/miden-core-fuzz -- -max_total_time=300 || FAILED=1; \
+	cargo +nightly fuzz run execution_witness_deserialize --release --fuzz-dir tools/miden-core-fuzz -- -max_total_time=300 || FAILED=1; \
 	cargo +nightly fuzz run deferred_state_wire_deserialize --release --fuzz-dir tools/miden-core-fuzz -- -max_total_time=300 || FAILED=1; \
 	cargo +nightly fuzz run deferred_state_wire_serde_deserialize --release --fuzz-dir tools/miden-core-fuzz -- -max_total_time=300 || FAILED=1; \
 	cargo +nightly fuzz run package_deserialize --release --fuzz-dir tools/miden-core-fuzz -- -max_total_time=300 || FAILED=1; \
@@ -437,3 +464,4 @@ fuzz-coverage: ## Generate coverage report for fuzz targets
 fuzz-seeds: ## Generate seed corpus files for fuzzing
 	cargo test -p miden-core generate_fuzz_seeds -- --ignored --nocapture
 	cargo test -p miden-mast-package generate_fuzz_seeds -- --ignored --nocapture
+	cargo test -p miden-vm --test miden-cli generate_execution_witness_fuzz_seeds -- --ignored --nocapture

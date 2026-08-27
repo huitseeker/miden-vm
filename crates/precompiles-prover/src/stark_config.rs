@@ -37,22 +37,20 @@ pub type PackedFelt = <Felt as Field>::Packing;
 /// Number of inputs to the Merkle compression function.
 const COMPRESSION_INPUTS: usize = 2;
 
-// DOMAIN-SEPARATED FIAT-SHAMIR TRANSCRIPT
-// ================================================================================================
-
-/// PRECOMPILE_RELATION_DIGEST = Poseidon2::hash_elements([PROTOCOL_ID, CIRCUIT_COMMITMENT]).
+/// Relation digest binding the PVM ACE registry root into the Fiat-Shamir transcript.
 ///
-/// Compile-time constant binding the Fiat-Shamir transcript to the canonical per-AIR ACE
-/// circuit generated in `ChipletAir::all()` order. Cross-chiplet external assertions
-/// (`ChipletMultiAir::eval_external`) and trace-height-derived proof order are checked by
-/// the lifted STARK protocol outside this circuit hash.
-/// Keep this in sync with [`crate::ace::build_precompile_multi_air_ace_circuit`].
-pub const PRECOMPILE_RELATION_DIGEST: RelationDigest = [
-    Felt::new_unchecked(15901056294547705196),
-    Felt::new_unchecked(13548154566962352054),
-    Felt::new_unchecked(13148050606838836712),
-    Felt::new_unchecked(2433548564999773594),
-];
+/// The generated raw limbs live with the registry data; this public field-valued view is the
+/// value passed to every production PVM configuration.
+pub const PRECOMPILE_RELATION_DIGEST: RelationDigest = {
+    let [d0, d1, d2, d3] = crate::ace_registry::PVM_RELATION_DIGEST;
+    [
+        Felt::new_unchecked(d0),
+        Felt::new_unchecked(d1),
+        Felt::new_unchecked(d2),
+        Felt::new_unchecked(d3),
+    ]
+};
+
 /// Default hash function for compatibility APIs such as
 /// [`SessionTraces::prove`](crate::session::SessionTraces::prove).
 pub const DEFAULT_HASH_FUNCTION: miden_core::proof::HashFunction =
@@ -64,15 +62,15 @@ pub const DEFAULT_HASH_FUNCTION: miden_core::proof::HashFunction =
 /// PCS parameters for the precompile chiplet stack.
 ///
 /// Mirrors `miden_air::config::pcs_params` in every parameter, including
-/// `log_blowup = 3`. It exists as its own function to decouple the
-/// precompile stack's PCS config from the core VM's, since the two need not
-/// evolve together: every chiplet AIR in
+/// `log_blowup = 3`. It exists as its own function so the Rust prover and
+/// verifier bind the actual PVM parameters into their transcript rather than
+/// relying on the core VM's defaults. Every chiplet AIR in
 /// [`ChipletAir`](crate::session::ChipletAir) closes at a `log_quotient_degree`
 /// well under the core VM's degree-8 constraints (see the
-/// `log_quotient_degrees_fit_the_blowup` test), so `log_blowup` could be
-/// lowered independently of the core VM in the future. That has not been done
-/// here, and doing so would need a dedicated security review of the
-/// resulting FRI parameters before use outside benchmarking.
+/// `ace::tests::quotient_chunks_match_the_symbolic_derivation` test), so `log_blowup` could be
+/// lowered in principle. The MASM verifier compiles the current PCS geometry,
+/// so changing it requires a coordinated MASM update and a dedicated security
+/// review; it is not an independently mutable runtime configuration.
 pub fn precompile_pcs_params() -> PcsParams {
     PcsParams::new(
         3,  // log_blowup (must be >= log_quotient_degree)
@@ -161,53 +159,4 @@ pub fn test_lmcs() -> Lmcs {
 /// Create the full legacy test STARK configuration.
 pub fn test_config() -> TestConfig {
     GenericStarkConfig::new(test_pcs_params(), test_lmcs(), Dft::default(), test_challenger())
-}
-
-#[cfg(test)]
-mod tests {
-    extern crate alloc;
-    use alloc::{format, vec::Vec};
-
-    use miden_ace_codegen::{AceConfig, LayoutKind};
-    use miden_core::{Felt, crypto::hash::Poseidon2};
-
-    use crate::{ace, session::NUM_CHIPLETS};
-
-    const PROTOCOL_ID: u64 = 0;
-    const REGEN_HINT: &str = "update PRECOMPILE_RELATION_DIGEST in crates/precompiles-prover/src/stark_config.rs and accept the insta snapshot";
-
-    /// Snapshot test: catches any precompile chiplet AIR change that alters the constraint circuit.
-    #[test]
-    fn precompile_relation_digest_matches_current_air() {
-        let config = AceConfig {
-            num_quotient_chunks: 8,
-            layout: LayoutKind::Masm,
-            num_airs: NUM_CHIPLETS,
-        };
-        let circuit = ace::build_precompile_multi_air_ace_circuit(config).unwrap();
-        let encoded = circuit.to_ace().unwrap();
-        let circuit_commitment: [Felt; 4] = encoded.circuit_hash().into();
-
-        let input: Vec<Felt> = core::iter::once(Felt::new_unchecked(PROTOCOL_ID))
-            .chain(circuit_commitment.iter().copied())
-            .collect();
-        let digest = Poseidon2::hash_elements(&input);
-        let expected: Vec<u64> = digest.as_elements().iter().map(Felt::as_canonical_u64).collect();
-
-        let snapshot = format!(
-            "num_inputs: {}\nnum_eval_gates: {}\nstream_len: {}\nrelation_digest: {:?}",
-            encoded.num_vars(),
-            encoded.num_eval_rows(),
-            encoded.size_in_felt(),
-            expected,
-        );
-        insta::assert_snapshot!(snapshot);
-
-        let actual: Vec<u64> =
-            super::PRECOMPILE_RELATION_DIGEST.iter().map(Felt::as_canonical_u64).collect();
-        assert_eq!(
-            actual, expected,
-            "PRECOMPILE_RELATION_DIGEST in stark_config.rs is stale; {REGEN_HINT}"
-        );
-    }
 }

@@ -1,8 +1,5 @@
 use core::fmt;
 
-#[cfg(feature = "serde")]
-use serde::{Deserialize, Serialize};
-
 mod debug_metadata;
 pub use debug_metadata::AssemblyOp;
 
@@ -139,7 +136,6 @@ pub mod opcodes {
 /// Note though that those operations have their own unique opcode which lives in the same 7-bit
 /// opcode space as the basic block operations.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[repr(u8)]
 pub enum Operation {
     // ----- system operations -------------------------------------------------------------------
@@ -174,7 +170,8 @@ pub enum Operation {
     ///   assembly (`emit.event("...")` or `emit.CONST` where `CONST=event("...")`).
     /// - System events are identified by reserved [`SystemEvent`](crate::events::SystemEvent) IDs.
     ///   Most are handled by the VM; `SystemEvent::TraceEvent` triggers the host's optional
-    ///   read-only trace handler for the trace event id at stack position 1.
+    ///   read-only trace handler for the trace event id at stack position 1. Assembly exposes this
+    ///   through `trace`, `trace.CONST`, and `trace.event("...")`.
     /// - Any non system event ID is forwarded to the host's regular event handler.
     ///
     /// This operation does not change the state of the user stack aside from reading the value.
