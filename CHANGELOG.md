@@ -1,4 +1,15 @@
 # Changelog
+
+## v0.31.0 (TBD)
+
+#### Features
+
+- [BREAKING] Added a conjectured security estimator for the main VM and the precompiles VM ([#3688](https://github.com/0xMiden/miden-vm/pull/3688)).
+
+#### Changes
+
+#### Fixes
+
 ## v0.30.0 (2026-08-26)
 
 #### Features
