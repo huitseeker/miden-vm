@@ -123,7 +123,7 @@ async fn run_settlement_in_masm(
     deferred_state: DeferredState,
 ) -> Result<SettlementResult, miden_processor::ExecutionError> {
     let vm = RecursiveVerifierInputs::for_request(
-        core_lib.recursive_verifier_root(),
+        core_lib.vm_recursive_verifier_root(),
         deferred_proof,
         claim,
     )
@@ -152,34 +152,29 @@ async fn run_settlement_in_masm(
 fn assemble_settlement_program(core_lib: &CoreLibrary) -> miden_processor::Program {
     let source = "
         use miden::core::sys
-        use miden::core::stark::constants
-        use miden::core::stark::utils
+        use miden::core::stark::security
         use miden::core::sys::pvm
         use miden::core::sys::vm
-        use miden::core::sys::vm::layout
 
         begin
             dupw
-            procref.vm::verify_vm_proof exec.sys::build_proof_request_key
+            procref.vm::verify_proof exec.sys::build_proof_request_key
             adv.push_mapval dropw
-            exec.vm::verify_vm_proof
+            exec.vm::verify_proof
 
-            # Accept the MVM proof while retaining its authenticated deferred root. The computed
-            # security level also depends on the proof's largest AIR trace height and kernel
-            # procedure count, which the verifier left in its own memory.
-            swapw
-            exec.constants::get_trace_length_log movdn.4
-            exec.layout::num_kernel_procedures_ptr mem_load movdn.5
-            exec.vm::compute_conjectured_security_level
+            # Estimate the MVM proof's security while retaining its authenticated deferred root.
+            # The same estimator accepts the descriptor returned by either verifier.
+            exec.security::compute_conjectured_security_level
             u32lt.96 assertz
 
             # Execution awaits the host here. request_proof installs the returned package on the
             # advice stack; the response remains untrusted until verify_proof passes.
             exec.pvm::request_proof
             exec.pvm::verify_proof
-            exec.utils::conjectured_security_level
+
+            # Estimate the PVM proof from its relation-specific descriptor values.
+            exec.security::compute_conjectured_security_level
             u32lt.96 assertz
-            drop drop
             exec.sys::truncate_stack
         end
         ";

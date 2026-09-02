@@ -170,11 +170,11 @@ represent inconsistent artifacts. None of these operations establishes validity.
 
 `Verifier::verify_precompile` validates the precompile proof shape, expected root membership,
 ordered aggregate folding, and the precompile STARK. It can validate a precompile artifact against
-an expected outstanding root and returns the artifact's security level. `Verifier::verify` checks
-the proof's compatibility declaration and execution lifecycle before it verifies the VM STARK. It
-reuses `verify_precompile` for complete proofs. A successful deferred verification returns only the
-authenticated outstanding VM root. A successful complete verification has no outstanding
-obligation.
+an expected outstanding root and returns its authenticated security parameters. `Verifier::verify`
+checks the proof's compatibility declaration and execution lifecycle before it verifies the VM
+STARK. It reuses `verify_precompile` for complete proofs. A successful deferred verification returns
+the authenticated VM security parameters and outstanding root. A successful complete verification
+also returns the PVM security parameters and has no outstanding obligation.
 
 
 ## Transport and limits
@@ -203,7 +203,7 @@ The shortest canonical singleton `PrecompileProof` is 35 bytes; a vector of two 
 
 Recursive VM verification packages the unchanged proof stream under
 `proof_request_key(verifier_root, claim_commitment)`. The consumer derives the same key from the
-claim commitment and `verify_vm_proof` procedure root, fetches the stream with
-`adv.push_mapval`, and then invokes `verify_vm_proof`. Claim and kernel preimages remain
+claim commitment and `vm::verify_proof` procedure root, fetches the stream with
+`adv.push_mapval`, and then invokes `vm::verify_proof`. Claim and kernel preimages remain
 separately content-addressed; no proof values are copied into claim memory. Recursive verification
 authenticates and returns the VM root but does not settle precompile work.
