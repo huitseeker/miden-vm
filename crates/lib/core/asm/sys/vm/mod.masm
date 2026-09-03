@@ -7,9 +7,25 @@ pub mod ood_frames
 pub mod public_inputs
 
 use miden::core::mem
-use miden::core::stark::utils
 use miden::core::stark::constants
+use miden::core::stark::utils
 use miden::core::stark::verifier
+
+# Relation constants returned with the transcript-bound proof parameters. `LOOKUP_POW_BITS` is
+# zero because Lifted STARK does not grind lookup challenges.
+const LOOKUP_POW_BITS = 0
+const MAX_MESSAGE_WIDTH = 16
+const NUM_COMPOSED_CONSTRAINTS = 427
+const MAX_CONSTRAINT_DEGREE = 9
+const NUM_DEEP_TERMS = 138
+const LOOKUP_FRACTIONS_PER_ROW = 28     # matches AIR_SHAPE.lookup.fractions_per_row
+const CORE_BOUNDARY_LOOKUP_TERMS = 3    # emit_core_boundary: block-hash seed + 2 log-deferred terms
+
+# Bounds on an AIR log trace height, matching `assert_shape_log`. They reject invalid relation
+# shapes before a security descriptor is constructed and keep its fixed-point arithmetic in the
+# common estimator's supported u32 domain.
+const LOG_HEIGHT_MIN = 6
+const LOG_HEIGHT_MAX = 29
 
 # Offset of K in the P | K | I | O claim encoding.
 const KERNEL_COMMITMENT_OFFSET = 4
@@ -79,8 +95,8 @@ end
 
 proc assert_shape_log
     dup u32assert.err="AIR log height must be u32"
-    dup u32gt.5 assert.err="AIR log height below minimum"
-    dup u32lt.30 assert.err="AIR log height above maximum"
+    dup u32gte.LOG_HEIGHT_MIN assert.err="AIR log height below minimum"
+    dup u32lte.LOG_HEIGHT_MAX assert.err="AIR log height above maximum"
     drop
 end
 
@@ -234,25 +250,53 @@ proc materialize_kernel_witness
     # => [...]
 end
 
-#! Verifies a STARK proof of the execution claim named by the caller-provided commitment and
-#! returns the deferred obligation and transcript-bound security parameters.
+#! Builds the common security descriptor from the four transcript-bound proof parameters returned
+#! by the generic STARK verifier and the MVM relation data.
+#!
+#! The AIR shape and per-row lookup count are fixed by this relation. The one-time lookup boundary
+#! count is `CORE_BOUNDARY_LOOKUP_TERMS + num_kernel_procedures`; the latter was derived from the
+#! kernel witness and authenticated against the claim's kernel commitment before proof
+#! verification.
+#!
+#! Inputs:  [num_queries, query_pow_bits, deep_pow_bits, folding_pow_bits, ...]
+#! Outputs: [lookup_pow_bits, num_composed_constraints, max_constraint_degree, num_deep_terms,
+#!          max_message_width, num_lookup_boundary_terms, lookup_fractions_per_row,
+#!          log_max_height, num_queries, query_pow_bits, deep_pow_bits, folding_pow_bits, ...]
+proc build_security_descriptor
+    exec.constants::get_trace_length_log
+    push.LOOKUP_FRACTIONS_PER_ROW
+    exec.layout::num_kernel_procedures_ptr mem_load
+    add.CORE_BOUNDARY_LOOKUP_TERMS
+    push.MAX_MESSAGE_WIDTH
+    push.NUM_DEEP_TERMS
+    push.MAX_CONSTRAINT_DEGREE
+    push.NUM_COMPOSED_CONSTRAINTS
+    push.LOOKUP_POW_BITS
+end
+
+#! Verifies a lifted-STARK proof of the Miden VM execution claim named by the caller-provided
+#! commitment and returns the common security descriptor followed by the deferred obligation.
 #!
 #! The claim preimage is fetched from the advice map under the caller-provided claim commitment,
 #! authenticated, and stored in verifier-owned memory. The proof is consumed from the advice
 #! stack; request keys name this procedure's MAST root
-#! (`CoreLibrary::recursive_verifier_root` on the operator side). A consumer that fetches the
+#! (`CoreLibrary::vm_recursive_verifier_root` on the operator side). A consumer that fetches the
 #! proof by content derives the identical root in-VM via `procref` of this procedure, computes
 #! `proof_request_key(verifier_root, claim_commitment)` with `sys::build_proof_request_key`, and
 #! moves the registered proof package onto the advice stack before calling it.
 #!
-#! Security parameters (num_queries, query_pow_bits, deep_pow_bits, folding_pow_bits) are loaded
-#! from the advice stack and stored in memory for the generic verifier, which enforces their
-#! structural bounds and binds them into the Fiat-Shamir transcript - so a proof cannot claim
-#! parameters it was not produced with. This procedure holds no security-estimate formula and
-#! no acceptance policy: it returns the transcript-bound parameters for the caller to grade (e.g.
-#! with `stark::utils::conjectured_security_level`) under its own policy. An estimate or policy
-#! change therefore never moves this procedure's root - request keys and registered proof packages
-#! stay valid across such changes.
+#! The four proof parameters are loaded from advice, structurally validated, and bound into the
+#! Fiat-Shamir transcript. The maximum trace height is likewise transcript-bound. The remaining
+#! descriptor fields are fixed by this verifier's relation, except for the boundary count derived
+#! from the kernel witness authenticated against the claim. The caller passes the returned twelve
+#! elements unchanged to `stark::security::compute_conjectured_security_level`, then applies its
+#! own acceptance policy. The estimation formula and policy remain outside this procedure.
+#! Changing only the formula therefore changes the estimator root without changing this verifier's
+#! root. A change to the proof format or to any value supplied by the verifier still changes this
+#! procedure.
+#!
+#! This verifier accepts 7..=150 queries, 0..=31 query/DEEP/folding grinding bits, fixed zero
+#! lookup grinding, 6..=29 for every AIR log trace height, and 0..=255 kernel procedures.
 #!
 #! The claim preimage is encoded as `P (+0) | K (+4) | I (+8) | O (+24)`. The verifier checks its
 #! commitment before using these values as AIR public inputs.
@@ -265,19 +309,31 @@ end
 #! include it in its own statement. `D == TRUE_DIGEST` means no deferred statements were logged.
 #!
 #! Inputs:  [CLAIM_COMMITMENT, ...]
-#! Outputs: [D, num_queries, query_pow_bits, deep_pow_bits, folding_pow_bits, ...]
+#! Outputs: [lookup_pow_bits, num_composed_constraints, max_constraint_degree, num_deep_terms,
+#!           max_message_width, num_lookup_boundary_terms, lookup_fractions_per_row,
+#!           log_max_height, num_queries, query_pow_bits, deep_pow_bits, folding_pow_bits, D, ...]
 #!
 #! Where:
 #! - CLAIM_COMMITMENT is supplied by the caller and binds the advice-supplied claim preimage.
+#! - The first twelve elements are the common security descriptor documented by
+#!   `stark::security::compute_conjectured_security_level`.
 #! - D is the deferred root bound by the verified statement.
-#! - num_queries, query_pow_bits, deep_pow_bits, folding_pow_bits are the proof's
-#!   transcript-bound security parameters.
-pub proc verify_vm_proof(claim_commitment: word) -> (
-    deferred_root: word,
+#!
+#! Invocation: exec
+pub proc verify_proof(claim_commitment: word) -> (
+    lookup_pow_bits: u32,
+    num_composed_constraints: u32,
+    max_constraint_degree: u32,
+    num_deep_terms: u32,
+    max_message_width: u32,
+    num_lookup_boundary_terms: u32,
+    lookup_fractions_per_row: u32,
+    log_max_height: u32,
     num_queries: u32,
     query_pow_bits: u32,
     deep_pow_bits: u32,
     folding_pow_bits: u32,
+    deferred_root: word,
 )
     # --- Authenticate execution claim -----------------------------------------------------------
 
@@ -286,7 +342,7 @@ pub proc verify_vm_proof(claim_commitment: word) -> (
     exec.layout::claim_ptr exec.claim::materialize_claim
     # => [...]
 
-    # --- Prepare VM verifier state ---------------------------------------------------------------
+    # --- Prepare MVM verifier state --------------------------------------------------------------
 
     exec.utils::load_security_params
     exec.materialize_kernel_witness
@@ -295,6 +351,7 @@ pub proc verify_vm_proof(claim_commitment: word) -> (
 
     # --- Verify ----------------------------------------------------------------------------------
 
+    # Dynamic hook digests in the generic verifier's ABI order.
     procref.deep_queries::compute_deep_composition_polynomial_queries
     procref.constraints_eval::execute_constraint_evaluation_check
     procref.ood_frames::process_row_ood_evaluations
@@ -303,11 +360,14 @@ pub proc verify_vm_proof(claim_commitment: word) -> (
     # => [D0, D1, D2, D3, D4]
 
     exec.verifier::verify
-    # => [...]
+    # => [num_queries, query_pow_bits, deep_pow_bits, folding_pow_bits, ...]
 
     # --- Return result ---------------------------------------------------------------------------
 
-    # => [num_queries, query_pow_bits, deep_pow_bits, folding_pow_bits, ...]
     exec.public_inputs::load_deferred_root
     # => [D, num_queries, query_pow_bits, deep_pow_bits, folding_pow_bits, ...]
+    swapw
+    # => [num_queries, query_pow_bits, deep_pow_bits, folding_pow_bits, D, ...]
+    exec.build_security_descriptor
+    # => [security_descriptor, D, ...]
 end
