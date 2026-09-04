@@ -11,6 +11,7 @@
 - [BREAKING] Bumped Plonky3 related dependencies to v0.7.0 ([#3778](https://github.com/0xMiden/miden-vm/pull/3778)).
 
 #### Fixes
+- Fixed stack overflow in the precompile prover's `translate_truthy`, `translate_uint`, and `translate_ec` by converting them from recursive to iterative post-order traversals. Programs with many `LOGDEFERRED` calls no longer crash ([#3626](https://github.com/0xMiden/miden-vm/issues/3626)).
 
 ## v0.31.1 (2026-09-04)
 
