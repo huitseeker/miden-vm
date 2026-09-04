@@ -12,6 +12,16 @@
 
 #### Fixes
 
+## v0.31.1 (2026-09-04)
+
+#### Features
+
+#### Changes
+
+- Re-exported the security estimator types used in public proof APIs so downstream callers can name them through Miden crates ([#3774](https://github.com/0xMiden/miden-vm/pull/3774)).
+
+#### Fixes
+
 ## v0.31.0 (2026-09-02)
 
 #### Features
