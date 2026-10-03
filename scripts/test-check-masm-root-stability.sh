@@ -14,6 +14,9 @@ git -C "$test_repo" config user.name "MAST root gate test"
 git -C "$test_repo" config user.email "mast-root-gate@example.invalid"
 git -C "$test_repo" config commit.gpgsign false
 git -C "$test_repo" config tag.gpgsign false
+# Keep automatic Git maintenance from racing the EXIT trap's repository cleanup.
+git -C "$test_repo" config maintenance.auto false
+git -C "$test_repo" config gc.auto 0
 
 cp "$repo_root/scripts/check-masm-root-stability.sh" "$test_repo/scripts/"
 printf '// tag = "v0.35.0"\n' > "$test_repo/scripts/check-masm-export-digests.rs"
