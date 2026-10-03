@@ -49,4 +49,6 @@ jobs:
 
       - name: Audit dependencies
         working-directory: ./docs
-        run: npm audit
+        run: |
+          npm run test:audit
+          npm run audit:ci

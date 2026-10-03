@@ -8,12 +8,28 @@ Use Node.js 22 to install and build the preview:
 cd docs
 npm ci
 npm run build:dev
-npm audit
+npm run test:audit
+npm run audit:ci
 ```
 
 The `.npmrc` disables dependency install scripts. The docs build works without
 them. Package code still runs during the build, so dependency review remains
 necessary.
+
+The CI audit temporarily accepts two unpatched advisories until November 3,
+2026. [GHSA-vfj7-8cjw-p6xm](https://github.com/advisories/GHSA-vfj7-8cjw-p6xm)
+affects `braces` 3.0.3, which handles file patterns in the build tooling.
+[GHSA-ch52-4w7c-c8xp](https://github.com/advisories/GHSA-ch52-4w7c-c8xp)
+affects `http-cache-semantics` 4.2.0 through the CLI's update notifier. This
+preview generates static files and does not operate a shared HTTP cache or
+accept file patterns from site visitors. These exceptions cover this docs
+preview only. They do not make the dependencies safe for other uses.
+
+`scripts/audit.mjs` checks the advisory IDs and every affected locked version.
+It also accepts findings inherited solely from those advisories, prints the
+full npm report, and fails when an exception expires or a patched release is
+reported. Other advisories still fail CI. Run `npm audit` to see the raw report
+and remove the exceptions when upstream publishes fixes.
 
 The preview uses the docs plugin and classic theme directly. Installing the
 classic preset also pulls in unused analytics and Algolia search integrations,
