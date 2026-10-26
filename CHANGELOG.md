@@ -4,6 +4,7 @@
 
 #### Changes
 
+- [BREAKING] The proving service requires exactly one request message for proving and health RPCs. It rejects trailing messages and bounds aggregate uploads by the configured message limit plus the five-byte gRPC header.
 - Removed the `provenance` requirement from synthetic benchmark snapshots ([#4084](https://github.com/0xMiden/miden-vm/pull/4084)).
 - Refactored VM/PVM recursive-verifier MASM to use generated parameter modules. PVM fixed-environment LogUp correction code is generated from native bus message records and MASM templates ([#4088](https://github.com/0xMiden/miden-vm/pull/4088)).
 - Added `Prover::with_hash_lde_blocks` to enable blockwise LDE hashing ([#4075](https://github.com/0xMiden/miden-vm/pull/4075)).

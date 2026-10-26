@@ -26,6 +26,7 @@ members = [
     "crates/package-registry-local",
     "crates/miden-format",
     "crates/project",
+    "crates/prover-service",
     "crates/serde-utils",
     "crates/stark-transcript",
     "crates/stateful-hasher",
