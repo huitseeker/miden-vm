@@ -55,6 +55,7 @@ MIRAI_MANIFESTS := \
 	crates/stark/vm/Cargo.toml \
 	crates/ace/Cargo.toml \
 	crates/air/source/Cargo.toml \
+	crates/miden-constraint-compiler/Cargo.toml \
 	core/Cargo.toml \
 	crates/assembly-syntax/Cargo.toml \
 	crates/assembly/Cargo.toml \
@@ -62,6 +63,7 @@ MIRAI_MANIFESTS := \
 	verifier/Cargo.toml \
 	prover/Cargo.toml \
 	miden-vm/Cargo.toml
+MIRAI_AIR_ROOTS := $(shell grep -oE 'verify_(core|chiplets|eidos_compression|and8_lookup)_air_[a-z_0-9]+' crates/air/source/src/vm/mirai_air.rs | sort -u)
 
 # Feature sets for executable builds
 FEATURES_CONCURRENT_EXEC := --features concurrent,executable
@@ -148,12 +150,31 @@ shear: ## Runs cargo-shear to find unused or misplaced dependencies
 lint: xclippy format-check shear ## Runs all lint checks without modifying files
 
 .PHONY: mirai
-mirai: ## Runs MIRAI on the production library crates and fails on MIRAI diagnostics
+mirai: mirai-air-inputs ## Runs MIRAI on the production library crates and fails on MIRAI diagnostics
 	@status=0; \
 	for manifest in $(MIRAI_MANIFESTS); do \
 		log_file=$$(mktemp); \
 		echo "MIRAI $$manifest"; \
 		if ! MIRAI_LOG=$(MIRAI_LOG_LEVEL) cargo +$(MIRAI_TOOLCHAIN) mirai --manifest-path "$$manifest" --lib >"$$log_file" 2>&1; then \
+			status=1; \
+		fi; \
+		cat "$$log_file"; \
+		if grep -qF 'warning: [MIRAI]' "$$log_file"; then \
+			status=1; \
+		fi; \
+		rm -f "$$log_file"; \
+	done; \
+	exit $$status
+
+.PHONY: mirai-air-inputs
+mirai-air-inputs: ## Checks that every prover-committed AIR input reaches a constraint
+	@status=0; \
+	for root in $(MIRAI_AIR_ROOTS); do \
+		log_file=$$(mktemp); \
+		echo "MIRAI crates/air/source/src/vm/mirai_air.rs $$root"; \
+		touch crates/air/source/src/vm/mirai_air.rs; \
+		if ! MIRAI_LOG=$(MIRAI_LOG_LEVEL) MIRAI_FLAGS="$${MIRAI_FLAGS:+$$MIRAI_FLAGS }--single_func=miden_air_definitions.vm.mirai_air.$$root" \
+			cargo +$(MIRAI_TOOLCHAIN) mirai --quiet --manifest-path crates/air/source/Cargo.toml --lib >"$$log_file" 2>&1; then \
 			status=1; \
 		fi; \
 		cat "$$log_file"; \

@@ -12,6 +12,7 @@
 //!
 //! See [`super::message`] for the standard coefficient index layout.
 
+#[cfg(not(mirai))]
 use alloc::{boxed::Box, vec::Vec};
 use core::ops::{AddAssign, Mul};
 
@@ -36,10 +37,16 @@ use miden_crypto::field::PrimeCharacteristicRing;
 /// [`LookupAir`]: crate::lookup::LookupAir
 pub struct Challenges<EF: PrimeCharacteristicRing> {
     pub alpha: EF,
+    #[cfg(not(mirai))]
     pub beta_powers: Box<[EF]>,
+    #[cfg(mirai)]
+    pub beta_powers: [EF; 16],
     /// Per-bus domain separation: `bus_prefix[i] = alpha + (i+1) * gamma`
     /// where `gamma = beta^max_message_width`.
+    #[cfg(not(mirai))]
     pub bus_prefix: Box<[EF]>,
+    #[cfg(mirai)]
+    pub bus_prefix: [EF; 32],
 }
 
 impl<EF: PrimeCharacteristicRing> Challenges<EF> {
@@ -55,21 +62,37 @@ impl<EF: PrimeCharacteristicRing> Challenges<EF> {
         assert!(max_message_width > 0, "max_message_width must be non-zero");
         assert!(num_bus_ids > 0, "num_bus_ids must be non-zero");
 
-        let mut beta_powers: Vec<EF> = Vec::with_capacity(max_message_width);
-        beta_powers.push(EF::ONE);
-        for i in 1..max_message_width {
-            beta_powers.push(beta_powers[i - 1].clone() * beta.clone());
-        }
-        let beta_powers = beta_powers.into_boxed_slice();
+        #[cfg(not(mirai))]
+        let beta_powers = {
+            let mut beta_powers: Vec<EF> = Vec::with_capacity(max_message_width);
+            beta_powers.push(EF::ONE);
+            for i in 1..max_message_width {
+                beta_powers.push(beta_powers[i - 1].clone() * beta.clone());
+            }
+            beta_powers.into_boxed_slice()
+        };
+
+        #[cfg(mirai)]
+        let beta_powers = core::array::from_fn(|_| beta.clone());
 
         // gamma = beta^max_message_width (one power beyond the message range)
+        #[cfg(not(mirai))]
         let gamma = beta_powers[max_message_width - 1].clone() * beta;
 
+        #[cfg(not(mirai))]
         let bus_prefix: Box<[EF]> = (0..num_bus_ids)
             .map(|i| alpha.clone() + gamma.clone() * EF::from_u32((i as u32) + 1))
             .collect();
 
-        Self { alpha, beta_powers, bus_prefix }
+        #[cfg(mirai)]
+        let bus_prefix = core::array::from_fn(|_| alpha.clone());
+        mirai_annotations::checked_assume!(max_message_width <= beta_powers.len());
+        mirai_annotations::checked_assume!(num_bus_ids <= bus_prefix.len());
+
+        let result = Self { alpha, beta_powers, bus_prefix };
+        mirai_annotations::postcondition!(max_message_width <= result.beta_powers.len());
+        mirai_annotations::postcondition!(num_bus_ids <= result.bus_prefix.len());
+        result
     }
 
     /// Encodes as **bus_prefix\[bus\] + sum(beta_powers\[i\] * elem\[i\])** with K consecutive
@@ -108,16 +131,20 @@ impl<EF: PrimeCharacteristicRing> Challenges<EF> {
     where
         EF: Mul<BF, Output = EF> + AddAssign,
     {
+        mirai_annotations::checked_assume!(offset <= self.beta_powers.len());
+        mirai_annotations::checked_assume!(
+            elems.len() <= self.beta_powers.len().saturating_sub(offset)
+        );
         debug_assert!(
-            offset + elems.len() <= self.beta_powers.len(),
+            elems.len() <= self.beta_powers.len().saturating_sub(offset),
             "inner_product_at range {}..{} exceeds beta_powers length ({})",
             offset,
-            offset + elems.len(),
+            offset.saturating_add(elems.len()),
             self.beta_powers.len(),
         );
         let mut acc = EF::ZERO;
-        for (i, elem) in elems.iter().enumerate() {
-            acc += self.beta_powers[offset + i].clone() * elem.clone();
+        for (beta, elem) in self.beta_powers[offset..].iter().zip(elems) {
+            acc += beta.clone() * elem.clone();
         }
         acc
     }

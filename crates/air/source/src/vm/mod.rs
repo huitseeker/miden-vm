@@ -8,6 +8,8 @@ mod inputs;
 pub mod logup;
 #[cfg(test)]
 mod lookup_tests;
+#[cfg(mirai)]
+pub mod mirai_air;
 mod proof_order;
 pub mod statement;
 pub mod trace;
