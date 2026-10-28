@@ -679,14 +679,23 @@ impl TryFrom<&[Felt]> for Word {
 }
 
 #[cfg(not(all(target_family = "wasm", miden)))]
-impl TryFrom<&str> for Word {
-    type Error = WordError;
+impl core::str::FromStr for Word {
+    type Err = WordError;
 
     /// Expects the string to start with `0x`.
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
         crate::utils::hex_to_bytes::<{ Word::SERIALIZED_SIZE }>(value)
             .map_err(WordError::HexParse)
             .and_then(Word::try_from)
+    }
+}
+
+#[cfg(not(all(target_family = "wasm", miden)))]
+impl TryFrom<&str> for Word {
+    type Error = WordError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        value.parse()
     }
 }
 

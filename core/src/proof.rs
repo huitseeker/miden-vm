@@ -94,16 +94,24 @@ impl TryFrom<u8> for HashFunction {
     }
 }
 
-impl TryFrom<&str> for HashFunction {
-    type Error = InvalidHashFunctionError;
+impl core::str::FromStr for HashFunction {
+    type Err = InvalidHashFunctionError;
 
-    fn try_from(hash_fn_str: &str) -> Result<Self, Self::Error> {
+    fn from_str(hash_fn_str: &str) -> Result<Self, Self::Err> {
         match hash_fn_str {
             "blake3-256" => Ok(Self::Blake3_256),
             "keccak" => Ok(Self::Keccak),
             "eidos" => Ok(Self::Eidos),
             _ => Err(InvalidHashFunctionError { hash_function: hash_fn_str.to_string() }),
         }
+    }
+}
+
+impl TryFrom<&str> for HashFunction {
+    type Error = InvalidHashFunctionError;
+
+    fn try_from(hash_fn_str: &str) -> Result<Self, Self::Error> {
+        hash_fn_str.parse()
     }
 }
 
@@ -625,6 +633,22 @@ mod tests {
             assert!(HashFunction::read_from_bytes(&[tag]).is_err());
             assert!(HashFunction::try_from(name).is_err());
         }
+    }
+
+    #[test]
+    fn hash_function_string_parsing_preserves_try_from() {
+        for (name, expected) in [
+            ("blake3-256", HashFunction::Blake3_256),
+            ("rpo", HashFunction::Rpo256),
+            ("rpx", HashFunction::Rpx256),
+            ("poseidon2", HashFunction::Poseidon2),
+            ("keccak", HashFunction::Keccak),
+        ] {
+            assert_eq!(name.parse(), Ok(expected));
+            assert_eq!(HashFunction::try_from(name), Ok(expected));
+        }
+
+        assert!("unknown".parse::<HashFunction>().is_err());
     }
 
     fn root(value: u64) -> DeferredRoot {

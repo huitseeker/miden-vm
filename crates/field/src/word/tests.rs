@@ -232,6 +232,7 @@ fn word_macro(#[case] input: &str) {
     // Word::try_from(String) implementation.
     let padded_input = format!("{input:<66}").replace(" ", "0");
     let expected = Word::try_from(padded_input.as_str()).unwrap();
+    assert_eq!(padded_input.parse::<Word>().unwrap(), expected);
 
     assert_eq!(uut, expected);
 }

@@ -122,10 +122,10 @@ impl<const N: usize> From<Digest<N>> for String {
     }
 }
 
-impl<const N: usize> TryFrom<&str> for Digest<N> {
-    type Error = HexParseError;
+impl<const N: usize> core::str::FromStr for Digest<N> {
+    type Err = HexParseError;
 
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
         if N == DIGEST192_BYTES {
             let short_len = (DIGEST192_BYTES * 2) + 2;
             let long_len = (DIGEST256_BYTES * 2) + 2;
@@ -149,6 +149,14 @@ impl<const N: usize> TryFrom<&str> for Digest<N> {
         }
 
         hex_to_bytes(value).map(Self)
+    }
+}
+
+impl<const N: usize> TryFrom<&str> for Digest<N> {
+    type Error = HexParseError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        value.parse()
     }
 }
 
@@ -246,6 +254,7 @@ mod tests {
         let digest = Digest::<32>::from(bytes);
         let hex: String = digest.into();
         let recovered = Digest::<32>::try_from(hex.as_str()).unwrap();
+        assert_eq!(hex.parse::<Digest<32>>().unwrap(), recovered);
         assert_eq!(recovered.as_bytes(), &bytes);
     }
 
