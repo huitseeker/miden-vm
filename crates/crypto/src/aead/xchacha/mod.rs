@@ -155,6 +155,9 @@ impl SecretKey {
         associated_data: &[u8],
         nonce: Nonce,
     ) -> Result<EncryptedData, EncryptionError> {
+        if data.len().checked_add(16).is_none() {
+            return Err(EncryptionError::FailedOperation);
+        }
         let payload = Payload { msg: data, aad: associated_data };
 
         let cipher = XChaCha20Poly1305::new(&self.0.into());

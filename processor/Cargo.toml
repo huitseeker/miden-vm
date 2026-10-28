@@ -46,6 +46,7 @@ miden-utils-indexing.workspace = true
 
 # External dependencies
 itertools.workspace = true
+mirai-annotations.workspace = true
 paste.workspace = true
 rayon.workspace = true
 tracing.workspace = true
@@ -67,3 +68,6 @@ proptest.workspace = true
 rand = { workspace = true, features = ["std", "thread_rng"] }
 rstest = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt"] }
+
+[lints]
+workspace = true

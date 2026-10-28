@@ -1,6 +1,7 @@
 use core::ops::ControlFlow;
 
 use miden_mast_package::debug_info::DebugSourceNodeId;
+use mirai_annotations::debug_checked_assume;
 
 use crate::{
     BaseHost, BreakReason, Stopper,
@@ -257,6 +258,7 @@ where
 
     // Execute operations in the batch one by one
     for (op_idx_in_batch, op) in batch.ops().iter().enumerate().skip(start_op_idx) {
+        debug_checked_assume!(batch_offset_in_block <= usize::MAX - op_idx_in_batch);
         let op_idx_in_block = batch_offset_in_block + op_idx_in_batch;
 
         state.tracer.start_clock_cycle(

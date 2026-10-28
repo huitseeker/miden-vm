@@ -17,6 +17,8 @@
 
 use alloc::vec::Vec;
 
+use mirai_annotations::debug_checked_assume;
+
 use super::NodeDataOffset;
 use crate::{
     mast::{BasicBlockNode, OP_BATCH_SIZE, OP_GROUP_SIZE, collect_immediate_placements},
@@ -151,6 +153,7 @@ fn unpack_indptr_deltas(packed: [u8; 4]) -> Result<[usize; 9], DeserializationEr
             )));
         }
 
+        debug_checked_assume!(indptr[i] <= usize::MAX - delta);
         indptr[i + 1] = indptr[i] + delta;
     }
 
@@ -233,7 +236,7 @@ impl BasicBlockDataDecoder<'_> {
 
         // Reconstruct OpBatch structures
         let mut op_batches: Vec<crate::mast::OpBatch> = Vec::with_capacity(num_batches);
-        let mut global_op_offset = 0;
+        let mut global_op_offset = 0usize;
 
         for (batch_idx, (indptr, padding)) in batch_indptrs.iter().zip(batch_padding).enumerate() {
             // Find the highest operation group index
@@ -241,7 +244,11 @@ impl BasicBlockDataDecoder<'_> {
 
             // Extract operations for this batch
             let batch_num_ops = indptr[highest_op_group];
-            let batch_ops_end = global_op_offset + batch_num_ops;
+            let batch_ops_end = global_op_offset.checked_add(batch_num_ops).ok_or_else(|| {
+                DeserializationError::InvalidValue(format!(
+                    "batch operation offset {global_op_offset} overflows with {batch_num_ops} operations"
+                ))
+            })?;
 
             // Validate that the batch doesn't exceed the operations array
             if batch_ops_end > operations.len() {

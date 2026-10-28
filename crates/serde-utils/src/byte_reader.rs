@@ -11,6 +11,9 @@ use core::cell::{Ref, RefCell};
 #[cfg(feature = "std")]
 use std::io::BufRead;
 
+#[cfg(feature = "std")]
+use mirai_annotations::debug_checked_assume;
+
 use crate::{Deserializable, DeserializationError};
 
 // BYTE READER TRAIT
@@ -397,7 +400,9 @@ impl<'a> ReadAdapter<'a> {
     /// Returns true if there is sufficient capacity remaining in `buf` to hold `n` bytes
     #[inline]
     fn has_remaining_capacity(&self, n: usize) -> bool {
-        let remaining = self.buf.capacity() - self.buffer().len();
+        let buffer_len = self.buffer().len();
+        debug_checked_assume!(buffer_len <= self.buf.capacity());
+        let remaining = self.buf.capacity() - buffer_len;
         remaining >= n
     }
 
@@ -529,6 +534,8 @@ impl ByteReader for ReadAdapter<'_> {
         // this will return an error if we hit EOF first
         self.buffer_at_least(len)?;
 
+        debug_checked_assume!(self.pos <= self.buf.len());
+        debug_checked_assume!(len <= self.buf.len() - self.pos);
         let slice = &self.buf[self.pos..(self.pos + len)];
         self.pos += len;
         Ok(slice)
@@ -551,6 +558,7 @@ impl ByteReader for ReadAdapter<'_> {
 
         // What about if we include what is in the local buffer and the reader's buffer?
         let reader_buffer_len = self.non_empty_reader_buffer().map(|b| b.len())?;
+        debug_checked_assume!(buffer_len <= usize::MAX - reader_buffer_len);
         let buffer_len = buffer_len + reader_buffer_len;
         if buffer_len >= num_bytes {
             return Ok(());

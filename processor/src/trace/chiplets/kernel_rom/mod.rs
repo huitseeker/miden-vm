@@ -2,6 +2,7 @@ use alloc::{collections::BTreeMap, vec};
 
 use miden_air_definitions::vm::trace::chiplets::KERNEL_ROM_TRACE_WIDTH;
 use miden_core::field::PrimeCharacteristicRing;
+use mirai_annotations::debug_checked_assume;
 
 use super::{ChipletTraceFragment, Felt, KernelDescriptor, Word as Digest, ZERO};
 use crate::errors::OperationError;
@@ -77,6 +78,7 @@ impl KernelRom {
             .get_mut(&proc_hash_bytes)
             .ok_or(OperationError::SyscallTargetNotInKernel { proc_root })?;
 
+        debug_checked_assume!(access_info.num_accesses < usize::MAX);
         access_info.num_accesses += 1;
         Ok(())
     }

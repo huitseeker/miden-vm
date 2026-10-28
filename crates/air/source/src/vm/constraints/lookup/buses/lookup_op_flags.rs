@@ -26,6 +26,7 @@ use miden_core::{
     field::{Algebra, PrimeCharacteristicRing},
     operations::opcodes,
 };
+use mirai_annotations::debug_checked_assume_eq;
 
 use crate::vm::constraints::{
     decoder::columns::DecoderCols, op_flags::get_op_index, stack::columns::StackCols,
@@ -419,7 +420,7 @@ impl LookupOpFlags<Felt> {
         macro_rules! check {
             ($($name:ident),* $(,)?) => {
                 $(
-                    debug_assert_eq!(
+                    debug_checked_assume_eq!(
                         self.$name, p.$name,
                         concat!("LookupOpFlags parity: ", stringify!($name)),
                     );

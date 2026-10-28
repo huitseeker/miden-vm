@@ -38,6 +38,7 @@ p3-keccak-air    = { optional = true, workspace = true }
 p3-poseidon2-air = { optional = true, workspace = true }
 
 # Third-party
+mirai-annotations.workspace = true
 rand.workspace      = true
 serde.workspace     = true
 thiserror.workspace = true

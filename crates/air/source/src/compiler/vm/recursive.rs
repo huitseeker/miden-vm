@@ -3,6 +3,7 @@ use miden_ace::{
     compiler::{AceConfig, LayoutKind},
 };
 use miden_core::{Felt, field::QuadFelt};
+use mirai_annotations::debug_checked_assume;
 
 use super::multi_air::build_canonical_multi_air_ace_circuit;
 use crate::vm::AIRS;
@@ -18,6 +19,7 @@ fn recursive_verifier_num_quotient_chunks() -> usize {
         .map(miden_stark::log_quotient_degree::<Felt, QuadFelt, _>)
         .max()
         .expect("the Miden AIR set is non-empty");
+    debug_checked_assume!(u32::from(max_log_quotient_degree) < usize::BITS);
     1usize << max_log_quotient_degree
 }
 

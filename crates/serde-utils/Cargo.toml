@@ -17,6 +17,7 @@ default = ["std"]
 std     = ["dep:rustix"]
 
 [dependencies]
+mirai-annotations.workspace = true
 p3-field.workspace      = true
 p3-goldilocks.workspace = true
 wincode.workspace       = true

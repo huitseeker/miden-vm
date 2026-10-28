@@ -36,6 +36,8 @@ BACKTRACE                := RUST_BACKTRACE=1
 BUILDDOCS                := MIDEN_BUILD_LIB_DOCS=1
 # Stable and beta rustfmt ignore the unstable settings even with RUSTC_BOOTSTRAP.
 RUSTFMT_TOOLCHAIN        := nightly-2026-10-09
+MIRAI_TOOLCHAIN          ?= nightly-2026-10-09
+MIRAI_LOG_LEVEL          ?= warn
 FUZZ_CARGO               := RUSTC_BOOTSTRAP=1 cargo +stable
 # -- feature configuration ------------------------------------------------------------------------
 ALL_FEATURES             := --all-features
@@ -46,6 +48,20 @@ MIDEN_CRYPTO_FUZZ_TARGETS := smt word merkle merkle_store smt_serde partial_smt 
 MIDEN_SERDE_UTILS_FUZZ_TARGETS := primitives collections string vint64 goldilocks budgeted
 EXECUTION_PROOF_FUZZ_LIMITS := -rss_limit_mb=512 -timeout=10
 MIDEN_STARK_TEST_PACKAGES := -p miden-stark
+MIRAI_MANIFESTS := \
+	crates/crypto/Cargo.toml \
+	crates/serde-utils/Cargo.toml \
+	crates/stark/core/Cargo.toml \
+	crates/stark/vm/Cargo.toml \
+	crates/ace/Cargo.toml \
+	crates/air/source/Cargo.toml \
+	core/Cargo.toml \
+	crates/assembly-syntax/Cargo.toml \
+	crates/assembly/Cargo.toml \
+	processor/Cargo.toml \
+	verifier/Cargo.toml \
+	prover/Cargo.toml \
+	miden-vm/Cargo.toml
 
 # Feature sets for executable builds
 FEATURES_CONCURRENT_EXEC := --features concurrent,executable
@@ -130,6 +146,23 @@ shear: ## Runs cargo-shear to find unused or misplaced dependencies
 
 .PHONY: lint
 lint: xclippy format-check shear ## Runs all lint checks without modifying files
+
+.PHONY: mirai
+mirai: ## Runs MIRAI on the production library crates and fails on MIRAI diagnostics
+	@status=0; \
+	for manifest in $(MIRAI_MANIFESTS); do \
+		log_file=$$(mktemp); \
+		echo "MIRAI $$manifest"; \
+		if ! MIRAI_LOG=$(MIRAI_LOG_LEVEL) cargo +$(MIRAI_TOOLCHAIN) mirai --manifest-path "$$manifest" --lib >"$$log_file" 2>&1; then \
+			status=1; \
+		fi; \
+		cat "$$log_file"; \
+		if grep -qF 'warning: [MIRAI]' "$$log_file"; then \
+			status=1; \
+		fi; \
+		rm -f "$$log_file"; \
+	done; \
+	exit $$status
 
 # --- docs ----------------------------------------------------------------------------------------
 

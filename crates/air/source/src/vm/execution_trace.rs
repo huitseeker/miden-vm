@@ -10,6 +10,7 @@ use miden_core::{
     program::{MIN_STACK_DEPTH, ProgramInfo, StackInputs, StackOutputs},
     utils::RowMajorMatrix,
 };
+use mirai_annotations::checked_precondition;
 
 #[cfg(test)]
 use super::trace::MIN_TRACE_LEN;
@@ -196,6 +197,15 @@ impl TraceLenSummary {
         byte_pair_lookup_rows: usize,
         padded_heights: [usize; MIDEN_AIR_COUNT],
     ) -> Self {
+        let trace_len = core_rows
+            .max(chiplets.trace_len())
+            .max(eidos_compression_rows)
+            .max(byte_pair_lookup_rows);
+        let padded_trace_len = padded_heights.into_iter().max().expect("heights is non-empty");
+        checked_precondition!(
+            padded_trace_len >= trace_len,
+            "padded trace length must cover every unpadded AIR"
+        );
         TraceLenSummary {
             core_rows,
             chiplets,
@@ -274,7 +284,14 @@ impl TraceLenSummary {
 
     /// Returns the percent (0 - 100) of rows added by padding.
     pub fn padding_percentage(&self) -> usize {
-        (self.padded_trace_len() - self.trace_len()) * 100 / self.padded_trace_len()
+        let padded_trace_len = self.padded_trace_len();
+        let trace_len = self.trace_len();
+        checked_precondition!(
+            padded_trace_len > 0 && padded_trace_len >= trace_len,
+            "padded trace length must be nonzero and cover every unpadded AIR"
+        );
+        let padding = padded_trace_len.saturating_sub(trace_len);
+        ((padding as u128) * 100 / padded_trace_len as u128) as usize
     }
 }
 
@@ -390,5 +407,25 @@ mod tests {
         assert_eq!(summary.chiplets_height(), heights[1]);
         assert_eq!(summary.eidos_compression_height(), heights[2]);
         assert_eq!(summary.padded_trace_len(), 1 << 16);
+    }
+
+    #[test]
+    fn padding_percentage_handles_large_lengths() {
+        let padded_len = usize::MAX / 2 + 1;
+        let summary = TraceLenSummary::new(
+            1,
+            ChipletsLengths::default(),
+            1,
+            1,
+            [padded_len; MIDEN_AIR_COUNT],
+        );
+
+        assert_eq!(summary.padding_percentage(), 99);
+    }
+
+    #[test]
+    #[should_panic(expected = "padded trace length must cover every unpadded AIR")]
+    fn rejects_padded_height_below_unpadded_rows() {
+        TraceLenSummary::new(2, ChipletsLengths::default(), 1, 1, [1; MIDEN_AIR_COUNT]);
     }
 }

@@ -5,6 +5,7 @@ use miden_formatting::{
     hex::ToHex,
     prettier::{Document, PrettyPrint, const_text, text},
 };
+use mirai_annotations::unrecoverable;
 
 use super::{MastForestContributor, MastNodeContext, MastNodeExt};
 use crate::{
@@ -95,7 +96,7 @@ impl MastNodeExt for ExternalNode {
     }
 
     fn domain(&self) -> Felt {
-        panic!("Can't fetch domain for an `External` node.")
+        unrecoverable!("Can't fetch domain for an `External` node.")
     }
 
     type Builder = ExternalNodeBuilder;

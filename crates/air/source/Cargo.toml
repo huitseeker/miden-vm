@@ -37,6 +37,7 @@ miden-stark.workspace = true
 ruint.workspace = true
 
 # External dependencies
+mirai-annotations.workspace = true
 p3-field.workspace = true
 p3-challenger.workspace = true
 p3-security.workspace = true
@@ -49,3 +50,6 @@ insta.workspace = true
 miden-ace = { workspace = true, features = ["testing"] }
 miden-test-serialization-macros.workspace = true
 proptest.workspace = true
+
+[lints]
+workspace = true

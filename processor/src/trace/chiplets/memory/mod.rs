@@ -11,6 +11,7 @@ use miden_air_definitions::vm::{
         },
     },
 };
+use mirai_annotations::debug_checked_assume;
 
 use super::{
     super::utils::{split_element_u32_into_u16, split_u32_into_u16},
@@ -269,8 +270,12 @@ impl Memory {
 
                     // Compute the sorted-access delta from the first field that changes.
                     let delta = if prev_ctx != ctx {
-                        (u32::from(ctx) - u32::from(prev_ctx)).into()
+                        let ctx = u32::from(ctx);
+                        let prev_ctx = u32::from(prev_ctx);
+                        debug_checked_assume!(prev_ctx < ctx);
+                        (ctx - prev_ctx).into()
                     } else if prev_addr != addr {
+                        debug_checked_assume!(prev_addr < addr);
                         u64::from(addr - prev_addr)
                     } else {
                         clk.wrapping_sub(prev_clk)
@@ -385,6 +390,7 @@ impl Memory {
                     prev_ctx = ctx;
                     prev_addr = felt_addr;
                     prev_clk = clk;
+                    debug_checked_assume!(row < usize::MAX);
                     row += 1;
                 }
             }

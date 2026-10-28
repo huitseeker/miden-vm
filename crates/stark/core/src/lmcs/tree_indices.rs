@@ -9,6 +9,8 @@
 
 use alloc::{collections::BTreeMap, vec::Vec};
 
+use mirai_annotations::debug_checked_assume;
+
 use crate::lmcs::{LmcsError, node_id::NodeId};
 
 /// A validated set of Merkle tree indices at a given source depth.
@@ -214,7 +216,10 @@ impl Iterator for MissingSiblingsIter {
                 }
 
                 // Consume one node (missing sibling) or two (sibling pair).
-                self.current.start += if sibling_present { 2 } else { 1 };
+                let consumed = if sibling_present { 2 } else { 1 };
+                debug_checked_assume!(self.current.start <= self.current.end);
+                debug_checked_assume!(consumed <= self.current.end - self.current.start);
+                self.current.start += consumed;
                 debug_assert!(self.next_len <= self.current.start);
 
                 if !sibling_present {

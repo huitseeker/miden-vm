@@ -128,6 +128,7 @@ ed25519-dalek    = { features = ["alloc", "zeroize"], workspace = true }
 flume            = { workspace = true }
 hkdf             = { workspace = true }
 k256             = { features = ["alloc", "ecdh", "ecdsa", "pkcs8"], workspace = true }
+mirai-annotations = { workspace = true }
 num              = { features = ["alloc", "libm"], workspace = true }
 num-complex      = { features = ["libm"], workspace = true }
 once_cell        = { features = ["alloc", "critical-section"], workspace = true }

@@ -150,6 +150,7 @@ insta           = { version = "1.43", default-features = false, features = ["col
 itertools       = { version = "0.15", default-features = false, features = ["use_alloc"] }
 k256            = { version = "0.14", default-features = false }
 log             = { version = "0.4", default-features = false }
+mirai-annotations = { git = "https://github.com/huitseeker/mirai-endorlabs", branch = "main" }
 num             = { version = "0.4", default-features = false }
 num-complex     = { version = "0.4", default-features = false, features = ["libm"] }
 once_cell       = { version = "1.21", default-features = false }
@@ -231,4 +232,4 @@ wasmparser = { version = "0.239.0", default-features = false }
 wat = { version = "1.0" }
 
 [workspace.lints.rust]
-unexpected_cfgs = { check-cfg = ['cfg(fuzzing)'], level = "warn" }
+unexpected_cfgs = { check-cfg = ['cfg(fuzzing)', 'cfg(mirai)'], level = "warn" }

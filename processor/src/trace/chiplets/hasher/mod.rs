@@ -17,6 +17,7 @@ use miden_core::{
     chiplets::{eidos_compression, hasher::compress_state},
     utils::RowMajorMatrix,
 };
+use mirai_annotations::debug_checked_assume;
 use rayon::prelude::*;
 
 use super::{
@@ -451,7 +452,9 @@ impl Hasher {
     /// Records an Eidos compression request keyed by input state and output shape.
     fn record_compression_request(&mut self, state: &HasherState, output: CompressionOutput) {
         let key = CompressionRequestKey { state: state_to_key(state), output };
-        *self.compression_request_map.entry(key).or_insert(0) += 1;
+        let multiplicity = self.compression_request_map.entry(key).or_insert(0);
+        debug_checked_assume!(*multiplicity < u64::MAX);
+        *multiplicity += 1;
     }
 
     // MEMOIZATION

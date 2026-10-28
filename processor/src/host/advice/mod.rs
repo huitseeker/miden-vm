@@ -11,6 +11,7 @@ use miden_core::{
 };
 #[cfg(test)]
 use miden_core::{crypto::hash::Blake3_256, serde::Serializable};
+use mirai_annotations::debug_checked_assume;
 
 mod errors;
 pub use errors::AdviceError;
@@ -686,6 +687,7 @@ impl AdviceProvider {
         self.check_merkle_store_node_addition(added)?;
 
         let root = self.store.merge_roots(lhs, rhs).map_err(AdviceError::MerkleStoreMergeFailed)?;
+        debug_checked_assume!(self.merkle_store_node_count <= usize::MAX - added);
         self.merkle_store_node_count += added;
         self.advice_size_bytes += Self::merkle_node_bytes(added)?;
         Ok(root)
@@ -706,6 +708,7 @@ impl AdviceProvider {
         self.check_merkle_store_node_addition(added)?;
 
         self.store.extend(nodes);
+        debug_checked_assume!(self.merkle_store_node_count <= usize::MAX - added);
         self.merkle_store_node_count += added;
         self.advice_size_bytes += Self::merkle_node_bytes(added)?;
         Ok(())

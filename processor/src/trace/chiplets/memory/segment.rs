@@ -5,6 +5,7 @@ use alloc::{
 
 use miden_air_definitions::vm::trace::RowIndex;
 use miden_core::WORD_SIZE;
+use mirai_annotations::debug_checked_assume;
 
 use super::{Felt, INIT_MEM_VALUE, MemoryError, Word};
 use crate::{ContextId, MemoryAddress};
@@ -73,6 +74,7 @@ impl MemorySegmentTrace {
         let search_clk: u64 = (clk - 1).into();
 
         for (&addr, addr_trace) in self.0.iter() {
+            debug_checked_assume!(addr <= u32::MAX - (WORD_SIZE as u32 - 1));
             match addr_trace
                 .binary_search_by(|access| access.clk().as_canonical_u64().cmp(&search_clk))
             {

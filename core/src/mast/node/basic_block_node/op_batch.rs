@@ -1,5 +1,7 @@
 use alloc::{string::String, vec::Vec};
 
+use mirai_annotations::{debug_checked_assume, debug_checked_precondition};
+
 use super::{BATCH_SIZE, Felt, GROUP_SIZE, Operation, ZERO};
 
 // OPERATION BATCH
@@ -416,6 +418,7 @@ impl OpBatchAccumulator {
     /// operation can be added to the accumulator. Call
     /// [`can_accept_op`](OpBatchAccumulator::can_accept_op) before this function.
     pub fn add_op(&mut self, op: Operation) {
+        debug_checked_precondition!(self.can_accept_op(op));
         // if the group is full, finalize it and start a new group
         if self.op_idx == GROUP_SIZE {
             self.finalize_op_group();
@@ -430,6 +433,7 @@ impl OpBatchAccumulator {
             }
 
             // save the immediate value at the next group index and advance the next group pointer
+            debug_checked_assume!(self.next_group_idx < self.groups.len());
             self.groups[self.next_group_idx] = imm;
             // we're adding an immediate value without advancing the group, it will need further
             // correction once we know where this group finishes

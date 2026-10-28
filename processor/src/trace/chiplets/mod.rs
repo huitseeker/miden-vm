@@ -12,6 +12,7 @@ use miden_air_definitions::vm::trace::{
     eidos_compression::NUM_EIDOS_COMPRESSION_COLS,
 };
 use miden_core::{field::PrimeCharacteristicRing, mast::OpBatch, program::KernelDescriptor};
+use mirai_annotations::debug_checked_assume;
 
 use crate::{
     Felt, ONE, Word, ZERO,
@@ -155,12 +156,15 @@ impl Chiplets {
     /// Returns the chiplets trace length, including the mandatory padding row used by auxiliary
     /// connector columns that read the memory chiplet.
     pub fn trace_len(&self) -> usize {
-        self.hasher.trace_len()
-            + self.bitwise.trace_len()
-            + self.memory.trace_len()
-            + self.ace.trace_len()
-            + self.kernel_rom.trace_len()
-            + 1
+        let len = self.hasher.trace_len() + self.bitwise.trace_len() + self.memory.trace_len();
+        let ace_len = self.ace.trace_len();
+        debug_checked_assume!(len <= usize::MAX - ace_len);
+        let len = len + ace_len;
+        let kernel_rom_len = self.kernel_rom.trace_len();
+        debug_checked_assume!(len <= usize::MAX - kernel_rom_len);
+        let len = len + kernel_rom_len;
+        debug_checked_assume!(len < usize::MAX);
+        len + 1
     }
 
     /// Returns the unpadded trace length of the standalone Eidos compression AIR.
@@ -276,6 +280,7 @@ impl Chiplets {
         let (hasher_band, rest) = trace.split_at_mut(hasher_len * W);
         let (bitwise_band, rest) = rest.split_at_mut(bitwise_len * W);
         let (memory_band, rest) = rest.split_at_mut(memory_len * W);
+        debug_checked_assume!(ace_len <= usize::MAX / W);
         let (ace_band, rest) = rest.split_at_mut(ace_len * W);
         let (kernel_band, padding_band) = rest.split_at_mut(kernel_rom_len * W);
 
