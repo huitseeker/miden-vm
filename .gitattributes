@@ -2,3 +2,6 @@ CHANGELOG.md merge=union
 crates/lib/core/asm/precompiles/u256.masm linguist-generated=true
 crates/lib/core/asm/precompiles/fields/*.masm linguist-generated=true
 crates/lib/core/asm/precompiles/curves/*.masm linguist-generated=true
+
+.github/workflows/*.lock.yml linguist-generated=true
+.github/aw/actions-lock.json linguist-generated=true

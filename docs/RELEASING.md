@@ -62,6 +62,49 @@ The workflow checks the remote tag before making the GitHub release public.
 GitHub marks release candidates as prereleases.
 Patch branches do not replace GitHub's latest release. Stable releases from `main` do.
 
+## Post-release pull requests
+
+Publishing a stable `v0.36.x` release from `main` dispatches two maintenance
+workflows. One opens a draft PR that advances Rust package versions to the next
+patch while preserving the embedded MASM package version. The other opens a
+draft PR with a two-parent merge of `main` into `next`.
+
+Install the workflow Markdown, compiled locks, and maintenance helper on `next`.
+Apply the publisher's dispatch step to `main` before its next release. Dispatch
+is necessary because a release published with `GITHUB_TOKEN` cannot trigger
+another workflow through `release.published`. The workflows also accept manual
+dispatch with a published GitHub release ID for recovery.
+
+Configure the repository Actions secret `OPENROUTER_API_KEY` with a dedicated,
+spend-limited OpenRouter key. Configure the repository variable
+`OPENROUTER_RELEASE_MODEL` with the exact value
+`openai/z-ai/glm-5.3-flash:free`. The `openai/` prefix selects the Pi API family;
+OpenRouter receives `z-ai/glm-5.3-flash:free` as the model name. Automatic model
+fallback is disabled, so an unavailable free model stops the workflow.
+
+The agent can only propose issue-to-PR mappings from merged release evidence.
+It has no shell or file-editing tools. A separate job requires successful agent
+completion and rechecks the release against GitHub. Trusted code validates each
+mapping and reconstructs the entire commit from captured branch SHAs. It dates
+the released notes and removes empty subsection headings while preserving entry
+text. Publication follows validation of the committed tree and its parents.
+
+AI threat detection is disabled because gh-aw 1.0.1 routes Pi detection through
+Copilot. Enabling it requires a separate authentication and billing decision.
+The deterministic publishing job enforces the release checklist independently.
+
+An existing maintenance PR makes a rerun a no-op, including after merge. An
+existing branch without a PR requires manual recovery. Branch creation uses an
+empty Git lease so it cannot overwrite an existing branch. If PR creation fails
+after the push, inspect that branch and create its draft PR manually. Conflicting
+notes for the same release or conflicts outside the changelog also require
+manual resolution. Commits are unsigned, and bot-created PRs may need maintainer
+approval before ordinary CI runs.
+
+Use gh-aw `v1.0.1` to regenerate both locks with `gh aw compile`. Review the
+generated publishing job's success condition and run
+`python3 -m unittest discover -s scripts/tests -v` before committing changes.
+
 ## Recover a partial release
 
 Rerun the workflow for the same commit with `allow_existing=true` to finish a partial publication.

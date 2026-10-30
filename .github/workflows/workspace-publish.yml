@@ -393,3 +393,20 @@ jobs:
             -F draft=false \
             -F "prerelease=${RELEASE_PRERELEASE}" \
             -f "make_latest=$([[ "$RELEASE_BRANCH" == main ]] && echo true || echo false)"
+
+      # GITHUB_TOKEN release events do not launch other workflows. A repository
+      # dispatch does, and runs the maintenance workflows from the default branch.
+      - name: Dispatch stable release maintenance
+        if: needs.prepare-release.outputs.branch == 'main' && needs.prepare-release.outputs.prerelease == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if [[ "$RELEASE_TAG" =~ ^v0\.36\.[0-9]+$ ]]; then
+            release_id="$(gh release view "$RELEASE_TAG" --json databaseId -q .databaseId)"
+            gh api --method POST "repos/$GH_REPO/dispatches" \
+              -f event_type=stable-release-maintenance \
+              -f "client_payload[release_id]=$release_id"
+          fi
