@@ -46,7 +46,7 @@ pub struct Challenges<EF: PrimeCharacteristicRing> {
     #[cfg(not(mirai))]
     pub bus_prefix: Box<[EF]>,
     #[cfg(mirai)]
-    pub bus_prefix: [EF; 32],
+    pub bus_prefix: [EF; 64],
 }
 
 impl<EF: PrimeCharacteristicRing> Challenges<EF> {

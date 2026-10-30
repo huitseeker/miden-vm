@@ -6,7 +6,7 @@ use core::{
 };
 
 use miden_core::field::{Algebra, PrimeCharacteristicRing, QuadFelt};
-use miden_stark::air::{AirBuilder, ExtensionBuilder, LiftedAir, PermutationAirBuilder, RowWindow};
+use miden_stark::air::{AirBuilder, ExtensionBuilder, PermutationAirBuilder, RowWindow};
 use mirai_annotations::{TAG_PROPAGATION_ALL, TagPropagation, TagPropagationSet, add_tag, has_tag};
 
 use super::{Felt, NUM_PUBLIC_VALUES};
@@ -365,31 +365,31 @@ impl<'a> PermutationAirBuilder for MiraiAirBuilder<'a> {
 
 macro_rules! eval_core {
     ($builder:expr) => {{
-        <super::MidenAir as LiftedAir<Felt, QuadFelt>>::eval(&super::MidenAir::Core, $builder);
+        super::airs::eval_core_for_mirai($builder);
     }};
 }
 
 macro_rules! eval_chiplets {
     ($builder:expr) => {{
-        <super::MidenAir as LiftedAir<Felt, QuadFelt>>::eval(&super::MidenAir::Chiplets, $builder);
+        super::airs::eval_chiplets_for_mirai($builder);
     }};
 }
 
 macro_rules! eval_eidos_compression {
     ($builder:expr) => {{
-        <super::MidenAir as LiftedAir<Felt, QuadFelt>>::eval(
-            &super::MidenAir::EidosCompression,
-            $builder,
-        );
+        super::airs::eval_eidos_compression_for_mirai($builder);
+    }};
+}
+
+macro_rules! eval_eidos_compression_lookup {
+    ($builder:expr) => {{
+        super::airs::eval_eidos_compression_lookup_for_mirai($builder);
     }};
 }
 
 macro_rules! eval_and8_lookup {
     ($builder:expr) => {{
-        <super::MidenAir as LiftedAir<Felt, QuadFelt>>::eval(
-            &super::MidenAir::And8Lookup,
-            $builder,
-        );
+        super::airs::eval_and8_lookup_for_mirai($builder);
     }};
 }
 
@@ -551,9 +551,6 @@ core_main_tag_verifiers!(
     verify_core_air_main_45: 45 => Main45,
     verify_core_air_main_46: 46 => Main46,
     verify_core_air_main_47: 47 => Main47,
-    verify_core_air_main_48: 48 => Main48,
-    verify_core_air_main_49: 49 => Main49,
-    verify_core_air_main_50: 50 => Main50,
 );
 
 core_tag_verifier!(verify_core_air_auxiliary_0, main = [], auxiliary = [0 => Auxiliary0], permutation_values = []);
@@ -657,6 +654,28 @@ macro_rules! eidos_compression_main_tag_verifiers {
             auxiliary = [],
             permutation_values = []
         );)*
+    };
+}
+
+macro_rules! eidos_compression_lookup_tag_verifier {
+    (
+        $name:ident,
+        auxiliary = [$($auxiliary_index:literal => $auxiliary_tag:ident),* $(,)?],
+        permutation_values = [$($permutation_value_index:literal => $permutation_value_tag:ident),* $(,)?]
+    ) => {
+        air_tag_verifier!(
+            $name,
+            main_width = super::constraints::eidos_compression::NUM_COLS,
+            main_indices = [],
+            preprocessed_width = 0,
+            auxiliary_width = super::constraints::eidos_compression::lookup::EIDOS_COMPRESSION_LOOKUP_COLUMN_SHAPE.len(),
+            auxiliary_indices = [$($auxiliary_index => $auxiliary_tag),*],
+            permutation_value_indices = [
+                $($permutation_value_index => $permutation_value_tag),*
+            ],
+            periodic_width = crate::shared::eidos::periodic::NUM_PERIODIC_COLUMNS,
+            eval = eval_eidos_compression_lookup
+        );
     };
 }
 
@@ -771,27 +790,27 @@ eidos_compression_main_tag_verifiers!(
     verify_eidos_compression_air_main_107: 107 => Main107,
 );
 
-eidos_compression_tag_verifier!(verify_eidos_compression_air_auxiliary_0, main = [], auxiliary = [0 => Auxiliary0], permutation_values = []);
-eidos_compression_tag_verifier!(verify_eidos_compression_air_auxiliary_1, main = [], auxiliary = [1 => Auxiliary1], permutation_values = []);
-eidos_compression_tag_verifier!(verify_eidos_compression_air_auxiliary_2, main = [], auxiliary = [2 => Auxiliary2], permutation_values = []);
-eidos_compression_tag_verifier!(verify_eidos_compression_air_auxiliary_3, main = [], auxiliary = [3 => Auxiliary3], permutation_values = []);
-eidos_compression_tag_verifier!(verify_eidos_compression_air_auxiliary_4, main = [], auxiliary = [4 => Auxiliary4], permutation_values = []);
-eidos_compression_tag_verifier!(verify_eidos_compression_air_auxiliary_5, main = [], auxiliary = [5 => Auxiliary5], permutation_values = []);
-eidos_compression_tag_verifier!(verify_eidos_compression_air_auxiliary_6, main = [], auxiliary = [6 => Auxiliary6], permutation_values = []);
-eidos_compression_tag_verifier!(verify_eidos_compression_air_auxiliary_7, main = [], auxiliary = [7 => Auxiliary7], permutation_values = []);
-eidos_compression_tag_verifier!(verify_eidos_compression_air_auxiliary_8, main = [], auxiliary = [8 => Auxiliary8], permutation_values = []);
-eidos_compression_tag_verifier!(verify_eidos_compression_air_auxiliary_9, main = [], auxiliary = [9 => Auxiliary9], permutation_values = []);
-eidos_compression_tag_verifier!(verify_eidos_compression_air_auxiliary_10, main = [], auxiliary = [10 => Auxiliary10], permutation_values = []);
-eidos_compression_tag_verifier!(verify_eidos_compression_air_auxiliary_11, main = [], auxiliary = [11 => Auxiliary11], permutation_values = []);
-eidos_compression_tag_verifier!(verify_eidos_compression_air_auxiliary_12, main = [], auxiliary = [12 => Auxiliary12], permutation_values = []);
-eidos_compression_tag_verifier!(verify_eidos_compression_air_auxiliary_13, main = [], auxiliary = [13 => Auxiliary13], permutation_values = []);
-eidos_compression_tag_verifier!(verify_eidos_compression_air_auxiliary_14, main = [], auxiliary = [14 => Auxiliary14], permutation_values = []);
-eidos_compression_tag_verifier!(verify_eidos_compression_air_auxiliary_15, main = [], auxiliary = [15 => Auxiliary15], permutation_values = []);
-eidos_compression_tag_verifier!(verify_eidos_compression_air_auxiliary_16, main = [], auxiliary = [16 => Auxiliary16], permutation_values = []);
-eidos_compression_tag_verifier!(verify_eidos_compression_air_auxiliary_17, main = [], auxiliary = [17 => Auxiliary17], permutation_values = []);
-eidos_compression_tag_verifier!(verify_eidos_compression_air_auxiliary_18, main = [], auxiliary = [18 => Auxiliary18], permutation_values = []);
-eidos_compression_tag_verifier!(verify_eidos_compression_air_auxiliary_19, main = [], auxiliary = [19 => Auxiliary19], permutation_values = []);
-eidos_compression_tag_verifier!(verify_eidos_compression_air_permutation_value_0, main = [], auxiliary = [], permutation_values = [0 => PermutationValue0]);
+eidos_compression_lookup_tag_verifier!(verify_eidos_compression_air_auxiliary_0, auxiliary = [0 => Auxiliary0], permutation_values = []);
+eidos_compression_lookup_tag_verifier!(verify_eidos_compression_air_auxiliary_1, auxiliary = [1 => Auxiliary1], permutation_values = []);
+eidos_compression_lookup_tag_verifier!(verify_eidos_compression_air_auxiliary_2, auxiliary = [2 => Auxiliary2], permutation_values = []);
+eidos_compression_lookup_tag_verifier!(verify_eidos_compression_air_auxiliary_3, auxiliary = [3 => Auxiliary3], permutation_values = []);
+eidos_compression_lookup_tag_verifier!(verify_eidos_compression_air_auxiliary_4, auxiliary = [4 => Auxiliary4], permutation_values = []);
+eidos_compression_lookup_tag_verifier!(verify_eidos_compression_air_auxiliary_5, auxiliary = [5 => Auxiliary5], permutation_values = []);
+eidos_compression_lookup_tag_verifier!(verify_eidos_compression_air_auxiliary_6, auxiliary = [6 => Auxiliary6], permutation_values = []);
+eidos_compression_lookup_tag_verifier!(verify_eidos_compression_air_auxiliary_7, auxiliary = [7 => Auxiliary7], permutation_values = []);
+eidos_compression_lookup_tag_verifier!(verify_eidos_compression_air_auxiliary_8, auxiliary = [8 => Auxiliary8], permutation_values = []);
+eidos_compression_lookup_tag_verifier!(verify_eidos_compression_air_auxiliary_9, auxiliary = [9 => Auxiliary9], permutation_values = []);
+eidos_compression_lookup_tag_verifier!(verify_eidos_compression_air_auxiliary_10, auxiliary = [10 => Auxiliary10], permutation_values = []);
+eidos_compression_lookup_tag_verifier!(verify_eidos_compression_air_auxiliary_11, auxiliary = [11 => Auxiliary11], permutation_values = []);
+eidos_compression_lookup_tag_verifier!(verify_eidos_compression_air_auxiliary_12, auxiliary = [12 => Auxiliary12], permutation_values = []);
+eidos_compression_lookup_tag_verifier!(verify_eidos_compression_air_auxiliary_13, auxiliary = [13 => Auxiliary13], permutation_values = []);
+eidos_compression_lookup_tag_verifier!(verify_eidos_compression_air_auxiliary_14, auxiliary = [14 => Auxiliary14], permutation_values = []);
+eidos_compression_lookup_tag_verifier!(verify_eidos_compression_air_auxiliary_15, auxiliary = [15 => Auxiliary15], permutation_values = []);
+eidos_compression_lookup_tag_verifier!(verify_eidos_compression_air_auxiliary_16, auxiliary = [16 => Auxiliary16], permutation_values = []);
+eidos_compression_lookup_tag_verifier!(verify_eidos_compression_air_auxiliary_17, auxiliary = [17 => Auxiliary17], permutation_values = []);
+eidos_compression_lookup_tag_verifier!(verify_eidos_compression_air_auxiliary_18, auxiliary = [18 => Auxiliary18], permutation_values = []);
+eidos_compression_lookup_tag_verifier!(verify_eidos_compression_air_auxiliary_19, auxiliary = [19 => Auxiliary19], permutation_values = []);
+eidos_compression_lookup_tag_verifier!(verify_eidos_compression_air_permutation_value_0, auxiliary = [], permutation_values = [0 => PermutationValue0]);
 
 macro_rules! and8_lookup_tag_verifier {
     (

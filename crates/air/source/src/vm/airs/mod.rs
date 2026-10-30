@@ -3,6 +3,8 @@
 use alloc::{borrow::Cow, vec::Vec};
 
 use miden_core::{Felt, field::ExtensionField, utils::RowMajorMatrix};
+#[cfg(mirai)]
+use miden_stark::lookup::ConstraintLookupBuilder;
 use miden_stark::{
     air::{BaseAir, ConstraintDegrees, LiftedAir, LiftedAirBuilder, ReductionError},
     lookup::{BoundaryBuilder, Challenges, LookupAir, build_logup_aux_trace_with_preprocessed},
@@ -30,6 +32,35 @@ pub use and8_lookup::And8LookupAir;
 pub use chiplets::ChipletsAir;
 pub use core_air::CoreAir;
 pub use eidos_compression::EidosCompressionAir;
+
+#[cfg(mirai)]
+pub(in crate::vm) fn eval_core_for_mirai<AB: MidenAirBuilder>(builder: &mut AB) {
+    CoreAir.eval(builder);
+}
+
+#[cfg(mirai)]
+pub(in crate::vm) fn eval_chiplets_for_mirai<AB: MidenAirBuilder>(builder: &mut AB) {
+    ChipletsAir.eval(builder);
+}
+
+#[cfg(mirai)]
+pub(in crate::vm) fn eval_eidos_compression_for_mirai<AB: MidenAirBuilder>(builder: &mut AB) {
+    EidosCompressionAir.eval(builder);
+}
+
+#[cfg(mirai)]
+pub(in crate::vm) fn eval_eidos_compression_lookup_for_mirai<AB: MidenAirBuilder>(
+    builder: &mut AB,
+) {
+    let mut lookup_builder = ConstraintLookupBuilder::new(builder, &MidenAir::EidosCompression);
+    EidosCompressionAir.lookup_eval(&mut lookup_builder);
+    lookup_builder.finish();
+}
+
+#[cfg(mirai)]
+pub(in crate::vm) fn eval_and8_lookup_for_mirai<AB: MidenAirBuilder>(builder: &mut AB) {
+    And8LookupAir.eval(builder);
+}
 
 // MIDEN AIR BUILDER
 // ================================================================================================

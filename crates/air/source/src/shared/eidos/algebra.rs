@@ -90,10 +90,13 @@ where
 }
 
 pub fn cv_storage_coefficient<E: PrimeCharacteristicRing>(idx: usize) -> E {
+    mirai_annotations::debug_checked_precondition!(idx < 8);
     if idx < NUM_G {
         E::from_u64(1u64 << 32)
     } else {
-        E::from_u64(1 << (8 * F_CV_B_STORAGE_BYTES[idx - NUM_G]))
+        let storage_byte = F_CV_B_STORAGE_BYTES[idx - NUM_G];
+        mirai_annotations::debug_checked_assume!(storage_byte < BYTES_PER_WORD);
+        E::from_u64(1 << (8 * storage_byte))
     }
 }
 

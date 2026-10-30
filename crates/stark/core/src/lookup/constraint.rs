@@ -190,6 +190,7 @@ where
 
             // Sum the declared LogUp prefix only. Any trailing extension-field registers are
             // independently constrained by the AIR and do not belong to this lookup argument.
+            #[cfg(not(mirai))]
             let all_curr_sum = {
                 let mp = self.ab.permutation();
                 let current = mp.current_slice();
@@ -203,6 +204,44 @@ where
                 for &aux_i in &current[1..self.num_columns] {
                     sum += aux_i.into();
                 }
+                sum
+            };
+
+            #[cfg(mirai)]
+            let all_curr_sum = {
+                let mp = self.ab.permutation();
+                let current = mp.current_slice();
+                mirai_annotations::checked_assume!(
+                    self.num_columns <= 20 && current.len() >= self.num_columns
+                );
+                let mut sum = AB::ExprEF::ZERO;
+                macro_rules! add_column {
+                    ($index:literal) => {
+                        if self.num_columns > $index {
+                            sum += current[$index].into();
+                        }
+                    };
+                }
+                add_column!(0);
+                add_column!(1);
+                add_column!(2);
+                add_column!(3);
+                add_column!(4);
+                add_column!(5);
+                add_column!(6);
+                add_column!(7);
+                add_column!(8);
+                add_column!(9);
+                add_column!(10);
+                add_column!(11);
+                add_column!(12);
+                add_column!(13);
+                add_column!(14);
+                add_column!(15);
+                add_column!(16);
+                add_column!(17);
+                add_column!(18);
+                add_column!(19);
                 sum
             };
 

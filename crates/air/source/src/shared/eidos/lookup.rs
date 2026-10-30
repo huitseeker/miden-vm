@@ -98,42 +98,79 @@ pub fn emit_narrow_lookup_columns<LB>(
 ) where
     LB: LookupBuilder<F = Felt>,
 {
+    #[cfg(not(mirai))]
     for aux_col in 0..NARROW_BATCH_COLUMNS {
-        let column_deg = Deg { v: 2, u: 2 };
-        builder.next_column(
-            |col| {
-                col.group(
-                    "eidos_compression",
-                    |group| {
-                        let slot0 = 2 * aux_col;
-                        let slot1 = slot0 + 1;
-                        let slot0_multiplicity =
-                            narrow_slot_multiplicity::<LB>(slot0, selectors, config);
-                        let slot1_multiplicity =
-                            narrow_slot_multiplicity::<LB>(slot1, selectors, config);
-                        let slot0_encoding = narrow_slot_encoding::<LB, _>(
-                            &*group, local, next, selectors, slot0, config,
-                        );
-                        let slot1_encoding = narrow_slot_encoding::<LB, _>(
-                            &*group, local, next, selectors, slot1, config,
-                        );
-
-                        group.selected_batch2_encoded(
-                            config.pair_name,
-                            "slot0",
-                            slot0_multiplicity,
-                            || slot0_encoding,
-                            "slot1",
-                            slot1_multiplicity,
-                            || slot1_encoding,
-                        );
-                    },
-                    column_deg,
-                );
-            },
-            column_deg,
-        );
+        emit_narrow_lookup_column(builder, local, next, selectors, config, aux_col);
     }
+
+    #[cfg(mirai)]
+    {
+        emit_narrow_lookup_column(builder, local, next, selectors, config, 0);
+        emit_narrow_lookup_column(builder, local, next, selectors, config, 1);
+        emit_narrow_lookup_column(builder, local, next, selectors, config, 2);
+        emit_narrow_lookup_column(builder, local, next, selectors, config, 3);
+        emit_narrow_lookup_column(builder, local, next, selectors, config, 4);
+        emit_narrow_lookup_column(builder, local, next, selectors, config, 5);
+        emit_narrow_lookup_column(builder, local, next, selectors, config, 6);
+        emit_narrow_lookup_column(builder, local, next, selectors, config, 7);
+        emit_narrow_lookup_column(builder, local, next, selectors, config, 8);
+        emit_narrow_lookup_column(builder, local, next, selectors, config, 9);
+        emit_narrow_lookup_column(builder, local, next, selectors, config, 10);
+        emit_narrow_lookup_column(builder, local, next, selectors, config, 11);
+        emit_narrow_lookup_column(builder, local, next, selectors, config, 12);
+        emit_narrow_lookup_column(builder, local, next, selectors, config, 13);
+        emit_narrow_lookup_column(builder, local, next, selectors, config, 14);
+        emit_narrow_lookup_column(builder, local, next, selectors, config, 15);
+        emit_narrow_lookup_column(builder, local, next, selectors, config, 16);
+        emit_narrow_lookup_column(builder, local, next, selectors, config, 17);
+    }
+}
+
+fn emit_narrow_lookup_column<LB>(
+    builder: &mut LB,
+    local: &EidosCompressionCols<LB::Var>,
+    next: &EidosCompressionCols<LB::Var>,
+    selectors: &EidosCompressionSelectors<LB::Expr>,
+    config: NarrowLookupConfig,
+    aux_col: usize,
+) where
+    LB: LookupBuilder<F = Felt>,
+{
+    mirai_annotations::debug_checked_precondition!(aux_col < NARROW_BATCH_COLUMNS);
+    let column_deg = Deg { v: 2, u: 2 };
+    builder.next_column(
+        |col| {
+            col.group(
+                "eidos_compression",
+                |group| {
+                    let slot0 = 2 * aux_col;
+                    let slot1 = slot0 + 1;
+                    let slot0_multiplicity =
+                        narrow_slot_multiplicity::<LB>(slot0, selectors, config);
+                    let slot1_multiplicity =
+                        narrow_slot_multiplicity::<LB>(slot1, selectors, config);
+                    let slot0_encoding = narrow_slot_encoding::<LB, _>(
+                        &*group, local, next, selectors, slot0, config,
+                    );
+                    let slot1_encoding = narrow_slot_encoding::<LB, _>(
+                        &*group, local, next, selectors, slot1, config,
+                    );
+
+                    group.selected_batch2_encoded(
+                        config.pair_name,
+                        "slot0",
+                        slot0_multiplicity,
+                        || slot0_encoding,
+                        "slot1",
+                        slot1_multiplicity,
+                        || slot1_encoding,
+                    );
+                },
+                column_deg,
+            );
+        },
+        column_deg,
+    );
 }
 
 fn narrow_slot_multiplicity<LB>(
@@ -250,9 +287,11 @@ fn narrow_slot_fields<LB>(
 where
     LB: LookupBuilder<F = Felt>,
 {
+    mirai_annotations::debug_checked_assume!(slot < NARROW_SLOTS.len());
     match NARROW_SLOTS[slot].fields {
         NarrowSlotFields::StoredByte(stored_slot) => {
             let base = byte_slot_base(0, stored_slot as usize);
+            mirai_annotations::debug_checked_assume!(base <= NUM_COLS - 3);
             let a = LB::Expr::from(local.columns[base]);
             let b = LB::Expr::from(local.columns[base + 1]);
             let stored = LB::Expr::from(local.columns[base + 2]);

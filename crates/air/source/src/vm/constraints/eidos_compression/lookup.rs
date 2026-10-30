@@ -236,7 +236,9 @@ where
 {
     core::array::from_fn(|idx| {
         if idx < 6 {
-            LB::Expr::from(local.columns[footer_r_col(FOOTER_ROWS - 1, idx)])
+            let col = footer_r_col(FOOTER_ROWS - 1, idx);
+            mirai_annotations::debug_checked_assume!(col < NUM_COLS);
+            LB::Expr::from(local.columns[col])
         } else {
             let pair = idx - 6;
             pack_pair(
