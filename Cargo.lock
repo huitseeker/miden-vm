@@ -3003,7 +3003,7 @@ checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
 [[package]]
 name = "mirai-annotations"
 version = "1.12.1"
-source = "git+https://github.com/huitseeker/mirai-endorlabs?branch=main#117c4639e8d32b7f87cad58e675f43cb32b23ab1"
+source = "git+https://github.com/huitseeker/mirai-endorlabs?branch=main#2510e6d791aa8a96bbc621f93acb20dbeb448ec6"
 
 [[package]]
 name = "nix"
