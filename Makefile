@@ -38,6 +38,7 @@ BUILDDOCS                := MIDEN_BUILD_LIB_DOCS=1
 RUSTFMT_TOOLCHAIN        := nightly-2026-10-09
 MIRAI_TOOLCHAIN          ?= nightly-2026-10-09
 MIRAI_LOG_LEVEL          ?= warn
+MIRAI_BODY_ANALYSIS_TIMEOUT ?= 120
 FUZZ_CARGO               := RUSTC_BOOTSTRAP=1 cargo +stable
 # -- feature configuration ------------------------------------------------------------------------
 ALL_FEATURES             := --all-features
@@ -173,12 +174,15 @@ mirai-air-inputs: ## Checks that every prover-committed AIR input reaches a cons
 		log_file=$$(mktemp); \
 		echo "MIRAI crates/air/source/src/vm/mirai_air.rs $$root"; \
 		touch crates/air/source/src/vm/mirai_air.rs; \
-		if ! MIRAI_LOG=$(MIRAI_LOG_LEVEL) MIRAI_FLAGS="$${MIRAI_FLAGS:+$$MIRAI_FLAGS }--single_func=miden_air_definitions.vm.mirai_air.$$root" \
+		if ! MIRAI_LOG=$(MIRAI_LOG_LEVEL) MIRAI_FLAGS="$${MIRAI_FLAGS:+$$MIRAI_FLAGS }--body_analysis_timeout=$(MIRAI_BODY_ANALYSIS_TIMEOUT) --single_func=miden_air_definitions.vm.mirai_air.$$root" \
 			cargo +$(MIRAI_TOOLCHAIN) mirai --quiet --manifest-path crates/air/source/Cargo.toml --lib >"$$log_file" 2>&1; then \
 			status=1; \
 		fi; \
 		cat "$$log_file"; \
 		if grep -qF 'warning: [MIRAI]' "$$log_file"; then \
+			status=1; \
+		fi; \
+		if grep -qF 'timed out after' "$$log_file"; then \
 			status=1; \
 		fi; \
 		rm -f "$$log_file"; \
